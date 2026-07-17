@@ -54,4 +54,6 @@ ureq = { version = "2", features = ["json"] }
 cedar-policy = { version = "4", optional = true }
 
 [dev-dependencies]
+agent-hooks-sdk = { version = "0.1.0-alpha.2", features = ["ctk"] }
+tokio = { version = "1", features = ["macros", "rt"] }
 jsonschema = { version = "0.17", default-features = false }
