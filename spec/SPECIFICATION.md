@@ -42,11 +42,9 @@ This section defines the terms this document uses with a specific meaning. Every
 
 **Dispatcher.** A host supplied synchronous interface the runtime calls to run an annotator or a policy. Dispatchers carry host trust and perform the input and output the runtime does not.
 
-**Verdict.** The normalized decision the runtime returns, one of `allow`, `warn`, `deny`, `escalate`, or `transform`, together with a reason.
+**Verdict.** The AGENT-HOOKS-0.1 verdict the runtime returns: one of `allow`, `deny`, or `transform`, optionally carrying `warnings[]`, an `approval` block (on `deny`), a `transform` delta, evidence, and result labels. Policy documents MAY express the `warn` and `escalate` intents; the runtime normalizes them natively to `allow` carrying a warning and to `deny` carrying an approval block.
 
-**Transform.** A replacement the runtime applies to the policy target, carried by a `transform` verdict, to produce the transformed policy target.
-
-**Mode.** The binding setting of an evaluation request, either `enforce` or `evaluate_only`, defined in section 5.
+**Transform.** A `{path, value}` replacement rooted at `$target`, carried by a `transform` verdict. The runtime validates the path grammar with the same parser the host applies with; applying the replacement is a host obligation under AGENT-HOOKS-0.1 section 6.
 
 ## 2. Manifest
 
@@ -129,13 +127,13 @@ The schema rejects unknown members inside an intervention point entry. `policy_t
 
 `policy_target` selects the value under evaluation from the snapshot and MUST use a snapshot root. `policy_target_kind`, when present, is a non empty descriptive label recorded on the policy target. `tool_name_from` selects the invoked tool name and is governed by section 9. `annotations` opts the point into named annotators and is governed by section 10. `policy` binds one policy and is governed by section 12.2.
 
-## 5. Modes
+## 5. Enforcement
 
-An evaluation request carries one mode. In `enforce` mode the runtime applies the transform of a `transform` verdict and returns the transformed policy target. In `evaluate_only` mode the runtime runs the same pipeline and validates a `transform` verdict but applies none and returns no transformed policy target, which lets a host observe what the policy would decide without acting on it. The computed verdict, including `deny` and `escalate`, is the same in both modes. A runtime error fails closed to a `deny` verdict in both modes. Acting on a `deny` or an `escalate` verdict is the host obligation defined in section 17 and applies in `enforce` mode.
+The runtime computes one verdict per evaluation and never enforces it. Enforcement modes (`enforce` and `evaluate_only`), transform application, approval resolution, and record keeping are host obligations defined by AGENT-HOOKS-0.1 sections 6, 8, 9, and 10. A runtime error fails closed to a `deny` verdict whose reason carries the `runtime_error:` namespace.
 
 ## 6. Evaluation order
 
-For a request that carries an intervention point, a snapshot, and a mode, the runtime MUST perform the following steps in this order. A step that fails ends the evaluation and yields a `deny` verdict with the matching reserved reason. The canonical policy input built so far accompanies the result when one has been built.
+For a request that carries an intervention point and a snapshot, the runtime MUST perform the following steps in this order. A step that fails ends the evaluation and yields a `deny` verdict with the matching reserved reason. The canonical policy input built so far accompanies the result when one has been built.
 
 1. Find the configuration for the named intervention point. An unknown name yields `runtime_error:intervention_point_unknown`.
 2. Resolve `policy_target` against the snapshot to obtain the policy target value.
@@ -280,20 +278,20 @@ A policy dispatcher returns a JSON object. The runtime normalizes it into a verd
 
 | Member | Required | Type | Constraint |
 | --- | --- | --- | --- |
-| `decision` | yes | string | One of `allow`, `deny`, `warn`, `escalate`, `transform`. |
+| `decision` | yes | string | One of the AGENT-HOOKS-0.1 decisions `allow`, `deny`, `transform`, or the policy-language intents `warn` and `escalate`, which normalize to `allow` carrying a warning and `deny` carrying an approval block. |
 | `reason` | no | string | MUST NOT start with `runtime_error:`. |
 | `message` | no | string | Free form text for a caller. |
 | `transform` | required when `decision` is `transform`, forbidden otherwise | object | A `{path, value}` replacement rooted at `$target` per section 14. |
 | `evidence` | no | object | Offline verification evidence per section 13.3. |
 | `result_labels` | no | array of strings | Information-flow labels for the data produced at this sink, returned verbatim to the host. See section 13.2. |
 
-Normalization MUST fail closed with `runtime_error:policy_output_invalid` when the output is not an object, when `decision` is absent or is not one of the five values, when `reason` starts with the reserved `runtime_error:` prefix, when `reason` or `message` has the wrong JSON type, when `transform` is present while `decision` is not `transform`, when `transform` is absent while `decision` is `transform`, when `evidence` is present and is not an object, or when `result_labels` is present and is not an array of strings.
+Normalization MUST fail closed with `runtime_error:policy_output_invalid` when the output is not an object, when `decision` is absent or is not one of the values above, when `reason` starts with the reserved `runtime_error:` prefix, when `reason` or `message` has the wrong JSON type, when `transform` is present while `decision` is not `transform`, when `transform` is absent while `decision` is `transform`, when `evidence` is present and is not an object, or when `result_labels` is present and is not an array of strings.
 
 ### 13.1 Decisions
 
-`allow` permits the action with no change to the policy target. `warn` permits the action with no change to the policy target and records a warning. `transform` permits the action and replaces the policy target as defined in section 14. `deny` refuses the action. `escalate` defers the action to the host approval path defined in section 17.1. A host that previously expressed permit with redaction as a permit verdict that also rewrote the policy target MUST now express it as a `transform` verdict, or as an annotator that performs the rewrite upstream of the policy.
+`allow` permits the action with no change to the policy target. `transform` permits the action and carries the `{path, value}` replacement the host applies per AGENT-HOOKS-0.1 section 6. `deny` refuses the action; a `deny` carrying an `approval` block is liftable through the host's approval seam (AGENT-HOOKS-0.1 section 9). The policy-language intents normalize natively: `warn` becomes `allow` with the reason and message appended to `warnings[]`; `escalate` becomes `deny` with an `approval` block. A policy that previously expressed permit-with-redaction by rewriting the policy target MUST express it as a `transform` verdict, or as an annotator that performs the rewrite upstream of the policy.
 
-The runtime derives two action identities for each successful evaluation. Each is encoded as `sha256:` followed by lowercase hexadecimal bytes. `input_identity` is the SHA-256 digest of the canonical policy input JSON that the policy evaluated. `enforced_identity` is the SHA-256 digest of the canonical policy input after a `transform` path is applied to the policy target. The two identities are equal for `allow`, `warn`, `deny`, and `escalate`, and they are equal in `evaluate_only` mode because no transform is applied. Both identities cover the intervention point, policy target, full snapshot, annotations, and projected tool data that the policy evaluated. The escalation approval path in section 17.1 binds to `enforced_identity` so that the approver consents to the action that will execute.
+Context identity, approval binding, and the enforced/input identity distinction are defined by AGENT-HOOKS-0.1 section 10 and computed by the host's identity provider; the runtime carries no identities.
 
 ### 13.2 Result labels
 
@@ -361,12 +359,12 @@ A runtime failure yields a `deny` verdict whose `reason` is one of the identifie
 | `runtime_error:transform_invalid` | A `transform` was malformed, its path did not resolve, or its value could not be set. |
 | `runtime_error:transform_target_forbidden` | A `transform` path pointed outside `$target`. |
 | `runtime_error:resource_limit_exceeded` | Evaluation or manifest loading exceeded a configured resource limit. |
-| `runtime_error:approval_action_mismatch` | An approved action identity did not match the current action identity. |
-| `runtime_error:approval_resolver_missing` | An `escalate` verdict was returned but no resolver matched the manifest `approval.default_resolver`. |
 | `runtime_error:resolution_path_traversal` | AGT host side resolution refused an action path that resolved outside the workspace root. |
 | `runtime_error:resolution_cycle` | AGT host side resolution detected a cycle while merging an `extends` chain. |
 | `runtime_error:resolution_invalid_governance` | AGT host side resolution failed to validate a `governance.yaml` during merge. |
 | `runtime_error:resolution_merge_conflict` | AGT host side resolution found two non rule sections that could not be merged. |
+
+Approval binding, resolver failures, streaming assembly, and adapter mediation are host obligations under AGENT-HOOKS-0.1, whose section 11 reserves the corresponding `host_error:*` reasons. The SDK-layer reasons below predate that split and remain reserved only for compatibility while the language SDKs are rebuilt on agent-hooks; new code MUST use the agent-hooks reasons.
 
 An SDK enforcement layer MAY also fail closed with a reserved `runtime_error:` reason that the core runtime never produces. Such a reason is SDK produced and is attributed to its producing layer. The reasons below are reserved for SDK enforcement helpers.
 

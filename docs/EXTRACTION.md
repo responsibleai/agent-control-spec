@@ -31,4 +31,8 @@ policies and returns agent-hooks verdicts.
 | `tests/fixtures` | `fixtures/` | Evaluation fixtures. |
 | `sdk/python` | `sdk/python` | PyO3 binding; re-exports agent-hooks types and wraps the engine as an `agent_hooks` interceptor. |
 | `sdk/node`, `sdk/dotnet`, `sdk/rust` | — (pending) | To be reintroduced on the same pattern. Rust consumers use the `engine` crate directly. |
-| `integrations/`, `generator/`, `benchmarks/`, `deploy/`, `examples/` | — | Out of scope for the runtime repository. |
+| `core/tests/` | `engine/tests/` | Ported; assertions updated to the native verdict shapes (advisory → `allow`+`warnings`, escalation → `deny`+`approval`). Not ported: `ffi_*.rs` (ABI removed), `frozen_contract.rs` (pinned the superseded wire), `parity_canonical.rs` (identity parity is owned by the agent-hooks golden vectors). |
+| `tests/conformance/` | `tests/conformance/` | Executable corpus ported, minus the approval-seam and evaluate-only cases (host obligations under AGENT-HOOKS-0.1 §8–§9, covered by that contract's kit). |
+| `examples/` | `examples/` | Imported for the end-to-end suites; `basic_host.rs` still speaks the superseded API and is pending a rewrite as an emitter-based host. |
+| — | `conformance/agent-hooks/` | New: vendored AGENT-HOOKS-0.1 vector corpus, provenance, and the per-part conformance report produced by `engine/tests/agent_hooks_conformance.rs`. |
+| `integrations/`, `generator/`, `benchmarks/`, `deploy/` | — | Out of scope for the runtime repository. |

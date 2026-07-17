@@ -1,0 +1,44 @@
+# CI for the agent-control-spec runtime.
+#
+# Every job runs on every PR and push to main: a required status check
+# that can skip deadlocks the branch-protection gate (path-filtered and
+# bot-pushed heads have both done so in this organization's repos).
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-features --locked -- -D warnings
+      - run: cargo test --workspace --all-features --locked
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: actionlint (pinned, checksum-verified)
+        run: |
+          curl -sSfL -o actionlint.tgz \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
+          tar -xzf actionlint.tgz actionlint
+          ./actionlint -color
+      - name: JSON artefacts parse
+        run: |
+          set -e
+          find spec conformance tests engine/tests/fixtures -name '*.json' -print0 \
+            | xargs -0 -n1 python3 -m json.tool > /dev/null
+          echo "all JSON artefacts parse"
