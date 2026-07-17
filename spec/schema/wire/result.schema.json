@@ -150,8 +150,8 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^\\$policy_target(\\.|\\[|$)",
-          "description": "Path rooted at $policy_target. Other roots fail closed with runtime_error:transform_target_forbidden."
+          "pattern": "^\\$target(\\.|\\[|$)",
+          "description": "Path rooted at $target. Other roots fail closed with runtime_error:transform_target_forbidden."
         },
         "value": true
       }

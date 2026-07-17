@@ -54,7 +54,7 @@
     {
       "reason": "runtime_error:effect_target_forbidden",
       "producer": "core-runtime",
-      "cause": "An effect path pointed outside $policy_target."
+      "cause": "An effect path pointed outside $target."
     },
     {
       "reason": "runtime_error:resource_limit_exceeded",

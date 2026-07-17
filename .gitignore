@@ -1,0 +1,10 @@
+target/
+**/target/
+*.so
+*.node
+node_modules/
+__pycache__/
+.venv/
+dist/
+bin/
+obj/

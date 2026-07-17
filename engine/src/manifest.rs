@@ -1,9 +1,10 @@
+use crate::point_ext::{InterceptionPointExt, PointKey};
 use crate::{
     annotation::{AnnotationConfig, AnnotatorConfig},
     constants::manifest_version,
     paths::PathRoot,
     policy::{validate_policy_binding, validate_policy_definition, PolicyBinding, PolicyConfig},
-    InterventionPoint, JsonPath, JsonValue, Limits, RuntimeError,
+    InterceptionPoint, JsonPath, JsonValue, Limits, RuntimeError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
@@ -26,7 +27,7 @@ pub struct Manifest {
     #[serde(default)]
     pub policies: BTreeMap<String, PolicyConfig>,
     #[serde(default)]
-    pub intervention_points: BTreeMap<InterventionPoint, InterventionPointConfig>,
+    pub intervention_points: BTreeMap<PointKey, InterventionPointConfig>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolConfig>,
     #[serde(default)]
@@ -297,7 +298,7 @@ impl Manifest {
         }
 
         for (intervention_point, config) in &self.intervention_points {
-            validate_point_config(*intervention_point, config, self)?;
+            validate_point_config(intervention_point.0, config, self)?;
         }
 
         if let Some(approval) = &self.approval {
@@ -309,49 +310,56 @@ impl Manifest {
 }
 
 fn validate_point_config(
-    intervention_point: InterventionPoint,
+    intervention_point: InterceptionPoint,
     config: &InterventionPointConfig,
     manifest: &Manifest,
 ) -> Result<(), RuntimeError> {
     let policy_target = &config.policy_target;
     if policy_target.trim().is_empty() {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "intervention point {intervention_point} must define policy_target after extends resolution"
+            "intervention point {} must define policy_target after extends resolution",
+            intervention_point.name()
         )));
     }
     let policy_target_path = JsonPath::parse_with_snapshot_alias(policy_target).map_err(|err| {
         RuntimeError::ManifestInvalid(format!(
-            "invalid policy_target for intervention point {intervention_point}: {err}"
+            "invalid policy_target for intervention point {}: {err}",
+            intervention_point.name()
         ))
     })?;
     if policy_target_path.root() != PathRoot::Snap {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "policy_target for intervention point {intervention_point} must use $, $snap, or a snapshot alias"
+            "policy_target for intervention point {} must use $, $snap, or a snapshot alias",
+            intervention_point.name()
         )));
     }
 
     if let Some(kind) = &config.policy_target_kind {
         if kind.trim().is_empty() {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "policy_target_kind for intervention point {intervention_point} must not be empty"
+                "policy_target_kind for intervention point {} must not be empty",
+                intervention_point.name()
             )));
         }
     }
 
     if let Some(tool_name_from) = &config.tool_name_from {
-        if !intervention_point.is_tool_intervention_point() {
+        if !intervention_point.is_tool_point() {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "tool_name_from is only valid on tool intervention points, not {intervention_point}"
+                "tool_name_from is only valid on tool intervention points, not {}",
+                intervention_point.name()
             )));
         }
         let tool_path = JsonPath::parse_with_snapshot_alias(tool_name_from).map_err(|err| {
             RuntimeError::ManifestInvalid(format!(
-                "invalid tool_name_from for intervention point {intervention_point}: {err}"
+                "invalid tool_name_from for intervention point {}: {err}",
+                intervention_point.name()
             ))
         })?;
         if tool_path.root() != PathRoot::Snap {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "tool_name_from for intervention point {intervention_point} must use $, $snap, or a snapshot alias"
+                "tool_name_from for intervention point {} must use $, $snap, or a snapshot alias",
+                intervention_point.name()
             )));
         }
     }
@@ -359,28 +367,30 @@ fn validate_point_config(
     for (annotation_name, annotation_config) in &config.annotations {
         if !manifest.annotators.contains_key(annotation_name) {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "intervention point {intervention_point} references unknown annotator '{annotation_name}'"
+                "intervention point {} references unknown annotator '{annotation_name}'",
+                intervention_point.name()
             )));
         }
         if annotation_config.fields.contains_key("annotator") {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "annotation '{annotation_name}' for intervention point {intervention_point} must use the annotations map key as the annotator name"
+                "annotation '{annotation_name}' for intervention point {} must use the annotations map key as the annotator name", intervention_point.name()
             )));
         }
         if annotation_config.from.trim().is_empty() {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "annotation '{annotation_name}' for intervention point {intervention_point} must define from"
+                "annotation '{annotation_name}' for intervention point {} must define from",
+                intervention_point.name()
             )));
         }
         let from_path =
             JsonPath::parse_with_snapshot_alias(&annotation_config.from).map_err(|err| {
                 RuntimeError::ManifestInvalid(format!(
-                    "invalid annotation '{annotation_name}' from path for intervention point {intervention_point}: {err}"
+                    "invalid annotation '{annotation_name}' from path for intervention point {}: {err}", intervention_point.name()
                 ))
             })?;
         if from_path.references_pi_annotations() {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "annotation '{annotation_name}' for intervention point {intervention_point} must not reference existing policy-input annotations"
+                "annotation '{annotation_name}' for intervention point {} must not reference existing policy-input annotations", intervention_point.name()
             )));
         }
     }
@@ -388,12 +398,14 @@ fn validate_point_config(
     let policy = &config.policy;
     if policy.id.trim().is_empty() {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "intervention point {intervention_point} must define policy after extends resolution"
+            "intervention point {} must define policy after extends resolution",
+            intervention_point.name()
         )));
     }
     let policy_config = manifest.policies.get(&policy.id).ok_or_else(|| {
         RuntimeError::ManifestInvalid(format!(
-            "intervention point {intervention_point} references unknown policy '{}'",
+            "intervention point {} references unknown policy '{}'",
+            intervention_point.name(),
             policy.id
         ))
     })?;
@@ -1237,14 +1249,14 @@ where
 }
 
 fn merge_intervention_points(
-    existing: &mut BTreeMap<InterventionPoint, InterventionPointConfig>,
-    incoming: BTreeMap<InterventionPoint, InterventionPointConfig>,
+    existing: &mut BTreeMap<PointKey, InterventionPointConfig>,
+    incoming: BTreeMap<PointKey, InterventionPointConfig>,
     source: &ManifestSource,
 ) -> Result<(), RuntimeError> {
     for (intervention_point, config) in incoming {
         match existing.get_mut(&intervention_point) {
             Some(existing_config) => {
-                merge_point_config(intervention_point, existing_config, config, source)?
+                merge_point_config(intervention_point.0, existing_config, config, source)?
             }
             None => {
                 existing.insert(intervention_point, config);
@@ -1255,7 +1267,7 @@ fn merge_intervention_points(
 }
 
 fn merge_point_config(
-    intervention_point: InterventionPoint,
+    intervention_point: InterceptionPoint,
     existing: &mut InterventionPointConfig,
     incoming: InterventionPointConfig,
     source: &ManifestSource,
@@ -1263,7 +1275,7 @@ fn merge_point_config(
     if existing == &incoming {
         return Ok(());
     }
-    let point_path = format!("intervention_points.{intervention_point}");
+    let point_path = format!("intervention_points.{}", intervention_point.name());
     if !incoming.policy_target.is_empty() {
         if existing.policy_target.is_empty() {
             existing.policy_target = incoming.policy_target;
@@ -1321,7 +1333,7 @@ mod approval_section_tests {
     use super::*;
     use serde_json::json;
 
-    const MINIMAL_BASE: &str = r#"agent_control_specification_version: 0.3.0-alpha
+    const MINIMAL_BASE: &str = r#"agent_control_specification_version: 0.4.0-alpha.1
 policies:
   test_policy:
     type: test
@@ -1606,7 +1618,7 @@ mod tests {
     }
 
     fn base_manifest() -> &'static str {
-        r#"agent_control_specification_version: 0.3.1-beta
+        r#"agent_control_specification_version: 0.4.0-alpha.1
 policies:
   p:
     type: test
@@ -1655,7 +1667,7 @@ intervention_points:
     fn extends_allows_annotation_only_point_overlay() {
         let base = root_path(
             "annotation-only-base.yaml",
-            r#"agent_control_specification_version: 0.3.1-beta
+            r#"agent_control_specification_version: 0.4.0-alpha.1
 metadata:
   name: base
 policies:
@@ -1671,13 +1683,13 @@ intervention_points:
       id: p
     annotations:
       base_classifier:
-        from: $policy_target.text
+        from: $target.text
 "#,
         );
         let overlay = root_path(
             "annotation-only-overlay.yaml",
             &format!(
-                r#"agent_control_specification_version: 0.3.1-beta
+                r#"agent_control_specification_version: 0.4.0-alpha.1
 extends:
   - {}
 annotators:
@@ -1687,7 +1699,7 @@ intervention_points:
   input:
     annotations:
       overlay_classifier:
-        from: $policy_target.text
+        from: $target.text
 "#,
                 base.file_name().unwrap().to_string_lossy()
             ),
@@ -1696,7 +1708,7 @@ intervention_points:
         let manifest = Manifest::from_path(&overlay).unwrap();
         let input = manifest
             .intervention_points
-            .get(&InterventionPoint::Input)
+            .get(&PointKey(InterceptionPoint::Input))
             .unwrap();
         assert_eq!(input.policy_target, "$snap.input");
         assert_eq!(input.policy.id, "p");
@@ -1860,7 +1872,7 @@ intervention_points:
         let path = root_path(
             "https-string.yaml",
             &format!(
-                "agent_control_specification_version: 0.3.1-beta\nextends:\n  - {url}\nmetadata:\n  name: child\n"
+                "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {url}\nmetadata:\n  name: child\n"
             ),
         );
 
@@ -1879,7 +1891,7 @@ intervention_points:
         let path = root_path(
             "https-integrity.yaml",
             &format!(
-                "agent_control_specification_version: 0.3.1-beta\nextends:\n  - url: {url}\n    integrity: {}\n",
+                "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - url: {url}\n    integrity: {}\n",
                 sri(&body)
             ),
         );
@@ -1897,7 +1909,7 @@ intervention_points:
         let path = root_path(
             "https-bad-sha.yaml",
             &format!(
-                "agent_control_specification_version: 0.3.1-beta\nextends:\n  - url: {url}\n    sha256: {}\n",
+                "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - url: {url}\n    sha256: {}\n",
                 "00".repeat(32)
             ),
         );
@@ -1916,7 +1928,9 @@ intervention_points:
         ] {
             let path = root_path(
                 name,
-                &format!("agent_control_specification_version: 0.3.1-beta\nextends:\n  - {url}\n"),
+                &format!(
+                    "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {url}\n"
+                ),
             );
             let error =
                 load_with_fetcher(&path, MockFetcher::new(BTreeMap::new()), Limits::default())
@@ -1930,11 +1944,11 @@ intervention_points:
     fn url_extends_detects_url_cycles() {
         let url = "https://policy.example/cycle.yaml";
         let body =
-            format!("agent_control_specification_version: 0.3.1-beta\nextends:\n  - {url}\n");
+            format!("agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {url}\n");
         let fetcher = MockFetcher::new(BTreeMap::from([(url.to_string(), body.into_bytes())]));
         let path = root_path(
             "https-cycle.yaml",
-            &format!("agent_control_specification_version: 0.3.1-beta\nextends:\n  - {url}\n"),
+            &format!("agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {url}\n"),
         );
 
         let error = load_with_fetcher(&path, fetcher, Limits::default()).unwrap_err();
@@ -1949,7 +1963,7 @@ intervention_points:
         let fetcher = MockFetcher::new(BTreeMap::from([(url.to_string(), b"abcdef".to_vec())]));
         let path = root_path(
             "https-large.yaml",
-            &format!("agent_control_specification_version: 0.3.1-beta\nextends:\n  - {url}\n"),
+            &format!("agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {url}\n"),
         );
 
         let error = load_with_fetcher(
@@ -1973,7 +1987,7 @@ intervention_points:
         let path = root_path(
             "https-duplicate.yaml",
             &format!(
-                "agent_control_specification_version: 0.3.1-beta\nextends:\n  - {url}\n  - {url}\n"
+                "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {url}\n  - {url}\n"
             ),
         );
 

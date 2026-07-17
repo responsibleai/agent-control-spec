@@ -1,11 +1,12 @@
+use crate::point_ext::InterceptionPointExt;
 use crate::{
     manifest::{InterventionPointConfig, Manifest},
-    InterventionPoint, JsonPath, JsonValue, PathEnv, RuntimeError,
+    InterceptionPoint, JsonPath, JsonValue, PathEnv, RuntimeError,
 };
 
 pub fn project_tool(
     manifest: &Manifest,
-    intervention_point: InterventionPoint,
+    intervention_point: InterceptionPoint,
     config: &InterventionPointConfig,
     snapshot: &JsonValue,
 ) -> Result<JsonValue, RuntimeError> {
@@ -13,15 +14,17 @@ pub fn project_tool(
         return Ok(JsonValue::Null);
     };
 
-    if !intervention_point.is_tool_intervention_point() {
+    if !intervention_point.is_tool_point() {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "tool_name_from is only valid on tool intervention points, not {intervention_point}"
+            "tool_name_from is only valid on tool intervention points, not {}",
+            intervention_point.name()
         )));
     }
 
     let path = JsonPath::parse_with_snapshot_alias(tool_name_from).map_err(|err| {
         RuntimeError::ManifestInvalid(format!(
-            "invalid tool_name_from for intervention_point {intervention_point}: {err}"
+            "invalid tool_name_from for intervention_point {}: {err}",
+            intervention_point.name()
         ))
     })?;
     let value = path.resolve(&PathEnv::with_snap(snapshot))?;

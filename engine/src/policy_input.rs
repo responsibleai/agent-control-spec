@@ -1,10 +1,9 @@
-use crate::{constants::policy_input as pi_key, InterventionPoint, JsonValue};
+use crate::{constants::policy_input as pi_key, JsonValue};
+use agent_hooks::InterceptionPoint;
 use serde_json::Map;
-use sha2::{Digest, Sha256};
-use std::fmt::Write;
 
 pub fn build_policy_input(
-    intervention_point: InterventionPoint,
+    intervention_point: InterceptionPoint,
     policy_target_path: &str,
     policy_target_kind: Option<&str>,
     policy_target_value: JsonValue,
@@ -40,35 +39,26 @@ pub fn build_policy_input(
     JsonValue::Object(root)
 }
 
+/// Deterministic serialization (sorted keys) used for size accounting
+/// and dispatcher payloads. Not an identity: context identity is owned
+/// by agent-hooks (§10).
 pub fn canonical_json(value: &JsonValue) -> Result<String, serde_json::Error> {
-    serde_json::to_string(&sort_json(value))
-}
-
-pub fn action_identity(value: &JsonValue) -> Result<String, serde_json::Error> {
-    let canonical = canonical_json(value)?;
-    let digest = Sha256::digest(canonical.as_bytes());
-    let mut hex = String::with_capacity(71);
-    hex.push_str("sha256:");
-    for byte in digest {
-        write!(&mut hex, "{byte:02x}").expect("writing to String cannot fail");
-    }
-    Ok(hex)
-}
-
-fn sort_json(value: &JsonValue) -> JsonValue {
-    match value {
-        JsonValue::Array(items) => JsonValue::Array(items.iter().map(sort_json).collect()),
-        JsonValue::Object(map) => {
-            let mut keys: Vec<_> = map.keys().cloned().collect();
-            keys.sort();
-            let mut sorted = Map::new();
-            for key in keys {
-                if let Some(value) = map.get(&key) {
-                    sorted.insert(key, sort_json(value));
+    fn sort_json(value: &JsonValue) -> JsonValue {
+        match value {
+            JsonValue::Array(items) => JsonValue::Array(items.iter().map(sort_json).collect()),
+            JsonValue::Object(map) => {
+                let mut keys: Vec<_> = map.keys().cloned().collect();
+                keys.sort();
+                let mut sorted = Map::new();
+                for key in keys {
+                    if let Some(value) = map.get(&key) {
+                        sorted.insert(key, sort_json(value));
+                    }
                 }
+                JsonValue::Object(sorted)
             }
-            JsonValue::Object(sorted)
+            other => other.clone(),
         }
-        other => other.clone(),
     }
+    serde_json::to_string(&sort_json(value))
 }

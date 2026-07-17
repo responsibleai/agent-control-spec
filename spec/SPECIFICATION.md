@@ -92,7 +92,7 @@ A required path that does not resolve MUST fail closed with `runtime_error:path_
 | `$snap` | The raw host snapshot for the current intervention point. |
 | `$` and `$.name` | Aliases that normalize to `$snap` and `$snap.name`. |
 | `$pi` | The canonical policy input from section 7. |
-| `$policy_target` | The value at `$pi.policy_target.value`. |
+| `$target` | The value at `$pi.policy_target.value`. |
 | `$tool` | The value at `$pi.tool`, which is `null` when no tool is projected. |
 
 ### 3.2 Allowed roots by field
@@ -101,10 +101,10 @@ A required path that does not resolve MUST fail closed with `runtime_error:path_
 | --- | --- |
 | `policy_target` | `$snap`, `$`, `$.name` |
 | `tool_name_from` | `$snap`, `$`, `$.name` |
-| annotation `from` | `$pi` excluding `$pi.annotations`, `$policy_target`, `$tool`, `$snap`, `$`, `$.name` |
-| `transform` `path` | `$policy_target` |
+| annotation `from` | `$pi` excluding `$pi.annotations`, `$target`, `$tool`, `$snap`, `$`, `$.name` |
+| `transform` `path` | `$target` |
 
-A manifest path that uses a root outside its allowed set MUST fail closed with `runtime_error:manifest_invalid`. A `transform` path outside `$policy_target` MUST fail closed with `runtime_error:transform_target_forbidden`. An annotation `from` path that reads `$pi.annotations` MUST fail closed with `runtime_error:manifest_invalid`, because annotator outputs do not exist when annotator inputs are resolved.
+A manifest path that uses a root outside its allowed set MUST fail closed with `runtime_error:manifest_invalid`. A `transform` path outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. An annotation `from` path that reads `$pi.annotations` MUST fail closed with `runtime_error:manifest_invalid`, because annotator outputs do not exist when annotator inputs are resolved.
 
 ## 4. Intervention points
 
@@ -266,11 +266,11 @@ Cedar's authorization result maps to a verdict. `Allow` maps to an `allow` verdi
   "verdict": "warn | escalate | transform",
   "reason": "<optional reason string>",
   "message": "<optional human message>",
-  "transform": {"path": "$policy_target...", "value": "<any>"}
+  "transform": {"path": "$target...", "value": "<any>"}
 }
 ```
 
-The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that does not match the schema MUST fail closed with `runtime_error:policy_output_invalid`. A `transform` advice without a `transform` body MUST fail closed with `runtime_error:transform_invalid`, and a `transform` advice whose `path` is outside `$policy_target` MUST fail closed with `runtime_error:transform_target_forbidden`.
+The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that does not match the schema MUST fail closed with `runtime_error:policy_output_invalid`. A `transform` advice without a `transform` body MUST fail closed with `runtime_error:transform_invalid`, and a `transform` advice whose `path` is outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`.
 
 The runtime offers an optional bundled `cedar` dispatcher that links the Cedar Rust crate when the `cedar` build feature is enabled. A host MAY supply its own dispatcher instead. A dispatcher error MUST fail closed with `runtime_error:policy_invocation_failed`.
 
@@ -283,7 +283,7 @@ A policy dispatcher returns a JSON object. The runtime normalizes it into a verd
 | `decision` | yes | string | One of `allow`, `deny`, `warn`, `escalate`, `transform`. |
 | `reason` | no | string | MUST NOT start with `runtime_error:`. |
 | `message` | no | string | Free form text for a caller. |
-| `transform` | required when `decision` is `transform`, forbidden otherwise | object | A `{path, value}` replacement rooted at `$policy_target` per section 14. |
+| `transform` | required when `decision` is `transform`, forbidden otherwise | object | A `{path, value}` replacement rooted at `$target` per section 14. |
 | `evidence` | no | object | Offline verification evidence per section 13.3. |
 | `result_labels` | no | array of strings | Information-flow labels for the data produced at this sink, returned verbatim to the host. See section 13.2. |
 
@@ -328,12 +328,12 @@ A `transform` verdict carries a single replacement that the runtime applies to t
 
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
-| `path` | yes | string | MUST be rooted at `$policy_target`. |
+| `path` | yes | string | MUST be rooted at `$target`. |
 | `value` | yes | any | New JSON value to set at `path`. |
 
 The runtime resolves `path` against the current policy target and replaces the value at that location with `value`. The transformation is confined to the policy target. The runtime MUST NOT change the snapshot, the annotations, the projected tool, or any host state.
 
-A `transform` whose `path` is rooted outside `$policy_target` MUST fail closed with `runtime_error:transform_target_forbidden`. A `transform` whose `path` cannot be parsed, whose `path` does not resolve against the policy target, whose `value` cannot be set because of a path type mismatch, or whose `value` member is missing MUST fail closed with `runtime_error:transform_invalid`.
+A `transform` whose `path` is rooted outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. A `transform` whose `path` cannot be parsed, whose `path` does not resolve against the policy target, whose `value` cannot be set because of a path type mismatch, or whose `value` member is missing MUST fail closed with `runtime_error:transform_invalid`.
 
 In `enforce` mode the runtime applies the transform and the result is the transformed policy target. In `evaluate_only` mode the runtime validates the transform but applies none and returns no transformed policy target.
 
@@ -359,7 +359,7 @@ A runtime failure yields a `deny` verdict whose `reason` is one of the identifie
 | `runtime_error:policy_invocation_failed` | Policy preparation or dispatch failed. |
 | `runtime_error:policy_output_invalid` | The dispatcher output could not be normalized. |
 | `runtime_error:transform_invalid` | A `transform` was malformed, its path did not resolve, or its value could not be set. |
-| `runtime_error:transform_target_forbidden` | A `transform` path pointed outside `$policy_target`. |
+| `runtime_error:transform_target_forbidden` | A `transform` path pointed outside `$target`. |
 | `runtime_error:resource_limit_exceeded` | Evaluation or manifest loading exceeded a configured resource limit. |
 | `runtime_error:approval_action_mismatch` | An approved action identity did not match the current action identity. |
 | `runtime_error:approval_resolver_missing` | An `escalate` verdict was returned but no resolver matched the manifest `approval.default_resolver`. |
@@ -427,7 +427,7 @@ The runtime trusts the snapshot the host supplies. It does not authenticate the 
 
 Annotations are untrusted signal. An annotator observes potentially adversarial content such as a user prompt or a tool result. A policy MUST treat annotation values as data and MUST NOT let them widen authority. A failed annotator fails closed, so an annotator failure cannot silently allow an action.
 
-A `transform` verdict is bounded to the policy target. The runtime applies a transform only within `$policy_target` and rejects any `transform` path rooted outside it, so a policy cannot use a transform to reach the snapshot, the projected tool, or host state.
+A `transform` verdict is bounded to the policy target. The runtime applies a transform only within `$target` and rejects any `transform` path rooted outside it, so a policy cannot use a transform to reach the snapshot, the projected tool, or host state.
 
 Approvals bind to `enforced_identity`. An `escalate` verdict is approved against the `enforced_identity` of the action that will execute, and the SDK rederives that identity before proceeding and fails closed on a mismatch. This prevents an approval granted for one action from authorizing a different action and closes a time of check to time of use gap.
 

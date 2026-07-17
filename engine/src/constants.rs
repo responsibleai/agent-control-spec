@@ -23,12 +23,7 @@ pub mod reserved_reason {
 }
 
 pub(crate) mod manifest_version {
-    pub(crate) const SUPPORTED: [&str; 4] = [
-        "0.3.1-beta",
-        "0.3.1-beta-agt",
-        "0.3.0-alpha",
-        "0.3.0-alpha-agt",
-    ];
+    pub(crate) const SUPPORTED: [&str; 1] = ["0.4.0-alpha.1"];
 }
 
 pub(crate) mod engine {

@@ -1,4 +1,4 @@
-use crate::{Decision, EnforcementMode, InterventionPoint};
+use crate::{Decision, EnforcementMode, InterceptionPoint};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -32,7 +32,7 @@ impl TelemetryEventType {
 #[derive(Debug, Clone, PartialEq)]
 pub struct TelemetryEvent {
     pub event_type: TelemetryEventType,
-    pub intervention_point: InterventionPoint,
+    pub intervention_point: InterceptionPoint,
     pub decision: Option<Decision>,
     pub reason_code: Option<String>,
     pub error_class: Option<String>,
@@ -55,7 +55,7 @@ pub struct TelemetryEvent {
 }
 
 impl TelemetryEvent {
-    pub fn new(event_type: TelemetryEventType, intervention_point: InterventionPoint) -> Self {
+    pub fn new(event_type: TelemetryEventType, intervention_point: InterceptionPoint) -> Self {
         Self {
             event_type,
             intervention_point,
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn evidence_metadata_carries_artefact_and_sorted_keys() {
-        let event = TelemetryEvent::new(TelemetryEventType::Decision, InterventionPoint::Input)
+        let event = TelemetryEvent::new(TelemetryEventType::Decision, InterceptionPoint::Input)
             .with_evidence(
                 Some("sha256:abcd"),
                 vec!["issuer_pubkey".to_string(), "policy_registry".to_string()],
@@ -187,7 +187,7 @@ mod tests {
 
     #[test]
     fn evidence_metadata_is_clean_when_no_evidence_attached() {
-        let event = TelemetryEvent::new(TelemetryEventType::Decision, InterventionPoint::Input);
+        let event = TelemetryEvent::new(TelemetryEventType::Decision, InterceptionPoint::Input);
         assert!(event.evidence_artefact.is_none());
         assert!(event.evidence_verification_pointer_keys.is_empty());
     }
@@ -197,7 +197,7 @@ mod tests {
         // AGT D2 wire-name contract per AGT-EVIDENCE-1.0 §3.
         let event = TelemetryEvent::new(
             TelemetryEventType::InterventionPointTransformed,
-            InterventionPoint::Output,
+            InterceptionPoint::Output,
         );
         assert_eq!(event.event_type.as_str(), "intervention_point.transformed");
     }

@@ -1,16 +1,16 @@
+use crate::point_ext::InterceptionPointExt;
 use crate::{
     annotation::{AnnotatorDispatcher, AnnotatorInvocation},
     constants::policy_input as pi_key,
     manifest::Manifest,
-    paths::PathRoot,
     policy::{prepare_policy_invocation, PolicyConfig, PreparedPolicyInvocation},
-    policy_input::{action_identity, build_policy_input},
+    policy_input::build_policy_input,
+    policy_output::{normalize_policy_output, runtime_error_verdict},
     telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetryEventType, TelemetrySink},
     tool_projection::project_tool,
-    verdict::{normalize_policy_output, Decision, Transform},
-    EnforcementMode, InterventionPoint, JsonPath, JsonValue, Limits, PathEnv, PathSegment,
-    PerfTelemetry, RuntimeError, Verdict,
+    JsonPath, JsonValue, Limits, PathEnv, PerfTelemetry, RuntimeError,
 };
+use agent_hooks::{InterceptionPoint, Verdict};
 use serde_json::Map;
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
@@ -144,35 +144,52 @@ impl Runtime {
         self
     }
 
-    pub fn evaluate_intervention_point(
+    /// Evaluate an agent-hooks context, resolving the interception
+    /// point from its required `interception_point` member.
+    pub fn evaluate(&self, snapshot: &JsonValue) -> EvaluationResult {
+        let point = snapshot
+            .get("interception_point")
+            .and_then(JsonValue::as_str)
+            .and_then(|name| name.parse::<InterceptionPoint>().ok());
+        match point {
+            Some(point) => self.evaluate_point(point, snapshot.clone()),
+            None => EvaluationResult {
+                verdict: runtime_error_verdict(&RuntimeError::InterventionPointUnknown(
+                    "context carries no valid interception_point".to_string(),
+                )),
+                policy_input: None,
+            },
+        }
+    }
+
+    /// Evaluate one interception point against a context snapshot.
+    pub fn evaluate_point(
         &self,
-        request: InterventionPointRequest,
-    ) -> InterventionPointResult {
+        intervention_point: InterceptionPoint,
+        snapshot: JsonValue,
+    ) -> EvaluationResult {
+        let request = EvaluationRequest {
+            intervention_point,
+            snapshot,
+        };
         let started_at = Instant::now();
-        let intervention_point = request.intervention_point;
-        let mode = request.mode;
         let policy_id = self.policy_id_for(intervention_point).map(str::to_string);
         let annotators = self.annotators_for(intervention_point);
-        let result = match self.evaluate_intervention_point_inner(request) {
+        let result = match self.evaluate_inner(request) {
             Ok(result) => result,
-            Err(failure) => InterventionPointResult {
-                verdict: Verdict::runtime_error(&failure.error),
-                transformed_policy_target: None,
+            Err(failure) => EvaluationResult {
+                verdict: runtime_error_verdict(&failure.error),
                 policy_input: failure.policy_input,
-                action_identity: None,
-                input_identity: None,
-                enforced_identity: None,
             },
         };
         let duration_ms = started_at.elapsed().as_secs_f64() * 1000.0;
         self.emit_decision_event(
             intervention_point,
-            mode,
             &result.verdict,
             policy_id.as_deref(),
             annotators,
             duration_ms,
-            result.action_identity.as_deref(),
+            None,
         );
         if self.perf_telemetry.emit_stage_events() {
             self.emit_event(
@@ -185,22 +202,21 @@ impl Runtime {
                     .with_optional_error_class(
                         telemetry_error_class(result.verdict.reason.as_deref()).as_deref(),
                     )
-                    .with_enforcement_mode(mode)
                     .with_duration_ms(duration_ms)
-                    .with_optional_action_identity(result.action_identity.as_deref()),
+                    .with_optional_action_identity(None),
             );
         }
         result
     }
 
-    fn evaluate_intervention_point_inner(
+    fn evaluate_inner(
         &self,
-        request: InterventionPointRequest,
-    ) -> Result<InterventionPointResult, EvaluationFailure> {
+        request: EvaluationRequest,
+    ) -> Result<EvaluationResult, EvaluationFailure> {
         let point_config = self
             .manifest
             .intervention_points
-            .get(&request.intervention_point)
+            .get(&crate::point_ext::PointKey(request.intervention_point))
             .ok_or_else(|| {
                 RuntimeError::InterventionPointUnknown(
                     request.intervention_point.as_str().to_string(),
@@ -216,7 +232,7 @@ impl Runtime {
             JsonPath::parse_with_snapshot_alias(policy_target_field).map_err(|err| {
                 RuntimeError::ManifestInvalid(format!(
                     "invalid policy_target for intervention point {}: {err}",
-                    request.intervention_point
+                    request.intervention_point.name()
                 ))
             })?;
         let policy_target = policy_target_path.resolve(&PathEnv::with_snap(&request.snapshot))?;
@@ -264,7 +280,8 @@ impl Runtime {
         let policy_config = self.manifest.policies.get(&policy.id).ok_or_else(|| {
             RuntimeError::ManifestInvalid(format!(
                 "intervention point {} references unknown policy '{}'",
-                request.intervention_point, policy.id
+                request.intervention_point.name(),
+                policy.id
             ))
         })?;
 
@@ -348,108 +365,26 @@ impl Runtime {
             }
         })?;
 
-        let transformed_policy_target = match verdict.decision {
-            Decision::Transform => {
-                let transform = verdict
-                    .transform
-                    .as_ref()
-                    .ok_or_else(|| EvaluationFailure {
-                        error: RuntimeError::PolicyOutputInvalid(
-                            "transform decision missing transform body after normalization"
-                                .to_string(),
-                        ),
-                        policy_input: Some(final_policy_input.clone()),
-                    })?;
-                let applied = apply_transform(&policy_target, transform).map_err(|error| {
-                    EvaluationFailure {
-                        error,
-                        policy_input: Some(final_policy_input.clone()),
-                    }
-                })?;
-                if request.mode == EnforcementMode::Enforce {
-                    Some(applied)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-
-        // AGT D1.1 hardening ported from upstream ACS. When a transform
-        // rewrites the policy target, rebuild the snapshot with the rewritten
-        // value and re-validate it against resource limits before the rewrite
-        // is surfaced to the host.
-        if let Some(transformed) = &transformed_policy_target {
-            let transformed_snapshot = snapshot_with_transformed_policy_target(
-                &request.snapshot,
-                &policy_target_path,
-                transformed.clone(),
-            )
-            .map_err(|error| EvaluationFailure {
-                error,
-                policy_input: Some(final_policy_input.clone()),
-            })?;
-            self.limits
-                .validate_snapshot(&transformed_snapshot)
-                .map_err(|error| EvaluationFailure {
-                    error,
-                    policy_input: Some(final_policy_input.clone()),
-                })?;
-        }
-
-        let input_identity =
-            action_identity(&final_policy_input).map_err(|error| EvaluationFailure {
-                error: RuntimeError::PolicyOutputInvalid(format!(
-                    "failed to derive input_identity: {error}"
-                )),
-                policy_input: Some(final_policy_input.clone()),
-            })?;
-
-        // AGT D1.4: enforced_identity is computed over the policy input
-        // with `policy_target.value` replaced by the transformed value when
-        // a Transform decision rewrites it. Non-transform decisions and
-        // evaluate-only mode (where `transformed_policy_target` is None by
-        // design) keep enforced_identity equal to input_identity, so audit
-        // consumers always see a stable two-field schema.
-        let enforced_identity = match &transformed_policy_target {
-            Some(transformed) => {
-                let mut enforced_policy_input = final_policy_input.clone();
-                if let Some(value_slot) = enforced_policy_input
-                    .get_mut(pi_key::POLICY_TARGET)
-                    .and_then(JsonValue::as_object_mut)
-                    .and_then(|object| object.get_mut(pi_key::VALUE))
-                {
-                    *value_slot = transformed.clone();
-                }
-                action_identity(&enforced_policy_input).map_err(|error| EvaluationFailure {
-                    error: RuntimeError::PolicyOutputInvalid(format!(
-                        "failed to derive enforced_identity: {error}"
-                    )),
-                    policy_input: Some(final_policy_input.clone()),
-                })?
-            }
-            None => input_identity.clone(),
-        };
-
-        Ok(InterventionPointResult {
+        // Transform application, enforcement mode, approval resolution,
+        // and identity computation are host obligations under
+        // AGENT-HOOKS-0.1 (§6, §8, §9, §10); the engine returns the
+        // verdict and the policy input it evaluated.
+        Ok(EvaluationResult {
             verdict,
-            transformed_policy_target,
             policy_input: Some(final_policy_input),
-            action_identity: Some(enforced_identity.clone()),
-            input_identity: Some(input_identity),
-            enforced_identity: Some(enforced_identity),
         })
     }
 
     fn collect_annotations(
         &self,
-        intervention_point: InterventionPoint,
+        intervention_point: InterceptionPoint,
         point_config: &crate::manifest::InterventionPointConfig,
         preliminary_policy_input: &JsonValue,
     ) -> Result<JsonValue, RuntimeError> {
         if point_config.annotations.len() > self.limits.max_annotators_per_point {
             return Err(RuntimeError::ResourceLimitExceeded(format!(
-                "intervention point {intervention_point} invokes {} annotators, limit {}",
+                "intervention point {} invokes {} annotators, limit {}",
+                intervention_point.name(),
                 point_config.annotations.len(),
                 self.limits.max_annotators_per_point
             )));
@@ -545,8 +480,7 @@ impl Runtime {
     #[allow(clippy::too_many_arguments)]
     fn emit_decision_event(
         &self,
-        intervention_point: InterventionPoint,
-        mode: EnforcementMode,
+        intervention_point: InterceptionPoint,
         verdict: &Verdict,
         policy_id: Option<&str>,
         annotators: Vec<String>,
@@ -558,7 +492,10 @@ impl Runtime {
         // verdict carries `evidence`.
         let (evidence_artefact, evidence_keys): (Option<String>, Vec<String>) =
             match verdict.evidence.as_ref() {
-                Some(evidence) => (evidence.artefact.clone(), evidence.pointer_keys()),
+                Some(evidence) => (
+                    evidence.artefact.clone(),
+                    evidence.verification_pointers.keys().cloned().collect(),
+                ),
                 None => (None, Vec::new()),
             };
 
@@ -573,7 +510,6 @@ impl Runtime {
                 )
                 .with_optional_policy_id(policy_id)
                 .with_annotators(annotators.clone())
-                .with_enforcement_mode(mode)
                 .with_duration_ms(duration_ms)
                 .with_optional_action_identity(action_identity)
                 .with_evidence(evidence_artefact.as_deref(), evidence_keys.clone()),
@@ -583,7 +519,7 @@ impl Runtime {
         // `intervention_point.transformed` event in addition to the
         // base Decision event so that single-event consumers and
         // multi-event consumers both see the transformation.
-        if verdict.decision == Decision::Transform {
+        if verdict.decision == agent_hooks::Decision::Transform {
             self.emit_event(
                 TelemetryEvent::new(
                     TelemetryEventType::InterventionPointTransformed,
@@ -598,7 +534,6 @@ impl Runtime {
                 )
                 .with_optional_policy_id(policy_id)
                 .with_annotators(annotators)
-                .with_enforcement_mode(mode)
                 .with_duration_ms(duration_ms)
                 .with_optional_action_identity(action_identity)
                 .with_evidence(evidence_artefact.as_deref(), evidence_keys),
@@ -608,7 +543,7 @@ impl Runtime {
 
     fn emit_annotator_failed(
         &self,
-        intervention_point: InterventionPoint,
+        intervention_point: InterceptionPoint,
         annotator_name: &str,
         error: &RuntimeError,
     ) {
@@ -622,7 +557,7 @@ impl Runtime {
 
     fn emit_policy_failed(
         &self,
-        intervention_point: InterventionPoint,
+        intervention_point: InterceptionPoint,
         policy_id: &str,
         policy_config: &PolicyConfig,
         error: &RuntimeError,
@@ -638,7 +573,7 @@ impl Runtime {
 
     fn emit_annotator_external_event(
         &self,
-        intervention_point: InterventionPoint,
+        intervention_point: InterceptionPoint,
         annotator_name: &str,
         reason: Option<&str>,
         duration_ms: f64,
@@ -657,7 +592,7 @@ impl Runtime {
 
     fn emit_policy_external_event(
         &self,
-        intervention_point: InterventionPoint,
+        intervention_point: InterceptionPoint,
         policy_id: &str,
         policy_config: &PolicyConfig,
         reason: Option<&str>,
@@ -680,17 +615,17 @@ impl Runtime {
         let _ = catch_unwind(AssertUnwindSafe(|| self.telemetry.emit(event)));
     }
 
-    fn policy_id_for(&self, intervention_point: InterventionPoint) -> Option<&str> {
+    fn policy_id_for(&self, intervention_point: InterceptionPoint) -> Option<&str> {
         self.manifest
             .intervention_points
-            .get(&intervention_point)
+            .get(&crate::point_ext::PointKey(intervention_point))
             .map(|config| config.policy.id.as_str())
     }
 
-    fn annotators_for(&self, intervention_point: InterventionPoint) -> Vec<String> {
+    fn annotators_for(&self, intervention_point: InterceptionPoint) -> Vec<String> {
         self.manifest
             .intervention_points
-            .get(&intervention_point)
+            .get(&crate::point_ext::PointKey(intervention_point))
             .map(|config| config.annotations.keys().cloned().collect())
             .unwrap_or_default()
     }
@@ -719,41 +654,6 @@ fn is_identifier_reason_code(reason: &str) -> bool {
         })
 }
 
-/// Validate and apply an AGT D1.1 `transform` verdict body against the current
-/// policy target. The returned value is the rewritten policy target. The caller
-/// decides whether to surface the rewrite per the enforcement mode.
-///
-/// Per `SPECIFICATION.md` §14 a transform whose path is outside
-/// `$policy_target` fails closed with `runtime_error:transform_target_forbidden`;
-/// a transform whose path does not resolve or whose value cannot be set fails
-/// closed with `runtime_error:transform_invalid`.
-fn apply_transform(
-    policy_target: &JsonValue,
-    transform: &Transform,
-) -> Result<JsonValue, RuntimeError> {
-    let path = JsonPath::parse(&transform.path)
-        .map_err(|err| RuntimeError::TransformInvalid(format!("invalid transform path: {err}")))?;
-    if path.root() != PathRoot::PolicyTarget {
-        return Err(RuntimeError::TransformTargetForbidden(
-            transform.path.clone(),
-        ));
-    }
-
-    let mut working = policy_target.clone();
-    match path.resolve_policy_target_mut(&mut working) {
-        Ok(slot) => {
-            *slot = transform.value.clone();
-            Ok(working)
-        }
-        Err(RuntimeError::EffectTargetForbidden(detail)) => {
-            Err(RuntimeError::TransformTargetForbidden(detail))
-        }
-        Err(error) => Err(RuntimeError::TransformInvalid(format!(
-            "transform could not be applied: {error}"
-        ))),
-    }
-}
-
 fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(message) = payload.downcast_ref::<&str>() {
         (*message).to_string()
@@ -765,10 +665,9 @@ fn panic_detail(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 #[derive(Debug, Clone)]
-pub struct InterventionPointRequest {
-    pub intervention_point: InterventionPoint,
+pub struct EvaluationRequest {
+    pub intervention_point: InterceptionPoint,
     pub snapshot: JsonValue,
-    pub mode: EnforcementMode,
 }
 
 /// Result of evaluating a single intervention point.
@@ -787,18 +686,14 @@ pub struct InterventionPointRequest {
 /// `enforced_identity`. New callers should reach for the bisected fields
 /// directly.
 #[derive(Debug, Clone, PartialEq)]
-pub struct InterventionPointResult {
+pub struct EvaluationResult {
+    /// The agent-hooks verdict the host must honour. Always present:
+    /// evaluation failures surface as fail-closed `deny` verdicts with
+    /// `runtime_error:*` reasons, never as errors.
     pub verdict: Verdict,
-    pub transformed_policy_target: Option<JsonValue>,
+    /// The final policy input the dispatcher evaluated, when one was
+    /// constructed. Diagnostic; not part of the host contract.
     pub policy_input: Option<JsonValue>,
-    /// Backwards-compatible alias for `enforced_identity` per AGT D1.4.
-    pub action_identity: Option<String>,
-    /// AGT D1.4 SHA-256 of the canonical policy input as evaluated.
-    pub input_identity: Option<String>,
-    /// AGT D1.4 SHA-256 of the canonical policy input with the
-    /// transformed policy target applied. Equal to `input_identity` for
-    /// non-transform decisions and evaluate-only transforms.
-    pub enforced_identity: Option<String>,
 }
 
 fn normalize_annotator_error(annotator_name: &str, error: RuntimeError) -> RuntimeError {
@@ -823,51 +718,6 @@ fn annotator_error_detail(annotator_name: &str, detail: String) -> String {
     }
 }
 
-fn snapshot_with_transformed_policy_target(
-    snapshot: &JsonValue,
-    policy_target_path: &JsonPath,
-    transformed: JsonValue,
-) -> Result<JsonValue, RuntimeError> {
-    if policy_target_path.root() != PathRoot::Snap {
-        return Err(RuntimeError::ManifestInvalid(
-            "policy_target must resolve from snapshot".to_string(),
-        ));
-    }
-
-    let mut snapshot = snapshot.clone();
-    let mut current = &mut snapshot;
-    for segment in policy_target_path.segments() {
-        match segment {
-            PathSegment::Field(field) => match current {
-                JsonValue::Object(map) => {
-                    current = map.get_mut(field).ok_or_else(|| {
-                        RuntimeError::PathMissing(policy_target_path.original().to_string())
-                    })?;
-                }
-                _ => {
-                    return Err(RuntimeError::PathTypeMismatch(
-                        policy_target_path.original().to_string(),
-                    ))
-                }
-            },
-            PathSegment::Index(index) => match current {
-                JsonValue::Array(values) => {
-                    current = values.get_mut(*index).ok_or_else(|| {
-                        RuntimeError::PathMissing(policy_target_path.original().to_string())
-                    })?;
-                }
-                _ => {
-                    return Err(RuntimeError::PathTypeMismatch(
-                        policy_target_path.original().to_string(),
-                    ))
-                }
-            },
-        }
-    }
-    *current = transformed;
-    Ok(snapshot)
-}
-
 #[derive(Debug)]
 struct EvaluationFailure {
     error: RuntimeError,
@@ -886,16 +736,17 @@ impl From<RuntimeError> for EvaluationFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Decision, Manifest, RuntimeError};
+    use crate::manifest::Manifest;
+    use agent_hooks::Decision;
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
     struct StaticAnnotator;
-    impl AnnotatorDispatcher for StaticAnnotator {
+    impl crate::annotation::AnnotatorDispatcher for StaticAnnotator {
         fn dispatch(
             &self,
             _annotator_name: &str,
-            _annotator: &AnnotatorInvocation,
+            _annotator: &crate::annotation::AnnotatorInvocation,
             _preliminary_policy_input: &JsonValue,
         ) -> Result<JsonValue, RuntimeError> {
             Ok(JsonValue::Null)
@@ -907,19 +758,10 @@ mod tests {
         seen: Mutex<Vec<JsonValue>>,
     }
 
-    impl StaticPolicy {
-        fn new(output: JsonValue) -> Self {
-            Self {
-                output,
-                seen: Mutex::new(Vec::new()),
-            }
-        }
-    }
-
     impl PolicyDispatcher for StaticPolicy {
         fn evaluate(
             &self,
-            invocation: &PreparedPolicyInvocation,
+            invocation: &crate::policy::PreparedPolicyInvocation,
         ) -> Result<JsonValue, RuntimeError> {
             self.seen
                 .lock()
@@ -929,350 +771,130 @@ mod tests {
         }
     }
 
-    fn output_manifest() -> Manifest {
-        Manifest::from_yaml_str(
-            r#"agent_control_specification_version: 0.3.0-alpha
+    fn runtime(policy_output: JsonValue) -> Runtime {
+        let manifest = Manifest::from_yaml_str(
+            r#"agent_control_specification_version: 0.4.0-alpha.1
 policies:
   test_policy:
     type: test
 intervention_points:
+  input:
+    policy_target_kind: user_input
+    policy:
+      id: test_policy
+    policy_target: $snap.input
   output:
     policy_target_kind: assistant_output
     policy:
       id: test_policy
     policy_target: $snap.output"#,
         )
-        .unwrap()
-    }
-
-    fn runtime(policy_output: JsonValue) -> Runtime {
+        .unwrap();
         Runtime::new(
-            output_manifest(),
+            manifest,
             Arc::new(StaticAnnotator),
-            Arc::new(StaticPolicy::new(policy_output)),
+            Arc::new(StaticPolicy {
+                output: policy_output,
+                seen: Mutex::new(Vec::new()),
+            }),
         )
         .unwrap()
     }
 
-    fn evaluate(
-        runtime: &Runtime,
-        mode: EnforcementMode,
-        snapshot: JsonValue,
-    ) -> InterventionPointResult {
-        runtime.evaluate_intervention_point(InterventionPointRequest {
-            intervention_point: InterventionPoint::Output,
-            snapshot,
-            mode,
+    fn ctx(point: &str, body: JsonValue) -> JsonValue {
+        json!({
+            "spec": "agent-hooks/0.1",
+            "interception_point": point,
+            "timestamp": "2026-01-01T00:00:00Z",
+            "sequence": 1,
+            "agent": {"id": "a", "framework": "test"},
+            "session": {"id": "s"},
+            "input": body,
+            "output": body,
+            "target": body,
         })
     }
 
-    // ── AGT D1 transform application in evaluate_intervention_point ───────
+    #[test]
+    fn allow_passes_through() {
+        let result =
+            runtime(json!({"decision": "allow"})).evaluate(&ctx("input", json!({"message": "hi"})));
+        assert_eq!(result.verdict.decision, Decision::Allow);
+        assert!(result.policy_input.is_some());
+    }
 
     #[test]
-    fn transform_decision_applied_in_enforce_mode() {
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "reason": "pii_redacted",
-            "transform": {"path": "$policy_target.body", "value": "[REDACTED]"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "secret data"}}),
+    fn warn_intent_becomes_allow_with_warning() {
+        let result = runtime(json!({
+            "decision": "warn",
+            "reason": "needs_review",
+            "message": "proceeding with caution"
+        }))
+        .evaluate(&ctx("input", json!({"message": "hi"})));
+        assert_eq!(result.verdict.decision, Decision::Allow);
+        assert_eq!(result.verdict.warnings.len(), 1);
+        assert_eq!(
+            result.verdict.warnings[0].reason.as_deref(),
+            Some("needs_review")
         );
+    }
 
+    #[test]
+    fn escalate_intent_becomes_liftable_deny() {
+        let result = runtime(json!({"decision": "escalate", "reason": "human_gate"}))
+            .evaluate(&ctx("input", json!({"message": "hi"})));
+        assert_eq!(result.verdict.decision, Decision::Deny);
+        assert!(result.verdict.is_liftable());
+        assert_eq!(result.verdict.reason.as_deref(), Some("human_gate"));
+    }
+
+    #[test]
+    fn transform_is_returned_unapplied() {
+        let result = runtime(json!({
+            "decision": "transform",
+            "transform": {"path": "$target.message", "value": "[REDACTED]"}
+        }))
+        .evaluate(&ctx("output", json!({"message": "secret"})));
         assert_eq!(result.verdict.decision, Decision::Transform);
+        let transform = result.verdict.transform.as_ref().unwrap();
+        assert_eq!(transform.path, "$target.message");
+        // The engine never rewrites the context: transform application
+        // is a host obligation.
         assert_eq!(
-            result.transformed_policy_target,
-            Some(json!({"body": "[REDACTED]"})),
-            "enforce mode must surface the transformed policy target"
+            result.policy_input.unwrap()["policy_target"]["value"],
+            json!({"message": "secret"})
         );
     }
 
     #[test]
-    fn transform_decision_validated_only_in_evaluate_only_mode() {
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "reason": "pii_redacted",
-            "transform": {"path": "$policy_target.body", "value": "[REDACTED]"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::EvaluateOnly,
-            json!({"output": {"body": "secret data"}}),
-        );
-
-        assert_eq!(result.verdict.decision, Decision::Transform);
-        assert!(
-            result.transformed_policy_target.is_none(),
-            "evaluate_only mode must validate without applying transform"
-        );
-    }
-
-    #[test]
-    fn transform_with_invalid_path_fails_closed_with_transform_invalid() {
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "transform": {"path": "$policy_target.missing_field", "value": "x"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "data"}}),
-        );
-
+    fn context_without_point_fails_closed() {
+        let result = runtime(json!({"decision": "allow"})).evaluate(&json!({"input": {}}));
         assert_eq!(result.verdict.decision, Decision::Deny);
         assert_eq!(
             result.verdict.reason.as_deref(),
-            Some("runtime_error:transform_invalid")
+            Some("runtime_error:intervention_point_unknown")
         );
-        assert!(result.transformed_policy_target.is_none());
     }
 
     #[test]
-    fn transform_with_path_outside_policy_target_fails_closed_with_target_forbidden() {
-        // The exclusivity rule is enforced in verdict::normalize_policy_output;
-        // we still verify the runtime surface returns the reserved reason on
-        // the produced verdict.
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "transform": {"path": "$snap.output.body", "value": "x"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "data"}}),
-        );
-
+    fn unbound_point_fails_closed() {
+        let result =
+            runtime(json!({"decision": "allow"})).evaluate(&ctx("pre_tool_call", json!({})));
         assert_eq!(result.verdict.decision, Decision::Deny);
         assert_eq!(
             result.verdict.reason.as_deref(),
-            Some("runtime_error:transform_target_forbidden")
+            Some("runtime_error:intervention_point_unknown")
         );
     }
 
     #[test]
-    fn transform_with_type_mismatch_fails_closed_with_transform_invalid() {
-        // Target body is a string but transform tries to write to a nested key.
-        // resolve_policy_target_mut returns PathTypeMismatch which the runtime
-        // remaps to TransformInvalid.
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "transform": {"path": "$policy_target.body.nested", "value": "x"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "string value"}}),
-        );
-
+    fn reserved_reason_from_policy_fails_closed() {
+        let result = runtime(json!({"decision": "allow", "reason": "host_error:context_invalid"}))
+            .evaluate(&ctx("input", json!({})));
         assert_eq!(result.verdict.decision, Decision::Deny);
         assert_eq!(
             result.verdict.reason.as_deref(),
-            Some("runtime_error:transform_invalid")
+            Some("runtime_error:policy_output_invalid")
         );
-    }
-
-    // ── AGT D2 evidence propagation + Transformed event ───────────────
-
-    #[derive(Default)]
-    struct RecordingTelemetry {
-        events: Mutex<Vec<TelemetryEvent>>,
-    }
-
-    impl TelemetrySink for RecordingTelemetry {
-        fn emit(&self, event: TelemetryEvent) {
-            self.events.lock().unwrap().push(event);
-        }
-    }
-
-    fn runtime_with_recording_sink(policy_output: JsonValue) -> (Runtime, Arc<RecordingTelemetry>) {
-        let telemetry = Arc::new(RecordingTelemetry::default());
-        let runtime = Runtime::with_telemetry(
-            output_manifest(),
-            Arc::new(StaticAnnotator),
-            Arc::new(StaticPolicy::new(policy_output)),
-            telemetry.clone(),
-        )
-        .unwrap();
-        (runtime, telemetry)
-    }
-
-    #[test]
-    fn decision_event_carries_evidence_artefact_and_sorted_pointer_keys() {
-        let (runtime, telemetry) = runtime_with_recording_sink(json!({
-            "decision": "allow",
-            "evidence": {
-                "artefact": "sha256:abcd",
-                "verification_pointers": {
-                    "policy_registry": "https://x/policies",
-                    "issuer_pubkey": "https://x/keys"
-                }
-            }
-        }));
-        let _ = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "data"}}),
-        );
-
-        let events = telemetry.events.lock().unwrap();
-        let decision = events
-            .iter()
-            .find(|event| event.event_type == TelemetryEventType::Decision)
-            .expect("decision event emitted");
-        assert_eq!(decision.evidence_artefact.as_deref(), Some("sha256:abcd"));
-        // Sorted keys per AGT-EVIDENCE-1.0 §3 (BTreeMap iteration order).
-        assert_eq!(
-            decision.evidence_verification_pointer_keys,
-            vec!["issuer_pubkey", "policy_registry"]
-        );
-    }
-
-    #[test]
-    fn decision_event_evidence_metadata_is_clean_when_verdict_has_no_evidence() {
-        let (runtime, telemetry) = runtime_with_recording_sink(json!({"decision": "allow"}));
-        let _ = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "data"}}),
-        );
-
-        let events = telemetry.events.lock().unwrap();
-        let decision = events
-            .iter()
-            .find(|event| event.event_type == TelemetryEventType::Decision)
-            .expect("decision event emitted");
-        assert!(decision.evidence_artefact.is_none());
-        assert!(decision.evidence_verification_pointer_keys.is_empty());
-    }
-
-    #[test]
-    fn transform_decision_emits_dedicated_intervention_point_transformed_event() {
-        let (runtime, telemetry) = runtime_with_recording_sink(json!({
-            "decision": "transform",
-            "reason": "redacted",
-            "transform": {"path": "$policy_target.body", "value": "[REDACTED]"},
-            "evidence": {
-                "artefact": "sha256:cafe",
-                "verification_pointers": {"attestation": "https://x/att"}
-            }
-        }));
-        let _ = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "secret"}}),
-        );
-
-        let events = telemetry.events.lock().unwrap();
-        let event_types: Vec<_> = events.iter().map(|event| event.event_type).collect();
-        assert!(
-            event_types.contains(&TelemetryEventType::Decision),
-            "Decision event still emitted alongside Transformed event: {event_types:?}"
-        );
-        let transformed = events
-            .iter()
-            .find(|event| event.event_type == TelemetryEventType::InterventionPointTransformed)
-            .expect("AGT D2 intervention_point.transformed event must fire on Transform decision");
-        assert_eq!(transformed.decision, Some(Decision::Transform));
-        assert_eq!(transformed.reason_code.as_deref(), Some("redacted"));
-        assert_eq!(
-            transformed.evidence_artefact.as_deref(),
-            Some("sha256:cafe")
-        );
-        assert_eq!(
-            transformed.evidence_verification_pointer_keys,
-            vec!["attestation"]
-        );
-    }
-
-    // ── AGT D1.4 bisected action identity ─────────────────────────────
-
-    #[test]
-    fn non_transform_verdict_yields_equal_input_and_enforced_identities() {
-        let runtime = runtime(json!({"decision": "allow"}));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "data"}}),
-        );
-        assert!(result.input_identity.is_some());
-        assert!(result.enforced_identity.is_some());
-        assert_eq!(
-            result.input_identity, result.enforced_identity,
-            "non-transform decisions keep enforced_identity == input_identity"
-        );
-        assert_eq!(
-            result.action_identity, result.enforced_identity,
-            "action_identity is the back-compat alias for enforced_identity"
-        );
-    }
-
-    #[test]
-    fn transform_decision_diverges_input_and_enforced_identities() {
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "transform": {"path": "$policy_target.body", "value": "[REDACTED]"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "secret"}}),
-        );
-        let input = result.input_identity.expect("input_identity present");
-        let enforced = result.enforced_identity.expect("enforced_identity present");
-        assert_ne!(
-            input, enforced,
-            "transform that rewrites the policy target must shift enforced_identity"
-        );
-        assert_eq!(
-            result.action_identity.as_deref(),
-            Some(enforced.as_str()),
-            "action_identity stays aligned to enforced_identity"
-        );
-    }
-
-    #[test]
-    fn evaluate_only_transform_keeps_enforced_identity_equal_to_input() {
-        // Per AGT D1.1 §5 + D1.4: in evaluate_only mode the transform is
-        // validated but not applied; transformed_policy_target stays None,
-        // so enforced_identity must equal input_identity even though the
-        // verdict is Transform.
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "transform": {"path": "$policy_target.body", "value": "[REDACTED]"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::EvaluateOnly,
-            json!({"output": {"body": "secret"}}),
-        );
-        assert_eq!(result.verdict.decision, Decision::Transform);
-        assert!(result.transformed_policy_target.is_none());
-        assert_eq!(
-            result.input_identity, result.enforced_identity,
-            "evaluate_only transforms must not shift enforced_identity"
-        );
-    }
-
-    #[test]
-    fn runtime_error_clears_both_identities() {
-        let runtime = runtime(json!({
-            "decision": "transform",
-            "transform": {"path": "$snap.output.body", "value": "x"}
-        }));
-        let result = evaluate(
-            &runtime,
-            EnforcementMode::Enforce,
-            json!({"output": {"body": "data"}}),
-        );
-        assert_eq!(result.verdict.decision, Decision::Deny);
-        assert_eq!(
-            result.verdict.reason.as_deref(),
-            Some("runtime_error:transform_target_forbidden")
-        );
-        assert!(result.input_identity.is_none());
-        assert!(result.enforced_identity.is_none());
-        assert!(result.action_identity.is_none());
     }
 }

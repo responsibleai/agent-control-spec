@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["engine", "sdk/python"]
+members = ["engine"]
 
 [workspace.package]
 version = "0.4.0-alpha.1"

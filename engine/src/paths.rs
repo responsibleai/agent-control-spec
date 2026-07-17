@@ -5,7 +5,7 @@ use std::{fmt, num::ParseIntError};
 pub enum PathRoot {
     Snap,
     Pi,
-    PolicyTarget,
+    Target,
     Tool,
 }
 
@@ -14,7 +14,7 @@ impl PathRoot {
         match self {
             Self::Snap => "$snap",
             Self::Pi => "$pi",
-            Self::PolicyTarget => "$policy_target",
+            Self::Target => "$target",
             Self::Tool => "$tool",
         }
     }
@@ -240,15 +240,17 @@ impl JsonPath {
         Ok(current.clone())
     }
 
-    pub fn resolve_policy_target_mut<'a>(
+    pub fn resolve_target_mut<'a>(
         &self,
-        policy_target: &'a mut JsonValue,
+        target: &'a mut JsonValue,
     ) -> Result<&'a mut JsonValue, RuntimeError> {
-        if self.root != PathRoot::PolicyTarget {
-            return Err(RuntimeError::EffectTargetForbidden(self.original.clone()));
+        if self.root != PathRoot::Target {
+            return Err(RuntimeError::TransformTargetForbidden(
+                self.original.clone(),
+            ));
         }
 
-        let mut current = policy_target;
+        let mut current = target;
         for segment in &self.segments {
             match segment {
                 PathSegment::Field(field) => match current {
@@ -285,7 +287,7 @@ fn normalize_snapshot_alias(input: &str) -> String {
 
 fn parse_root(input: &str) -> Result<(PathRoot, usize), PathParseError> {
     let roots = [
-        ("$policy_target", PathRoot::PolicyTarget),
+        ("$target", PathRoot::Target),
         ("$snap", PathRoot::Snap),
         ("$tool", PathRoot::Tool),
         ("$pi", PathRoot::Pi),
@@ -307,7 +309,7 @@ fn parse_root(input: &str) -> Result<(PathRoot, usize), PathParseError> {
 pub struct PathEnv<'a> {
     pub snap: Option<&'a JsonValue>,
     pub pi: Option<&'a JsonValue>,
-    pub policy_target: Option<&'a JsonValue>,
+    pub target: Option<&'a JsonValue>,
     pub tool: Option<&'a JsonValue>,
 }
 
@@ -338,10 +340,10 @@ impl<'a> PathEnv<'a> {
         match root {
             PathRoot::Snap => self.snap,
             PathRoot::Pi => self.pi,
-            PathRoot::PolicyTarget => self.policy_target.or_else(|| {
+            PathRoot::Target => self.target.or_else(|| {
                 self.pi
                     .and_then(|pi| pi.get(pi_key::POLICY_TARGET))
-                    .and_then(|policy_target| policy_target.get(pi_key::VALUE))
+                    .and_then(|target| target.get(pi_key::VALUE))
             }),
             PathRoot::Tool => self
                 .tool

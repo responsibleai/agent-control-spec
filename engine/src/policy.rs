@@ -1,7 +1,8 @@
+use crate::point_ext::InterceptionPointExt;
 use crate::{
     canonical_json,
     constants::{cedar_field, engine},
-    InterventionPoint, JsonValue, RuntimeError,
+    InterceptionPoint, JsonValue, RuntimeError,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -296,18 +297,20 @@ fn validate_cedar_config(config: &CedarPolicyConfig) -> Result<(), RuntimeError>
 }
 
 pub fn validate_policy_binding(
-    intervention_point: InterventionPoint,
+    intervention_point: InterceptionPoint,
     binding: &PolicyBinding,
     config: &PolicyConfig,
 ) -> Result<(), RuntimeError> {
     if binding.id.trim().is_empty() {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "policy.id for intervention point {intervention_point} must not be empty"
+            "policy.id for intervention point {} must not be empty",
+            intervention_point.name()
         )));
     }
     validate_optional_string("policy.query", binding.query.as_deref()).map_err(|error| {
         RuntimeError::ManifestInvalid(format!(
-            "invalid policy binding for intervention point {intervention_point}: {}",
+            "invalid policy binding for intervention point {}: {}",
+            intervention_point.name(),
             error.detail()
         ))
     })?;
@@ -318,7 +321,8 @@ pub fn validate_policy_binding(
         };
         if binding.query.as_deref().or(top_level_query).is_none() {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "rego policy for intervention point {intervention_point} requires policy.query"
+                "rego policy for intervention point {} requires policy.query",
+                intervention_point.name()
             )));
         }
     }
@@ -500,7 +504,7 @@ mod cedar_manifest_tests {
 
     fn cedar_manifest(policy_body: &str) -> String {
         format!(
-            r#"agent_control_specification_version: 0.3.0-alpha
+            r#"agent_control_specification_version: 0.4.0-alpha.1
 policies:
   guard:
     type: cedar
@@ -517,7 +521,7 @@ intervention_points:
 
     #[test]
     fn rego_with_cedar_policy_set_field_is_rejected() {
-        let yaml = r#"agent_control_specification_version: 0.3.0-alpha
+        let yaml = r#"agent_control_specification_version: 0.4.0-alpha.1
 policies:
   bad_rego:
     type: rego
@@ -542,7 +546,7 @@ intervention_points:
 
     #[test]
     fn rego_with_cedar_policy_path_field_is_rejected() {
-        let yaml = r#"agent_control_specification_version: 0.3.0-alpha
+        let yaml = r#"agent_control_specification_version: 0.4.0-alpha.1
 policies:
   bad_rego:
     type: rego

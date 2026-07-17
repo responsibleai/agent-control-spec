@@ -67,7 +67,7 @@ mod tests {
             fields: BTreeMap::from([
                 (ANNOTATOR_TYPE.to_string(), json!(TYPE_ENDPOINT)),
                 (FIELD_ENDPOINT.to_string(), json!(url)),
-                (FIELD_FROM.to_string(), json!("$policy_target")),
+                (FIELD_FROM.to_string(), json!("$target")),
                 (FIELD_TIMEOUT_MS.to_string(), json!(1000)),
                 ("purpose".to_string(), json!("probe")),
             ]),
@@ -96,7 +96,7 @@ mod tests {
             fields: BTreeMap::from([
                 (ANNOTATOR_TYPE.to_string(), json!(TYPE_ENDPOINT)),
                 (FIELD_ENDPOINT.to_string(), json!(url)),
-                (FIELD_FROM.to_string(), json!("$policy_target")),
+                (FIELD_FROM.to_string(), json!("$target")),
                 (FIELD_TIMEOUT_MS.to_string(), json!(1000)),
                 (FIELD_API_KEY.to_string(), json!("secret-key")),
                 (FIELD_API_KEY_ENV.to_string(), json!("ACS_SECRET_KEY")),
@@ -147,7 +147,7 @@ mod tests {
             fields: BTreeMap::from([
                 (ANNOTATOR_TYPE.to_string(), json!(TYPE_ENDPOINT)),
                 (FIELD_ENDPOINT.to_string(), json!(url)),
-                (FIELD_FROM.to_string(), json!("$policy_target")),
+                (FIELD_FROM.to_string(), json!("$target")),
                 (FIELD_TIMEOUT_MS.to_string(), json!(1000)),
             ]),
         };

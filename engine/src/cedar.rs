@@ -382,7 +382,7 @@ fn parse_entity_pattern(
 /// for [`crate::normalize_policy_output`]. Advice missing the `verdict`
 /// field, advice with an unknown verdict value, or transform advice missing
 /// its body fail closed with `runtime_error:policy_output_invalid`. Path
-/// validation (rooted at `$policy_target`) is delegated to
+/// validation (rooted at `$target`) is delegated to
 /// [`crate::verdict::Transform::from_value`] inside `normalize_policy_output`,
 /// which produces `runtime_error:transform_target_forbidden` for an
 /// out-of-target path.
@@ -874,7 +874,7 @@ mod tests {
             "rules": [
                 {"effect": "permit", "principal": "any", "action": "any", "resource": "any",
                  "advice": {"verdict": "transform", "reason": "scrub_pii",
-                            "transform": {"path": "$policy_target.value.q", "value": "[REDACTED]"}}}
+                            "transform": {"path": "$target.value.q", "value": "[REDACTED]"}}}
             ]
         }"#;
         let inv = invocation(policy_set, tool_input("agent-1", "hello"));
@@ -882,7 +882,7 @@ mod tests {
         let verdict = normalize_policy_output(output).unwrap();
         assert_eq!(verdict.decision, Decision::Transform);
         let transform = verdict.transform.as_ref().expect("transform present");
-        assert_eq!(transform.path, "$policy_target.value.q");
+        assert_eq!(transform.path, "$target.value.q");
         assert_eq!(transform.value, json!("[REDACTED]"));
         assert_eq!(verdict.reason.as_deref(), Some("scrub_pii"));
     }
@@ -898,7 +898,9 @@ mod tests {
         let inv = invocation(policy_set, tool_input("agent-1", "hello"));
         let output = CedarTestDispatcher::new().evaluate_cedar(&inv).unwrap();
         let verdict = normalize_policy_output(output).unwrap();
-        assert_eq!(verdict.decision, Decision::Escalate);
+        // The escalate intent is native: a liftable deny.
+        assert_eq!(verdict.decision, Decision::Deny);
+        assert!(verdict.is_liftable());
         assert_eq!(verdict.reason.as_deref(), Some("human_review"));
         assert_eq!(verdict.message.as_deref(), Some("needs sign-off"));
     }
@@ -914,8 +916,13 @@ mod tests {
         let inv = invocation(policy_set, tool_input("agent-1", "hello"));
         let output = CedarTestDispatcher::new().evaluate_cedar(&inv).unwrap();
         let verdict = normalize_policy_output(output).unwrap();
-        assert_eq!(verdict.decision, Decision::Warn);
-        assert_eq!(verdict.reason.as_deref(), Some("low_confidence"));
+        // The warn intent is native: allow carrying a warning.
+        assert_eq!(verdict.decision, Decision::Allow);
+        assert_eq!(verdict.warnings.len(), 1);
+        assert_eq!(
+            verdict.warnings[0].reason.as_deref(),
+            Some("low_confidence")
+        );
     }
 
     // ── D3.3 malformed advice ─────────────────────────────────────────
@@ -965,7 +972,7 @@ mod tests {
             "rules": [
                 {"effect": "permit", "principal": "any", "action": "any", "resource": "any",
                  "advice": {"verdict": "warn",
-                            "transform": {"path": "$policy_target.value", "value": "x"}}}
+                            "transform": {"path": "$target.value", "value": "x"}}}
             ]
         }"#;
         let inv = invocation(policy_set, tool_input("agent-1", "hello"));
@@ -986,7 +993,7 @@ mod tests {
         }"#;
         let inv = invocation(policy_set, tool_input("agent-1", "hello"));
         // The dispatcher emits the verdict JSON verbatim; the runtime's
-        // normalize_policy_output is what enforces $policy_target confinement
+        // normalize_policy_output is what enforces $target confinement
         // per AGT D1.1, returning runtime_error:transform_target_forbidden.
         let output = CedarTestDispatcher::new().evaluate_cedar(&inv).unwrap();
         let error = normalize_policy_output(output).unwrap_err();
