@@ -1,0 +1,21 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentControlSpec", "src\AgentControlSpec\AgentControlSpec.csproj", "{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentControlSpec.Tests", "tests\AgentControlSpec.Tests\AgentControlSpec.Tests.csproj", "{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
