@@ -367,7 +367,7 @@ fn committed_example_manifest_loads_through_path_loader() {
 fn committed_example_and_fixture_manifest_files_load_through_path_loader() {
     let roots = [
         repo_root().join("examples"),
-        repo_root().join("tests/fixtures/smoke"),
+        repo_root().join("fixtures/smoke"),
     ];
     let mut checked = Vec::new();
     for root in roots {
