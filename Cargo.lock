@@ -48,9 +48,9 @@ dependencies = [
 
 [[package]]
 name = "agent-hooks-sdk"
-version = "0.1.0-alpha.2"
+version = "0.1.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "776f00077b7bf9158bf406a62692ca52590157b3f99dd2dc4ab0d6e4e271732c"
+checksum = "e492033bf77b197f1cd7278cc90d50b765995ab45c1a8ea9924b52ee9fe8f8d8"
 dependencies = [
  "async-trait",
  "futures-util",
