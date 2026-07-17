@@ -1,0 +1,15 @@
+[package]
+name = "agent-control-spec-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "C ABI over the Agent Control Specification runtime for language bindings"
+
+[lib]
+name = "agent_control_spec_ffi"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+agent-control-spec = { path = "../../engine", features = ["default-dispatchers"] }
+serde_json = "1"
