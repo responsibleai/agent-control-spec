@@ -1,4 +1,4 @@
-use agent_control_spec::{InterceptionPoint, Manifest, PointKey};
+use agent_control_spec::{InterceptionPoint, Manifest};
 use serde_json::Value;
 use std::{
     fs,
@@ -158,20 +158,20 @@ fn path_loader_merges_ordered_extends_and_relative_paths() {
     assert!(manifest.annotators.contains_key("child_classifier"));
     assert!(manifest
         .intervention_points
-        .contains_key(&PointKey(InterceptionPoint::Input)));
+        .contains_key(&InterceptionPoint::Input));
     assert!(manifest
         .intervention_points
-        .contains_key(&PointKey(InterceptionPoint::Output)));
+        .contains_key(&InterceptionPoint::Output));
     assert!(manifest
         .intervention_points
-        .contains_key(&PointKey(InterceptionPoint::PreToolCall)));
+        .contains_key(&InterceptionPoint::PreToolCall));
 
-    let input = &manifest.intervention_points[&PointKey(InterceptionPoint::Input)];
+    let input = &manifest.intervention_points[&InterceptionPoint::Input];
     assert_eq!(input.policy.id, "shared_policy");
     assert!(input.annotations.contains_key("base_classifier"));
     assert!(input.annotations.contains_key("child_classifier"));
     assert_eq!(
-        manifest.intervention_points[&PointKey(InterceptionPoint::Output)]
+        manifest.intervention_points[&InterceptionPoint::Output]
             .policy
             .id,
         "shared_policy"
@@ -324,7 +324,7 @@ fn path_loader_allows_extends_inside_trust_root() {
     assert!(manifest.policies.contains_key("confinement_policy"));
     assert!(manifest
         .intervention_points
-        .contains_key(&PointKey(InterceptionPoint::Input)));
+        .contains_key(&InterceptionPoint::Input));
 }
 
 #[test]

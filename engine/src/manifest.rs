@@ -1,4 +1,4 @@
-use crate::point_ext::{InterceptionPointExt, PointKey};
+use crate::point_ext::InterceptionPointExt;
 use crate::{
     annotation::{AnnotationConfig, AnnotatorConfig},
     constants::manifest_version,
@@ -27,7 +27,7 @@ pub struct Manifest {
     #[serde(default)]
     pub policies: BTreeMap<String, PolicyConfig>,
     #[serde(default)]
-    pub intervention_points: BTreeMap<PointKey, InterventionPointConfig>,
+    pub intervention_points: BTreeMap<InterceptionPoint, InterventionPointConfig>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolConfig>,
     #[serde(default)]
@@ -298,7 +298,7 @@ impl Manifest {
         }
 
         for (intervention_point, config) in &self.intervention_points {
-            validate_point_config(intervention_point.0, config, self)?;
+            validate_point_config(*intervention_point, config, self)?;
         }
 
         if let Some(approval) = &self.approval {
@@ -318,19 +318,19 @@ fn validate_point_config(
     if policy_target.trim().is_empty() {
         return Err(RuntimeError::ManifestInvalid(format!(
             "intervention point {} must define policy_target after extends resolution",
-            intervention_point.name()
+            intervention_point
         )));
     }
     let policy_target_path = JsonPath::parse_with_snapshot_alias(policy_target).map_err(|err| {
         RuntimeError::ManifestInvalid(format!(
             "invalid policy_target for intervention point {}: {err}",
-            intervention_point.name()
+            intervention_point
         ))
     })?;
     if policy_target_path.root() != PathRoot::Snap {
         return Err(RuntimeError::ManifestInvalid(format!(
             "policy_target for intervention point {} must use $, $snap, or a snapshot alias",
-            intervention_point.name()
+            intervention_point
         )));
     }
 
@@ -338,7 +338,7 @@ fn validate_point_config(
         if kind.trim().is_empty() {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "policy_target_kind for intervention point {} must not be empty",
-                intervention_point.name()
+                intervention_point
             )));
         }
     }
@@ -347,19 +347,19 @@ fn validate_point_config(
         if !intervention_point.is_tool_point() {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "tool_name_from is only valid on tool intervention points, not {}",
-                intervention_point.name()
+                intervention_point
             )));
         }
         let tool_path = JsonPath::parse_with_snapshot_alias(tool_name_from).map_err(|err| {
             RuntimeError::ManifestInvalid(format!(
                 "invalid tool_name_from for intervention point {}: {err}",
-                intervention_point.name()
+                intervention_point
             ))
         })?;
         if tool_path.root() != PathRoot::Snap {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "tool_name_from for intervention point {} must use $, $snap, or a snapshot alias",
-                intervention_point.name()
+                intervention_point
             )));
         }
     }
@@ -368,29 +368,29 @@ fn validate_point_config(
         if !manifest.annotators.contains_key(annotation_name) {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "intervention point {} references unknown annotator '{annotation_name}'",
-                intervention_point.name()
+                intervention_point
             )));
         }
         if annotation_config.fields.contains_key("annotator") {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "annotation '{annotation_name}' for intervention point {} must use the annotations map key as the annotator name", intervention_point.name()
+                "annotation '{annotation_name}' for intervention point {} must use the annotations map key as the annotator name", intervention_point
             )));
         }
         if annotation_config.from.trim().is_empty() {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "annotation '{annotation_name}' for intervention point {} must define from",
-                intervention_point.name()
+                intervention_point
             )));
         }
         let from_path =
             JsonPath::parse_with_snapshot_alias(&annotation_config.from).map_err(|err| {
                 RuntimeError::ManifestInvalid(format!(
-                    "invalid annotation '{annotation_name}' from path for intervention point {}: {err}", intervention_point.name()
+                    "invalid annotation '{annotation_name}' from path for intervention point {}: {err}", intervention_point
                 ))
             })?;
         if from_path.references_pi_annotations() {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "annotation '{annotation_name}' for intervention point {} must not reference existing policy-input annotations", intervention_point.name()
+                "annotation '{annotation_name}' for intervention point {} must not reference existing policy-input annotations", intervention_point
             )));
         }
     }
@@ -399,14 +399,13 @@ fn validate_point_config(
     if policy.id.trim().is_empty() {
         return Err(RuntimeError::ManifestInvalid(format!(
             "intervention point {} must define policy after extends resolution",
-            intervention_point.name()
+            intervention_point
         )));
     }
     let policy_config = manifest.policies.get(&policy.id).ok_or_else(|| {
         RuntimeError::ManifestInvalid(format!(
             "intervention point {} references unknown policy '{}'",
-            intervention_point.name(),
-            policy.id
+            intervention_point, policy.id
         ))
     })?;
     validate_policy_binding(intervention_point, policy, policy_config)?;
@@ -1249,14 +1248,14 @@ where
 }
 
 fn merge_intervention_points(
-    existing: &mut BTreeMap<PointKey, InterventionPointConfig>,
-    incoming: BTreeMap<PointKey, InterventionPointConfig>,
+    existing: &mut BTreeMap<InterceptionPoint, InterventionPointConfig>,
+    incoming: BTreeMap<InterceptionPoint, InterventionPointConfig>,
     source: &ManifestSource,
 ) -> Result<(), RuntimeError> {
     for (intervention_point, config) in incoming {
         match existing.get_mut(&intervention_point) {
             Some(existing_config) => {
-                merge_point_config(intervention_point.0, existing_config, config, source)?
+                merge_point_config(intervention_point, existing_config, config, source)?
             }
             None => {
                 existing.insert(intervention_point, config);
@@ -1275,7 +1274,7 @@ fn merge_point_config(
     if existing == &incoming {
         return Ok(());
     }
-    let point_path = format!("intervention_points.{}", intervention_point.name());
+    let point_path = format!("intervention_points.{}", intervention_point);
     if !incoming.policy_target.is_empty() {
         if existing.policy_target.is_empty() {
             existing.policy_target = incoming.policy_target;
@@ -1708,7 +1707,7 @@ intervention_points:
         let manifest = Manifest::from_path(&overlay).unwrap();
         let input = manifest
             .intervention_points
-            .get(&PointKey(InterceptionPoint::Input))
+            .get(&InterceptionPoint::Input)
             .unwrap();
         assert_eq!(input.policy_target, "$snap.input");
         assert_eq!(input.policy.id, "p");

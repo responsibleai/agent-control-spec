@@ -1,4 +1,3 @@
-use crate::point_ext::InterceptionPointExt;
 use crate::{
     canonical_json,
     constants::{cedar_field, engine},
@@ -304,13 +303,13 @@ pub fn validate_policy_binding(
     if binding.id.trim().is_empty() {
         return Err(RuntimeError::ManifestInvalid(format!(
             "policy.id for intervention point {} must not be empty",
-            intervention_point.name()
+            intervention_point
         )));
     }
     validate_optional_string("policy.query", binding.query.as_deref()).map_err(|error| {
         RuntimeError::ManifestInvalid(format!(
             "invalid policy binding for intervention point {}: {}",
-            intervention_point.name(),
+            intervention_point,
             error.detail()
         ))
     })?;
@@ -322,7 +321,7 @@ pub fn validate_policy_binding(
         if binding.query.as_deref().or(top_level_query).is_none() {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "rego policy for intervention point {} requires policy.query",
-                intervention_point.name()
+                intervention_point
             )));
         }
     }

@@ -1,4 +1,3 @@
-use crate::point_ext::InterceptionPointExt;
 use crate::{
     annotation::{AnnotatorDispatcher, AnnotatorInvocation},
     constants::policy_input as pi_key,
@@ -216,7 +215,7 @@ impl Runtime {
         let point_config = self
             .manifest
             .intervention_points
-            .get(&crate::point_ext::PointKey(request.intervention_point))
+            .get(&request.intervention_point)
             .ok_or_else(|| {
                 RuntimeError::InterventionPointUnknown(
                     request.intervention_point.as_str().to_string(),
@@ -232,7 +231,7 @@ impl Runtime {
             JsonPath::parse_with_snapshot_alias(policy_target_field).map_err(|err| {
                 RuntimeError::ManifestInvalid(format!(
                     "invalid policy_target for intervention point {}: {err}",
-                    request.intervention_point.name()
+                    request.intervention_point
                 ))
             })?;
         let policy_target = policy_target_path.resolve(&PathEnv::with_snap(&request.snapshot))?;
@@ -280,8 +279,7 @@ impl Runtime {
         let policy_config = self.manifest.policies.get(&policy.id).ok_or_else(|| {
             RuntimeError::ManifestInvalid(format!(
                 "intervention point {} references unknown policy '{}'",
-                request.intervention_point.name(),
-                policy.id
+                request.intervention_point, policy.id
             ))
         })?;
 
@@ -384,7 +382,7 @@ impl Runtime {
         if point_config.annotations.len() > self.limits.max_annotators_per_point {
             return Err(RuntimeError::ResourceLimitExceeded(format!(
                 "intervention point {} invokes {} annotators, limit {}",
-                intervention_point.name(),
+                intervention_point,
                 point_config.annotations.len(),
                 self.limits.max_annotators_per_point
             )));
@@ -618,14 +616,14 @@ impl Runtime {
     fn policy_id_for(&self, intervention_point: InterceptionPoint) -> Option<&str> {
         self.manifest
             .intervention_points
-            .get(&crate::point_ext::PointKey(intervention_point))
+            .get(&intervention_point)
             .map(|config| config.policy.id.as_str())
     }
 
     fn annotators_for(&self, intervention_point: InterceptionPoint) -> Vec<String> {
         self.manifest
             .intervention_points
-            .get(&crate::point_ext::PointKey(intervention_point))
+            .get(&intervention_point)
             .map(|config| config.annotations.keys().cloned().collect())
             .unwrap_or_default()
     }

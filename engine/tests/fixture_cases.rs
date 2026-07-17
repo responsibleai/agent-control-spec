@@ -253,7 +253,7 @@ fn run_manifest_case(case: &FixtureCase) {
             let mut actual: Vec<_> = manifest
                 .intervention_points
                 .keys()
-                .map(|intervention_point| intervention_point.0.as_str().to_string())
+                .map(|intervention_point| intervention_point.as_str().to_string())
                 .collect();
             actual.sort();
             let mut expected_sorted = expected_intervention_point_names.clone();
