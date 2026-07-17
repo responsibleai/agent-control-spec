@@ -14,7 +14,7 @@ else:
     _NATIVE_AVAILABLE = True
 
 
-MANIFEST_YAML = """agent_control_specification_version: 0.3.1-beta
+MANIFEST_YAML = """agent_control_specification_version: 0.4.0-alpha.1
 metadata:
   name: basic-host-example
 policies:
@@ -124,7 +124,7 @@ class NativeRuntimeTests(unittest.TestCase):
         self.assertEqual(list(result.verdict.result_labels), ["confidential"])
 
     def test_native_runtime_preserves_explicit_null_transform(self):
-        manifest = """agent_control_specification_version: 0.3.1-beta
+        manifest = """agent_control_specification_version: 0.4.0-alpha.1
 policies:
   p:
     type: custom
@@ -214,7 +214,7 @@ intervention_points:
         # from_native and the other SDKs. A live audit found these loaders had
         # dropped the perf_telemetry argument.
         chain_child = (
-            "agent_control_specification_version: 0.3.1-beta\n"
+            "agent_control_specification_version: 0.4.0-alpha.1\n"
             "tools:\n"
             "  noop_tool:\n"
             "    clearance: public\n"
@@ -249,7 +249,7 @@ _SUPPORT_MANIFEST = (
     Path(__file__).resolve().parents[3] / "examples/support_agent/manifest.yaml"
 )
 
-NON_REGO_MANIFEST = """agent_control_specification_version: 0.3.1-beta
+NON_REGO_MANIFEST = """agent_control_specification_version: 0.4.0-alpha.1
 metadata:
   name: zero-config-non-rego
 policies:
@@ -264,7 +264,7 @@ intervention_points:
     policy_target: $.input
 """
 
-REGO_MANIFEST = """agent_control_specification_version: 0.3.1-beta
+REGO_MANIFEST = """agent_control_specification_version: 0.4.0-alpha.1
 metadata:
   name: zero-config-rego
 policies:

@@ -1,6 +1,6 @@
 # Agent Control Specification
 
-This document specifies version `0.3.1-beta` of the Agent Control Specification (ACS). Its status is Draft.
+This document specifies version `0.4.0-alpha.1` of the Agent Control Specification (ACS). Its status is Draft.
 
 The machine readable manifest contract is `schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository. That schema governs manifest syntax. This document governs runtime semantics, which are the evaluation order, the policy input shape, verdict handling, transform application, and fail closed behavior.
 
@@ -69,7 +69,7 @@ A manifest MUST be validated before any evaluation uses it. A manifest that fail
 
 ### 2.1 Version
 
-`agent_control_specification_version` MUST be a non empty string. This document describes the value `0.3.1-beta`.
+`agent_control_specification_version` MUST be a non empty string. This document describes the value `0.4.0-alpha.1`.
 
 ### 2.2 extends
 
@@ -489,7 +489,7 @@ This appendix is informative. It walks one evaluation from end to end.
 A host governs the `input` intervention point with a custom policy. The manifest binds the policy and selects the user text as the policy target.
 
 ```yaml
-agent_control_specification_version: 0.3.1-beta
+agent_control_specification_version: 0.4.0-alpha.1
 metadata:
   name: worked-example
 policies:

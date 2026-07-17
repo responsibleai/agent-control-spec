@@ -440,7 +440,7 @@ class StreamingAdapterHardeningTests(unittest.IsolatedAsyncioTestCase):
 @unittest.skipUnless(_NATIVE_AVAILABLE, "agent_control_specification._native extension is not built")
 class AnnotatorOrderingStreamingTests(unittest.TestCase):
     def test_annotator_dispatch_precedes_policy_evaluation(self):
-        manifest = """agent_control_specification_version: 0.3.1-beta
+        manifest = """agent_control_specification_version: 0.4.0-alpha.1
 policies:
   p:
     type: custom

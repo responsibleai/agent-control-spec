@@ -47,24 +47,19 @@
       "cause": "The dispatcher output could not be normalized."
     },
     {
-      "reason": "runtime_error:effect_invalid",
+      "reason": "runtime_error:transform_invalid",
       "producer": "core-runtime",
-      "cause": "An effect was malformed or did not apply to its target."
+      "cause": "transform.path failed the transform grammar."
     },
     {
-      "reason": "runtime_error:effect_target_forbidden",
+      "reason": "runtime_error:transform_target_forbidden",
       "producer": "core-runtime",
-      "cause": "An effect path pointed outside $target."
+      "cause": "transform.path is not rooted at $target."
     },
     {
       "reason": "runtime_error:resource_limit_exceeded",
       "producer": "core-runtime",
       "cause": "Evaluation or manifest loading exceeded a configured resource limit."
-    },
-    {
-      "reason": "runtime_error:approval_action_mismatch",
-      "producer": "core-runtime",
-      "cause": "An approved action identity did not match the current action identity."
     },
     {
       "reason": "runtime_error:approval_resolver_failed",

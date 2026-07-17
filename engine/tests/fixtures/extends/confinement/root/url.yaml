@@ -1,0 +1,5 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+extends:
+  - http://example.invalid/base.yaml
+metadata:
+  name: remote-attempt
