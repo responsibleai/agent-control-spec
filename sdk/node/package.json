@@ -1,0 +1,39 @@
+{
+  "name": "@responsibleai/agent-control-spec",
+  "version": "0.4.0-alpha.1",
+  "description": "Agent Control Specification: a policy decision runtime plugging into agent-hooks as an interceptor. Node wrapper over the Rust engine.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/responsibleai/agent-control-spec.git"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "binding.js",
+    "binding.d.ts",
+    "*.node"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "napi": {
+    "binaryName": "agent-control-spec",
+    "packageName": "@responsibleai/agent-control-spec"
+  },
+  "scripts": {
+    "build:native": "napi build --release --platform --manifest-path native/Cargo.toml --cwd . --js binding.js --dts binding.d.ts --output-dir .",
+    "build:native:debug": "napi build --platform --manifest-path native/Cargo.toml --cwd . --js binding.js --dts binding.d.ts --output-dir .",
+    "build": "npm run build:native && tsc",
+    "test": "npm run build && node --test test/*.mjs"
+  },
+  "dependencies": {
+    "@responsibleai/agent-hooks": "0.1.0-alpha.2"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.7.2",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
+  }
+}
