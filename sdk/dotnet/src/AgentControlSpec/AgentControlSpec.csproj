@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>ResponsibleAI.AgentControlSpec</PackageId>
+    <Version>0.4.0-alpha.1</Version>
+    <Description>Agent Control Specification: a policy decision runtime plugging into agent-hooks as an interceptor. .NET wrapper over the Rust engine (native library agent_control_spec_ffi resolved from the loader path).</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/responsibleai/agent-control-spec</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ResponsibleAI.AgentHooks" Version="0.1.0-alpha.2" />
+  </ItemGroup>
+
+</Project>
