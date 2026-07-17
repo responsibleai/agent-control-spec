@@ -1,7 +1,8 @@
 # AGENT-HOOKS-0.1 conformance report
 
-Host adapter: `agent-control-spec-reference-host` (agent-hooks
-emitter loop; see `engine/tests/agent_hooks_conformance.rs`).
+Host adapter: `agent-control-spec-reference-host` (this
+repository's `ctk::Harness` over the agent-hooks emitter loop;
+see `engine/tests/agent_hooks_conformance.rs`).
 Corpus: vendored per `PROVENANCE.md`.
 
 | Part | Passed | Failed |
