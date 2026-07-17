@@ -1,0 +1,126 @@
+//! Zero-config policy dispatcher for the language bindings.
+//!
+//! A host wiring the runtime through a native binding (Node, .NET)
+//! cannot supply a Rust [`PolicyDispatcher`], so the binding surface
+//! constructs this one: each prepared invocation routes to the bundled
+//! evaluator for its engine type. Failures return [`RuntimeError`] and
+//! are normalized by the runtime into fail-closed `deny` verdicts with
+//! `runtime_error:*` reasons — no error crosses the binding boundary
+//! as anything but a verdict.
+
+use crate::policy::PreparedPolicyInvocation;
+use crate::runtime::PolicyDispatcher;
+use crate::{JsonValue, RuntimeError};
+
+#[cfg(feature = "cedar")]
+use crate::cedar::CedarBuiltinDispatcher;
+#[cfg(feature = "opa")]
+use crate::opa::{OpaPolicyDispatcher, OpaRegoRunner};
+
+/// Routes each policy invocation to the bundled evaluator for its
+/// engine type: Rego through the OPA runner (`opa` feature), Cedar
+/// through the built-in evaluator (`cedar` feature), and `test`
+/// policies through their manifest-embedded `verdict` value. Custom
+/// policies require a host-supplied dispatcher and fail closed here.
+#[derive(Debug, Default)]
+pub struct BindingPolicyDispatcher {
+    #[cfg(feature = "opa")]
+    opa: OpaPolicyDispatcher,
+    #[cfg(feature = "cedar")]
+    cedar: CedarBuiltinDispatcher,
+}
+
+impl BindingPolicyDispatcher {
+    pub fn new() -> Self {
+        Self {
+            #[cfg(feature = "opa")]
+            opa: OpaPolicyDispatcher::with_runner(OpaRegoRunner::from_environment()),
+            #[cfg(feature = "cedar")]
+            cedar: CedarBuiltinDispatcher::new(),
+        }
+    }
+}
+
+impl PolicyDispatcher for BindingPolicyDispatcher {
+    fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+        match invocation {
+            #[cfg(feature = "opa")]
+            PreparedPolicyInvocation::Rego(_) => self.opa.evaluate(invocation),
+            #[cfg(not(feature = "opa"))]
+            PreparedPolicyInvocation::Rego(_) => Err(RuntimeError::PolicyInvocationFailed(
+                "Rego policies require the 'opa' feature or a host dispatcher".to_string(),
+            )),
+            #[cfg(feature = "cedar")]
+            PreparedPolicyInvocation::Cedar(_) => self.cedar.evaluate(invocation),
+            #[cfg(not(feature = "cedar"))]
+            PreparedPolicyInvocation::Cedar(_) => Err(RuntimeError::PolicyInvocationFailed(
+                "Cedar policies require the 'cedar' feature or a host dispatcher".to_string(),
+            )),
+            PreparedPolicyInvocation::Test(test) => {
+                test.adapter_config.get("verdict").cloned().ok_or_else(|| {
+                    RuntimeError::PolicyInvocationFailed(
+                        "test policy declares no 'verdict' in its configuration".to_string(),
+                    )
+                })
+            }
+            PreparedPolicyInvocation::Custom(custom) => {
+                Err(RuntimeError::PolicyInvocationFailed(format!(
+                    "custom policy adapter '{}' requires a host-supplied dispatcher; \
+                     none is available over this binding",
+                    custom.adapter
+                )))
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::policy::TestPolicyInvocation;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn test_invocation(config: BTreeMap<String, JsonValue>) -> PreparedPolicyInvocation {
+        PreparedPolicyInvocation::Test(TestPolicyInvocation {
+            adapter_config: config,
+            input: json!({}),
+            canonical_input: "{}".to_string(),
+        })
+    }
+
+    #[test]
+    fn test_policy_echoes_configured_verdict() {
+        let mut config = BTreeMap::new();
+        config.insert(
+            "verdict".to_string(),
+            json!({"decision": "deny", "reason": "blocked"}),
+        );
+        let out = BindingPolicyDispatcher::new()
+            .evaluate(&test_invocation(config))
+            .expect("configured verdict");
+        assert_eq!(out["decision"], "deny");
+    }
+
+    #[test]
+    fn test_policy_without_verdict_fails_closed() {
+        let err = BindingPolicyDispatcher::new()
+            .evaluate(&test_invocation(BTreeMap::new()))
+            .expect_err("no verdict configured");
+        assert_eq!(err.reason(), "runtime_error:policy_invocation_failed");
+    }
+
+    #[test]
+    fn custom_policy_fails_closed() {
+        let invocation = PreparedPolicyInvocation::Custom(crate::policy::CustomPolicyInvocation {
+            adapter: "host-only".to_string(),
+            adapter_config: BTreeMap::new(),
+            input: json!({}),
+            canonical_input: "{}".to_string(),
+        });
+        let err = BindingPolicyDispatcher::new()
+            .evaluate(&invocation)
+            .expect_err("custom needs a host dispatcher");
+        assert_eq!(err.reason(), "runtime_error:policy_invocation_failed");
+    }
+}

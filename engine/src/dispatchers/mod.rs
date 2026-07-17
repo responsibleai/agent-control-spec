@@ -7,6 +7,7 @@
 //! networking dependency unless a host opts in. These dispatchers back the
 //! zero-config defaults surfaced through the FFI builder.
 
+mod binding;
 pub mod bundled;
 mod classifier;
 mod constants;
@@ -16,6 +17,7 @@ mod http;
 mod llm;
 mod resolve;
 
+pub use binding::BindingPolicyDispatcher;
 pub use bundled::{
     fold_score_verdict, BundledClassifierProvider, ClassifierVerdict, HttpTransport,
     ResolvedClassifierConfig, StubHttpTransport, TransportRequest, TransportResponse,
