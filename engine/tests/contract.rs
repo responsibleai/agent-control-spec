@@ -1,6 +1,6 @@
 use agent_control_spec::{
     canonical_json, AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint,
-    JsonPath, JsonValue, Manifest, PathEnv, PerfTelemetry, PointKey, PolicyDispatcher,
+    JsonPath, JsonValue, Manifest, PathEnv, PerfTelemetry, PolicyDispatcher,
     PreparedPolicyInvocation, Runtime, RuntimeError, TelemetryEvent, TelemetryEventType,
     TelemetrySink,
 };
@@ -269,7 +269,7 @@ intervention_points:
     ] {
         assert!(manifest
             .intervention_points
-            .contains_key(&PointKey(intervention_point)));
+            .contains_key(&intervention_point));
         assert_eq!(
             InterceptionPoint::from_str(intervention_point.as_str()).unwrap(),
             intervention_point
@@ -578,13 +578,13 @@ intervention_points:
     .unwrap();
     assert!(valid
         .intervention_points
-        .contains_key(&PointKey(InterceptionPoint::Input)));
+        .contains_key(&InterceptionPoint::Input));
     assert!(valid
         .intervention_points
-        .contains_key(&PointKey(InterceptionPoint::PreToolCall)));
+        .contains_key(&InterceptionPoint::PreToolCall));
     assert!(valid
         .intervention_points
-        .contains_key(&PointKey(InterceptionPoint::Output)));
+        .contains_key(&InterceptionPoint::Output));
 
     for invalid_policy in [r#"type: mock"#, r#"type: rego"#, r#"type: custom"#] {
         let manifest_yaml = format!(

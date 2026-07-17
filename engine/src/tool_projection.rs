@@ -17,14 +17,14 @@ pub fn project_tool(
     if !intervention_point.is_tool_point() {
         return Err(RuntimeError::ManifestInvalid(format!(
             "tool_name_from is only valid on tool intervention points, not {}",
-            intervention_point.name()
+            intervention_point
         )));
     }
 
     let path = JsonPath::parse_with_snapshot_alias(tool_name_from).map_err(|err| {
         RuntimeError::ManifestInvalid(format!(
             "invalid tool_name_from for intervention_point {}: {err}",
-            intervention_point.name()
+            intervention_point
         ))
     })?;
     let value = path.resolve(&PathEnv::with_snap(snapshot))?;

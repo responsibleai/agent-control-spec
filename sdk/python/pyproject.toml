@@ -13,11 +13,9 @@ authors = [{ name = "Agent Control Specification contributors" }]
 keywords = ["agents", "policy", "runtime", "security"]
 dependencies = [
   "pyyaml>=6.0",
-  # AGENT-HOOKS-0.1 migration: ACS becomes a conformant consumer of the
-  # agent-hooks contract. Path dependency until the package is published;
-  # replace with "agent-hooks>=0.1,<0.2" once responsibleai/agent-hooks
-  # ships to PyPI. See policy-engine/docs/AGENT-HOOKS-MIGRATION.md.
-  "agent-hooks @ file://${PROJECT_ROOT}/../../../../agent-hooks/main/sdk/python",
+  # AGENT-HOOKS-0.1 contract (import name agent_hooks). Exact pin while
+  # the upstream is pre-release; relax to a compatible range at 0.1.0.
+  "agent-hooks-sdk==0.1.0a3",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
