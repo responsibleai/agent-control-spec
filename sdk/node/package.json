@@ -12,15 +12,20 @@
   "files": [
     "dist",
     "binding.js",
-    "binding.d.ts",
-    "*.node"
+    "binding.d.ts"
   ],
   "engines": {
     "node": ">=20"
   },
   "napi": {
     "binaryName": "agent-control-spec",
-    "packageName": "@responsibleai/agent-control-spec"
+    "packageName": "@responsibleai/agent-control-spec",
+    "targets": [
+      "x86_64-unknown-linux-gnu",
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc"
+    ]
   },
   "scripts": {
     "build:native": "napi build --release --platform --manifest-path native/Cargo.toml --cwd . --js binding.js --dts binding.d.ts --output-dir .",
