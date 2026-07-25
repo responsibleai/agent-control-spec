@@ -14,7 +14,8 @@ hosts, per AGENT-HOOKS-0.1 §5/§11).
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from agent_hooks import Verdict
 
