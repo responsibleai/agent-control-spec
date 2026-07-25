@@ -1,0 +1,34 @@
+# Weekly grouped dependency updates. Examples are pinned demos and are
+# deliberately excluded; the release workflow's action pins are covered
+# by the github-actions ecosystem.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - "/"
+      - "/sdk/python"
+      - "/sdk/node/native"
+      - "/sdk/ffi"
+    schedule: { interval: weekly }
+    groups:
+      rust: { patterns: ["*"] }
+  - package-ecosystem: npm
+    directory: "/sdk/node"
+    schedule: { interval: weekly }
+    groups:
+      node: { patterns: ["*"] }
+  - package-ecosystem: pip
+    directory: "/sdk/python"
+    schedule: { interval: weekly }
+    groups:
+      python: { patterns: ["*"] }
+  - package-ecosystem: nuget
+    directory: "/sdk/dotnet"
+    schedule: { interval: weekly }
+    groups:
+      dotnet: { patterns: ["*"] }
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: weekly }
+    groups:
+      actions: { patterns: ["*"] }
