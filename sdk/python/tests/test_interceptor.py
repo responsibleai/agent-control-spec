@@ -7,9 +7,8 @@ import asyncio
 import pathlib
 
 import pytest
-from agent_hooks import AgentContextBuilder, EnforcementMode, InterceptionEmitter
-
 from agent_control_spec import AcsInterceptor
+from agent_hooks import AgentContextBuilder, EnforcementMode, InterceptionEmitter
 
 MANIFEST = str(pathlib.Path(__file__).parent / "fixtures" / "manifest.yaml")
 
@@ -54,7 +53,9 @@ def test_engine_failure_fails_closed_as_runtime_error_deny():
 
 
 def test_unreadable_manifest_is_construction_error():
-    with pytest.raises(Exception):
+    # The native manifest loader maps load failures to ValueError
+    # (PyValueError in the binding).
+    with pytest.raises(ValueError):
         AcsInterceptor("/nonexistent/manifest.yaml")
 
 
