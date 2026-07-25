@@ -1,0 +1,41 @@
+# Wrapper-test manifest: deterministic `test` policies only, so the
+# suite needs no external policy engine.
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: python-wrapper-test
+policies:
+  allow_all:
+    type: test
+    verdict:
+      decision: allow
+  block_tool:
+    type: test
+    verdict:
+      decision: deny
+      reason: blocked_by_policy
+      message: tool call denied by test policy
+  needs_approval:
+    type: test
+    verdict:
+      decision: deny
+      reason: requires_human
+      approval: {}
+  broken:
+    type: test
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy:
+      id: allow_all
+  pre_tool_call:
+    policy_target: "$.tool_call.args"
+    policy:
+      id: block_tool
+  output:
+    policy_target: "$.output"
+    policy:
+      id: needs_approval
+  post_tool_call:
+    policy_target: "$.tool_result.value"
+    policy:
+      id: broken
