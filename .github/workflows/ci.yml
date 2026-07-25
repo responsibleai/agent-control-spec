@@ -25,6 +25,25 @@ jobs:
       - run: cargo clippy --workspace --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-features --locked
 
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with: { python-version: "3.12" }
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - name: Install locked dependencies, then the package itself
+        # requirements-dev.lock pins every transitive dep including the
+        # maturin build backend; --no-build-isolation makes the editable
+        # install use that pinned maturin, and [tool.maturin] locked=true
+        # pins the Rust side via sdk/python/Cargo.lock.
+        run: |
+          uv pip install --system -r sdk/python/requirements-dev.lock
+          uv pip install --system --no-deps --no-build-isolation -e ./sdk/python
+      - run: ruff format --check sdk/python scripts && ruff check sdk/python scripts
+      - run: pytest sdk/python/tests -v
+
   lint:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +55,8 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
           tar -xzf actionlint.tgz actionlint
           ./actionlint -color
+      - name: Version surfaces agree
+        run: python3 scripts/check-version-consistency.py
       - name: JSON artefacts parse
         run: |
           set -e

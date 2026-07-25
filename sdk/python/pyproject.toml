@@ -24,6 +24,7 @@ dependencies = ["agent-hooks-sdk==0.1.0a3"]
 Repository = "https://github.com/responsibleai/agent-control-spec"
 
 [tool.maturin]
+locked = true
 features = ["pyo3/extension-module", "pyo3/abi3-py311"]
 module-name = "agent_control_spec._native"
 python-source = "."
