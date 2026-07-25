@@ -1,0 +1,24 @@
+{
+  "name": "@responsibleai/agent-control-spec-win32-x64-msvc",
+  "version": "0.4.0-alpha.1",
+  "cpu": [
+    "x64"
+  ],
+  "main": "agent-control-spec.win32-x64-msvc.node",
+  "files": [
+    "agent-control-spec.win32-x64-msvc.node"
+  ],
+  "description": "Prebuilt win32-x64-msvc native binary for @responsibleai/agent-control-spec.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/responsibleai/agent-control-spec.git",
+    "directory": "sdk/node"
+  },
+  "os": [
+    "win32"
+  ]
+}
