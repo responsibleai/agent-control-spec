@@ -41,17 +41,17 @@ def read_versions() -> dict[str, str]:
     versions: dict[str, str] = {}
 
     cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
-    m = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.M)
+    m = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.MULTILINE)
     assert m, "no workspace version in Cargo.toml"
     versions["Cargo.toml"] = m.group(1)
 
     pycargo = (ROOT / "sdk/python/Cargo.toml").read_text(encoding="utf-8")
-    m = re.search(r'^version\s*=\s*"([^"]+)"', pycargo, re.M)
+    m = re.search(r'^version\s*=\s*"([^"]+)"', pycargo, re.MULTILINE)
     assert m, "no version in sdk/python/Cargo.toml"
     versions["sdk/python/Cargo.toml"] = m.group(1)
 
     py = (ROOT / "sdk/python/pyproject.toml").read_text(encoding="utf-8")
-    m = re.search(r'^version\s*=\s*"([^"]+)"', py, re.M)
+    m = re.search(r'^version\s*=\s*"([^"]+)"', py, re.MULTILINE)
     assert m, "no version in sdk/python/pyproject.toml"
     versions["sdk/python/pyproject.toml"] = m.group(1)
 
