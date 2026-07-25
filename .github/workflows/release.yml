@@ -223,6 +223,7 @@ jobs:
               (cd "$d" && npm publish --access public --tag "$T")
             fi
           done
+          # shellcheck disable=SC2016 # ${...} below are JS template literals, not shell
           node -e '
             const fs = require("fs");
             const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
