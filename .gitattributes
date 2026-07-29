@@ -1,0 +1,5 @@
+# The streaming conformance vectors are byte-exact SSE fixtures: every
+# consumer must reproduce their outcomes from the exact bytes on disk, and
+# the "allow re-emits input verbatim" contract compares against them
+# byte-for-byte. Never let autocrlf rewrite their line endings on checkout.
+/tests/conformance/streaming/inputs/*.sse -text
