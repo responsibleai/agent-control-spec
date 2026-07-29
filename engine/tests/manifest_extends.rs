@@ -372,8 +372,11 @@ fn committed_example_and_fixture_manifest_files_load_through_path_loader() {
     let mut checked = Vec::new();
     for root in roots {
         for path in yaml_files_with_manifest_version(&root) {
-            let display = path.display().to_string();
-            if display.contains("/examples/from_agentshield/") {
+            // Component-wise so the skip also holds on Windows separators.
+            if path
+                .components()
+                .any(|component| component.as_os_str() == "from_agentshield")
+            {
                 continue;
             }
             Manifest::from_path(&path)

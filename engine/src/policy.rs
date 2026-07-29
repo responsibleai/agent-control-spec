@@ -419,6 +419,12 @@ mod path_resolution_tests {
     use serde_json::json;
     use std::path::Path;
 
+    /// Expected value of a resolved path: the same platform-native join the
+    /// resolver performs, so the assertions hold on Windows (`\`) too.
+    fn joined(base: &str, rel: &str) -> String {
+        Path::new(base).join(rel).to_string_lossy().into_owned()
+    }
+
     fn rego_with(bundle: Option<&str>, adapter: serde_json::Value) -> PolicyConfig {
         PolicyConfig::Rego(RegoPolicyConfig {
             query: Some("data.x.verdict".to_string()),
@@ -437,7 +443,10 @@ mod path_resolution_tests {
         let mut config = rego_with(Some("./policy"), json!({}));
         config.resolve_relative_paths(Path::new("/repo/agent"));
         match config {
-            PolicyConfig::Rego(c) => assert_eq!(c.bundle.as_deref(), Some("/repo/agent/./policy")),
+            PolicyConfig::Rego(c) => assert_eq!(
+                c.bundle.as_deref(),
+                Some(joined("/repo/agent", "./policy").as_str())
+            ),
             _ => panic!("expected rego"),
         }
     }
@@ -461,10 +470,10 @@ mod path_resolution_tests {
         config.resolve_relative_paths(Path::new("/base"));
         match config {
             PolicyConfig::Rego(c) => {
-                assert_eq!(c.adapter_config["data"], json!("/base/d.json"));
+                assert_eq!(c.adapter_config["data"], json!(joined("/base", "d.json")));
                 assert_eq!(
                     c.adapter_config["data_paths"],
-                    json!(["/base/a.json", "/abs/b.json"])
+                    json!([joined("/base", "a.json"), "/abs/b.json"])
                 );
             }
             _ => panic!("expected rego"),
@@ -481,7 +490,10 @@ mod path_resolution_tests {
                 .collect(),
         };
         binding.resolve_relative_paths(Path::new("/base"));
-        assert_eq!(binding.adapter_config["data"], json!("/base/rules.json"));
+        assert_eq!(
+            binding.adapter_config["data"],
+            json!(joined("/base", "rules.json"))
+        );
     }
 }
 
