@@ -237,7 +237,7 @@ def main() -> None:
             "expected_output": f"inputs/{name}.expected.sse",
         })
 
-    with open(os.path.join(HERE, "manifest.json"), "w") as f:
+    with open(os.path.join(HERE, "manifest.json"), "w", encoding="utf-8", newline="\n") as f:
         json.dump(manifest, f, indent=2, sort_keys=False)
         f.write("\n")
 

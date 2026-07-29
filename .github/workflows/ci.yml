@@ -44,6 +44,34 @@ jobs:
       - run: ruff format --check sdk/python scripts && ruff check sdk/python scripts
       - run: pytest sdk/python/tests -v
 
+  # Cross-platform build+test of the Rust workspace plus one binding's
+  # suite (Python: the maturin wheel builds and pytest runs on every OS).
+  # Advisory: NOT in the required-check set — required names must be
+  # stable and always-reporting before promotion.
+  engine-xplat:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - run: cargo test --workspace --all-features --locked
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with: { python-version: "3.12" }
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - name: Install and test the Python binding
+        # requirements-dev.lock is compiled on Linux and is not portable;
+        # this advisory job installs the package (Rust side still pinned
+        # via [tool.maturin] locked=true) plus pytest. agent-hooks-sdk
+        # ships only a manylinux wheel at 0.1.0a3, so macOS and Windows
+        # build it from the sdist with the toolchain installed above.
+        shell: bash
+        run: |
+          uv pip install --system ./sdk/python pytest
+          pytest sdk/python/tests -v
+
   lint:
     runs-on: ubuntu-latest
     steps:
