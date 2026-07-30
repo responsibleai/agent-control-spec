@@ -10,20 +10,14 @@
 #            https://pypi.org/manage/account/publishing/ (project
 #            agent-control-spec, repo responsibleai/agent-control-spec,
 #            workflow release.yml, environment release). No token.
-#   crates — trusted publishing (OIDC) can only be configured once the
-#            crate exists. First publish: cargo publish locally or set a
-#            temporary CARGO_REGISTRY_TOKEN environment secret (the
-#            token step below self-skips when the secret is absent).
-#            Then configure the publisher at
-#            https://crates.io/crates/agent-control-spec/settings and
-#            delete the secret.
-#   npm    — trusted publishing (OIDC) can only be configured once each
-#            package exists. First publish of the loader and the four
-#            platform packages: temporary NPM_TOKEN environment secret,
-#            or npm publish locally. Then configure a publisher on each
-#            package (repo responsibleai/agent-control-spec, workflow
-#            release.yml, environment release) and delete the secret.
-#            npm provenance requires a public repository.
+#   crates — trusted publishing (OIDC): the crate's publisher is
+#            configured (repo responsibleai/agent-control-spec,
+#            workflow release.yml, environment release). No token.
+#   npm    — trusted publishing (OIDC): all five packages (loader +
+#            four platform packages) have publishers configured (repo
+#            responsibleai/agent-control-spec, workflow release.yml,
+#            environment release). No token; provenance attaches
+#            automatically.
 #   NuGet  — trusted publishing (OIDC): policies are user-scoped and
 #            pattern-based, so configure BEFORE the first publish
 #            (pattern ResponsibleAI.AgentControlSpec*); the NuGet/login
@@ -109,11 +103,8 @@ jobs:
         with:
           subject-path: target/package/*.crate
       - name: Authenticate to crates.io (trusted publishing)
-        # Fails until the crate exists and its publisher is configured;
-        # the token fallback below covers the one-time bootstrap.
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         id: cratesio-auth
-        continue-on-error: true
         uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1
       - name: Publish to crates.io
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
@@ -124,14 +115,7 @@ jobs:
             echo "agent-control-spec $V already on crates.io — skipping"
             exit 0
           fi
-          if [ -n "${{ steps.cratesio-auth.outputs.token }}" ]; then
-            export CARGO_REGISTRY_TOKEN="${{ steps.cratesio-auth.outputs.token }}"
-          elif [ -n "${{ secrets.CARGO_REGISTRY_TOKEN }}" ]; then
-            export CARGO_REGISTRY_TOKEN="${{ secrets.CARGO_REGISTRY_TOKEN }}"
-          else
-            echo "::error::no crates.io credential: configure trusted publishing or set CARGO_REGISTRY_TOKEN for the bootstrap"
-            exit 1
-          fi
+          export CARGO_REGISTRY_TOKEN="${{ steps.cratesio-auth.outputs.token }}"
           cargo publish --locked -p agent-control-spec
 
   node-build:
@@ -209,8 +193,6 @@ jobs:
         # dependency block can move into the committed package.json.
         # Prerelease versions publish under the `alpha` dist-tag.
         # Idempotent: versions that already exist are skipped.
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           npm install -g npm@latest
           V=$(node -p "require('./package.json').version")
