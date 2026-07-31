@@ -348,6 +348,7 @@ A runtime failure yields a `deny` verdict whose `reason` is one of the identifie
 | Reason | Cause |
 | --- | --- |
 | `runtime_error:manifest_invalid` | The manifest failed validation or bound an undefined policy. |
+| `runtime_error:manifest_unreadable` | The manifest could not be obtained, so its content was never judged. |
 | `runtime_error:intervention_point_unknown` | The request named an intervention point the manifest does not configure. |
 | `runtime_error:path_missing` | A required path did not resolve. |
 | `runtime_error:path_type_mismatch` | A path segment met an incompatible JSON type. |
