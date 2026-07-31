@@ -1,6 +1,7 @@
 # Weekly grouped dependency updates. Examples are pinned demos and are
-# deliberately excluded; the release workflow's action pins are covered
-# by the github-actions ecosystem.
+# deliberately excluded; their lockfiles are instead audited by the ci
+# lint job's cargo-audit step. The release workflow's action pins are
+# covered by the github-actions ecosystem.
 version: 2
 updates:
   - package-ecosystem: cargo
