@@ -1654,3 +1654,21 @@ tools:
         Some("runtime_error:tool_unknown")
     );
 }
+
+#[test]
+fn supported_versions_is_published_and_matches_what_validate_accepts() {
+    // Consumers and language bindings read this instead of keeping a
+    // private copy that drifts from the engine.
+    assert!(!agent_control_spec::SUPPORTED_VERSIONS.is_empty());
+    for version in agent_control_spec::SUPPORTED_VERSIONS {
+        let source = format!(
+            "agent_control_specification_version: \"{version}\"\n\
+             policies:\n  p:\n    type: test\n    verdict:\n      decision: allow\n\
+             intervention_points:\n  input:\n    policy_target: \"$.input\"\n    policy:\n      id: p\n"
+        );
+        assert!(
+            agent_control_spec::Manifest::from_yaml_str(&source).is_ok(),
+            "published version {version} must be accepted by validate()"
+        );
+    }
+}

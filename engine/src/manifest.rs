@@ -16,6 +16,12 @@ use std::{
     time::Duration,
 };
 
+/// Manifest grammar versions this engine accepts.
+///
+/// Published so consumers and language bindings can report the accepted
+/// set without hardcoding a copy that silently drifts from the engine.
+pub const SUPPORTED_VERSIONS: &[&str] = &manifest_version::SUPPORTED;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -235,6 +241,16 @@ impl Manifest {
             manifests.push(manifest);
         }
         Self::merge_chain(manifests)
+    }
+
+    /// Deserialize without validating.
+    ///
+    /// `validate` performs cross-reference checks that only hold once
+    /// `extends` has been merged, so a caller holding a single document
+    /// needs to inspect `extends` before deciding whether validation can
+    /// give a meaningful answer.
+    pub fn parse_yaml_str(input: &str) -> Result<Self, RuntimeError> {
+        serde_yaml::from_str(input).map_err(|err| RuntimeError::ManifestInvalid(err.to_string()))
     }
 
     pub fn from_yaml_str(input: &str) -> Result<Self, RuntimeError> {
@@ -671,7 +687,7 @@ impl ManifestLoader {
     ) -> Result<Vec<u8>, RuntimeError> {
         match location {
             ManifestLocation::Path(path) => fs::read(path).map_err(|err| {
-                RuntimeError::ManifestInvalid(format!(
+                RuntimeError::ManifestUnreadable(format!(
                     "failed to read manifest file '{}': {err}",
                     path.display()
                 ))
@@ -723,19 +739,31 @@ fn canonicalize_manifest_path(
     path: &Path,
     including_manifest: Option<&Path>,
 ) -> Result<PathBuf, RuntimeError> {
-    fs::canonicalize(path).map_err(|err| {
-        let detail = match including_manifest {
-            Some(including_manifest) => format!(
+    fs::canonicalize(path).map_err(|err| match including_manifest {
+        // A reference the document made. If the target simply is not
+        // there, that is a dangling reference and a defect in the
+        // document, the same category as binding an undefined policy.
+        // Any other failure means the target exists as far as the
+        // document is concerned and we could not obtain it, which says
+        // nothing about whether the reference was correct.
+        Some(including_manifest) => {
+            let detail = format!(
                 "failed to resolve extends file '{}' from '{}': {err}",
                 path.display(),
                 including_manifest.display()
-            ),
-            None => format!(
-                "failed to resolve manifest file '{}': {err}",
-                path.display()
-            ),
-        };
-        RuntimeError::ManifestInvalid(detail)
+            );
+            if err.kind() == std::io::ErrorKind::NotFound {
+                RuntimeError::ManifestInvalid(detail)
+            } else {
+                RuntimeError::ManifestUnreadable(detail)
+            }
+        }
+        // The document the caller named could not be obtained, so
+        // nothing about its content has been judged.
+        None => RuntimeError::ManifestUnreadable(format!(
+            "failed to resolve manifest file '{}': {err}",
+            path.display()
+        )),
     })
 }
 
@@ -1013,6 +1041,10 @@ struct HttpExtendsFetcher;
 
 impl ExtendsFetcher for HttpExtendsFetcher {
     fn fetch(&self, url: &str, limits: Limits) -> Result<Vec<u8>, RuntimeError> {
+        // A forbidden scheme is a defect in the manifest, not an
+        // inability to obtain the document, so it is classified here
+        // rather than being left to surface as a transport failure.
+        validate_https_url(url)?;
         let agent = ureq::AgentBuilder::new()
             .https_only(true)
             .try_proxy_from_env(false)
@@ -1033,10 +1065,10 @@ impl HttpExtendsFetcher {
         use ureq::OrAnyStatus as _;
 
         let response = agent.get(url).call().or_any_status().map_err(|err| {
-            RuntimeError::ManifestInvalid(format!("failed to fetch extends URL '{url}': {err}"))
+            RuntimeError::ManifestUnreadable(format!("failed to fetch extends URL '{url}': {err}"))
         })?;
         if response.status() >= 400 {
-            return Err(RuntimeError::ManifestInvalid(format!(
+            return Err(RuntimeError::ManifestUnreadable(format!(
                 "failed to fetch extends URL '{url}': HTTP {}",
                 response.status()
             )));
@@ -1046,7 +1078,7 @@ impl HttpExtendsFetcher {
             .into_reader()
             .take(limits.max_manifest_url_bytes as u64 + 1);
         reader.read_to_end(&mut body).map_err(|err| {
-            RuntimeError::ManifestInvalid(format!(
+            RuntimeError::ManifestUnreadable(format!(
                 "failed to read extends URL '{url}' response body: {err}"
             ))
         })?;
@@ -1822,7 +1854,8 @@ intervention_points:
             .unwrap_err();
         handle.join().unwrap();
 
-        assert_eq!(error.reason(), "runtime_error:manifest_invalid");
+        // Not obtained, so not judged.
+        assert_eq!(error.reason(), "runtime_error:manifest_unreadable");
         assert!(error.detail().contains("HTTP 404"));
     }
 
@@ -1853,7 +1886,8 @@ intervention_points:
             .unwrap_err();
         handle.join().unwrap();
 
-        assert_eq!(error.reason(), "runtime_error:manifest_invalid");
+        // Not obtained, so not judged.
+        assert_eq!(error.reason(), "runtime_error:manifest_unreadable");
         assert!(
             error.detail().contains("redirect")
                 || error.detail().contains("TooManyRedirects")
