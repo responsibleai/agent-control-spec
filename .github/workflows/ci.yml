@@ -104,6 +104,13 @@ jobs:
         working-directory: sdk/node
       - run: npm test
         working-directory: sdk/node
+      # `npm test` regenerates binding.js and binding.d.ts, which are
+      # committed and shipped in the npm package. Without this gate a
+      # native signature change leaves a stale declaration in the
+      # published types and CI stays green.
+      - name: generated bindings are current
+        run: git diff --exit-code -- binding.js binding.d.ts
+        working-directory: sdk/node
 
   dotnet:
     runs-on: ubuntu-latest
