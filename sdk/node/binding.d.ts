@@ -19,3 +19,30 @@ export declare function intercept(handle: ExternalObject<Handle>, contextJson: s
  * built-in evaluator, `test` policies through their embedded verdict).
  */
 export declare function interceptorNew(manifestPath: string): ExternalObject<Handle>
+
+/** The manifest grammar versions this engine accepts. */
+export declare function supportedManifestVersions(): Array<string>
+
+/**
+ * Validate manifest source against the grammar, without building a
+ * runtime.
+ *
+ * Authoring and migration tools need this answer before a policy is
+ * runnable, and building a runtime would additionally require the
+ * bundled dispatchers and, for Rego, an `opa` binary on PATH.
+ *
+ * A rejected manifest comes back as `Some(message)` rather than being
+ * thrown, so a thrown error from this function always means the call
+ * itself failed and never that the manifest is bad. The wrapper relies
+ * on that split so it does not relabel boundary failures as grammar
+ * failures.
+ */
+export declare function validateManifest(source: string): string | null
+
+/**
+ * Validate a manifest file, resolving `extends` first.
+ *
+ * The entry point for a manifest that inherits. Reads from disk and may
+ * fetch URL `extends`, exactly as loading a runtime would.
+ */
+export declare function validateManifestFile(path: string): string | null

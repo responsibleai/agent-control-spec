@@ -18,5 +18,31 @@ local `opa` binary, Cedar through the built-in evaluator, `test`
 policies through their embedded verdict. Custom policies require a host
 dispatcher and fail closed under this construction.
 
+Manifests can also be checked on their own, without building a runtime
+or having `opa` on PATH. Useful when generating or migrating manifests:
+
+```ts
+import { validateManifest, ManifestInvalidError } from "@responsibleai/agent-control-spec";
+
+try {
+  validateManifest(source);
+} catch (error) {
+  if (error instanceof ManifestInvalidError) console.error(error.message);
+}
+```
+
+A manifest that uses `extends` cannot be judged from its own source,
+because validation checks references across the merged document. Pass a
+path instead and the chain is resolved first:
+
+```ts
+import { validateManifestFile } from "@responsibleai/agent-control-spec";
+
+validateManifestFile("manifest.yaml");
+```
+
+`supportedManifestVersions()` reports the grammar versions this engine
+accepts. Read it rather than hardcoding the set.
+
 Build/test: `npm ci && npm test` (compiles the native engine binding —
 Rust toolchain required).
