@@ -27,6 +27,19 @@ fn assert_manifest_invalid(path: PathBuf, expected_detail: &str) {
     );
 }
 
+/// A document that could not be obtained was never judged, so it fails
+/// closed under a reason distinct from a grammar rejection.
+fn assert_manifest_unreadable(path: PathBuf, expected_detail: &str) {
+    let error = Manifest::from_path(&path).unwrap_err();
+    assert_eq!(error.reason(), "runtime_error:manifest_unreadable");
+    assert!(
+        error.detail().contains(expected_detail),
+        "{} detail should contain {expected_detail:?}, got {:?}",
+        path.display(),
+        error.detail()
+    );
+}
+
 fn yaml_files_with_manifest_version(root: &Path) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     collect_files(root, &mut paths);
@@ -295,6 +308,60 @@ fn cycles_fail_closed_with_clear_error() {
     assert_manifest_invalid(
         fixture_root().join("cycle/a.yaml"),
         "manifest extends cycle detected",
+    );
+}
+
+#[test]
+fn an_unreadable_extends_target_is_not_a_dangling_reference() {
+    // A missing target is the document's own defect. A target we merely
+    // cannot reach is not, and saying otherwise blames the author for an
+    // environment problem.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if unsafe { libc_geteuid() } == 0 {
+            return; // root ignores the mode bits
+        }
+        let dir = std::env::temp_dir().join(format!("acs-perm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let locked = dir.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::write(
+            locked.join("base.yaml"),
+            "agent_control_specification_version: \"0.4.0-alpha.1\"\npolicies:\n  p:\n    type: test\n    verdict:\n      decision: allow\nintervention_points:\n  input:\n    policy_target: \"$.input\"\n    policy:\n      id: p\n",
+        )
+        .unwrap();
+        let child = dir.join("child.yaml");
+        fs::write(
+            &child,
+            "agent_control_specification_version: \"0.4.0-alpha.1\"\nextends:\n  - ./locked/base.yaml\n",
+        )
+        .unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = Manifest::from_path(&child).unwrap_err();
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        assert_eq!(error.reason(), "runtime_error:manifest_unreadable");
+    }
+}
+
+#[cfg(unix)]
+extern "C" {
+    #[link_name = "geteuid"]
+    fn libc_geteuid() -> u32;
+}
+
+#[test]
+fn a_missing_top_level_manifest_is_unreadable_not_invalid() {
+    // The document the caller named was never obtained, unlike a
+    // dangling extends target, which is a defect in a document that was.
+    assert_manifest_unreadable(
+        fixture_root().join("missing/does-not-exist.yaml"),
+        "failed to resolve manifest file",
     );
 }
 
