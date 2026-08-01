@@ -145,6 +145,7 @@ fn target_dir(name: &str) -> PathBuf {
 fn runtime_error_reason_table_matches_spec_section_15() {
     let produced: BTreeSet<_> = [
         RuntimeError::ManifestInvalid(String::new()),
+        RuntimeError::ManifestUnreadable(String::new()),
         RuntimeError::InterventionPointUnknown(String::new()),
         RuntimeError::PathMissing(String::new()),
         RuntimeError::PathTypeMismatch(String::new()),
@@ -164,6 +165,7 @@ fn runtime_error_reason_table_matches_spec_section_15() {
     // This list is the complete reserved reason table from spec section 15.
     let expected = BTreeSet::from([
         "runtime_error:manifest_invalid",
+        "runtime_error:manifest_unreadable",
         "runtime_error:intervention_point_unknown",
         "runtime_error:path_missing",
         "runtime_error:path_type_mismatch",
@@ -194,6 +196,7 @@ fn reserved_reason_inventory_matches_producers() {
 
     let core_runtime_produced: BTreeSet<_> = [
         RuntimeError::ManifestInvalid(String::new()),
+        RuntimeError::ManifestUnreadable(String::new()),
         RuntimeError::InterventionPointUnknown(String::new()),
         RuntimeError::PathMissing(String::new()),
         RuntimeError::PathTypeMismatch(String::new()),
@@ -302,6 +305,11 @@ fn executable_parity_fixture_fails_closed_for_build_and_evaluate_reasons() {
         .iter()
         .map(|case| case["expected_reason"].as_str().unwrap())
         .collect();
+    // This fixture builds every case from manifest source, so it covers
+    // the reasons reachable that way. `runtime_error:manifest_unreadable`
+    // is a path or network condition and cannot be expressed here; the
+    // complete registry is spec/reserved-reasons.json, guarded by
+    // `reserved_reason_inventory_matches_producers` above.
     assert_eq!(reasons.len(), 12);
     assert_eq!(covered, reasons);
 

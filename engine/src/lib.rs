@@ -57,7 +57,7 @@ pub use dispatchers::{
 pub use error::RuntimeError;
 pub use interceptor::AcsInterceptor;
 pub use limits::Limits;
-pub use manifest::{InterventionPointConfig, Manifest, ToolConfig};
+pub use manifest::{InterventionPointConfig, Manifest, ToolConfig, SUPPORTED_VERSIONS};
 #[cfg(feature = "opa")]
 pub use opa::{OpaPolicyDispatcher, OpaRegoRunner};
 pub use paths::{JsonPath, PathEnv, PathParseError, PathRoot, PathSegment};

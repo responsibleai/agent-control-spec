@@ -7,6 +7,11 @@
       "cause": "The manifest failed validation or bound an undefined policy."
     },
     {
+      "reason": "runtime_error:manifest_unreadable",
+      "producer": "core-runtime",
+      "cause": "The manifest could not be obtained, so its content was never judged."
+    },
+    {
       "reason": "runtime_error:intervention_point_unknown",
       "producer": "core-runtime",
       "cause": "The request named an intervention point the manifest does not configure."

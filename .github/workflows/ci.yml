@@ -85,6 +85,18 @@ jobs:
           ./actionlint -color
       - name: Version surfaces agree
         run: python3 scripts/check-version-consistency.py
+      - name: cargo-audit over example lockfiles (pinned, checksum-verified)
+        # Examples are deliberately outside the Dependabot update config,
+        # and the coding_agent app's path dependency predates the engine
+        # port so cargo cannot re-resolve its manifest; auditing the
+        # lockfiles directly keeps their advisories visible in CI.
+        run: |
+          curl -sSfL -o cargo-audit.tgz \
+            https://github.com/rustsec/rustsec/releases/download/cargo-audit/v0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz
+          echo "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428  cargo-audit.tgz" | sha256sum -c -
+          tar -xzf cargo-audit.tgz
+          find examples -name Cargo.lock -print0 | xargs -0 -r -n1 \
+            ./cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit audit --file
       - name: JSON artefacts parse
         run: |
           set -e
@@ -103,6 +115,13 @@ jobs:
       - run: npm ci
         working-directory: sdk/node
       - run: npm test
+        working-directory: sdk/node
+      # `npm test` regenerates binding.js and binding.d.ts, which are
+      # committed and shipped in the npm package. Without this gate a
+      # native signature change leaves a stale declaration in the
+      # published types and CI stays green.
+      - name: generated bindings are current
+        run: git diff --exit-code -- binding.js binding.d.ts
         working-directory: sdk/node
 
   dotnet:
