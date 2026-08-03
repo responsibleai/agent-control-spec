@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+- Incremental stream mediation, specification section 18.1. A host that must
+  release model output before the whole response exists can now drive
+  `StreamSession`, which tracks how far each configured task has cleared a
+  stream and reports the prefix that is safe to emit. The watermark for a track
+  is the minimum across its tasks, clearance is contiguous so a span starting
+  past a task's frontier fails closed rather than confirming an unevaluated gap,
+  and any rune no task cleared fails the stream at settlement. The session holds
+  no stream text and performs no segmentation: the host declares the rune range
+  it evaluated, because two accounts of what was evaluated over the same runes
+  cannot both be authoritative. The runtime is untouched and stays stateless.
+  The module sits behind the new `streaming` cargo feature, off by default, so
+  the crate's default surface stays free of per stream state.
+- The profile applies to text streams only. A structured streaming surface whose
+  deltas carry fragments a policy cannot read until reassembly, such as a chat
+  completion stream splitting tool call arguments across chunks, still buffers.
+  `tests/conformance/streaming` is that path and is unchanged.
+- Streaming failures now report the agent-hooks reason
+  `host_error:streaming_unsupported` rather than the SDK layer
+  `runtime_error:streaming_unsupported`, per the section 16 rule that new code
+  uses the agent-hooks reserved set. The older reason stays reserved for
+  compatibility while the language SDKs are rebuilt.
+- A verdict the section 5 contract does not admit, such as a `transform` with no
+  substitution body or one whose path leaves `$target`, fails the stream closed
+  with `host_error:verdict_invalid` before it clears anything. A `deny` carrying a
+  `host_error:` reason is exempt from that check, since the contract rejects one
+  only to stop an interceptor forging a host error over the wire and the host
+  that drives this profile owns that namespace. No other decision is exempt, and no
+  `warnings` entry is exempt under any decision, since a reason reporting that
+  the host's own evaluation failed cannot justify releasing or rewriting text
+  and a warning is never the host reporting its own failure. The typed contract
+  check covers the top level reason only, so the warning rule is applied here
+  rather than depending on which path a host used. It covers both reserved
+  prefixes: `runtime_error:` belongs to the runtime, and the policy output
+  normalizer screens a policy's top level reason for it but not a warning's. A liftable `deny`, meaning one carrying an
+  `approval` block, is taken at its word and denies. Resolving it is a host
+  obligation under section 9, which a session cannot discharge because it cannot
+  hold its connection open across an out of band approval, so withholding the
+  text is the conservative reading.
+- A `transform` is honored only while nothing on its track has been released.
+  Under `deferred` that means never, since the payload was emitted on arrival. A
+  transform names a node of the policy target rather than a rune range, and the
+  session holds no text, so it cannot bound how far below the span the rewritten
+  value reaches. A host evaluating the accumulated prefix has a target covering
+  every rune of the track, and a session resuming a partially delivered stream
+  starts above zero precisely because that prefix already reached the caller, so
+  it can never transform.
+
 - Manifest grammar validation is reachable from every binding, not just
   the Rust crate: `validate_manifest` (Python), `validateManifest`
   (Node), `AcsManifest.Validate` (.NET), over the new C ABI entry point

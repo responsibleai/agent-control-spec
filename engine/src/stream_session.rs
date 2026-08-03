@@ -622,11 +622,11 @@ fn verdict_shape_is_invalid(verdict: &Verdict) -> bool {
     // `host_error:` because a warning is a recorded concern and never the host
     // reporting its own failure, which is the one thing the carve out above
     // exists for. `runtime_error:` because that namespace belongs to the
-    // runtime, and `normalize_policy_output` screens a policy's top level
-    // reason for both prefixes but reads a warning's reason without that
-    // screen, so a policy can put one there. Neither changes whether the text
-    // is released, since the decision does that, but a forged reserved reason
-    // in an audit record is a claim about who failed.
+    // runtime, and the screen the policy output normalizer applies to a
+    // policy's top level reason does not extend to a warning's. Neither prefix
+    // changes whether the text is released, since the decision does that, but a
+    // reserved reason in an audit record is a claim about who failed, so the
+    // accounting should not carry one it cannot account for.
     if verdict
         .warnings
         .iter()
@@ -1453,10 +1453,9 @@ mod tests {
 
     #[test]
     fn a_warning_may_carry_neither_reserved_prefix() {
-        // `runtime_error:` belongs to the runtime. The policy output normalizer
-        // screens a policy's top level reason for both prefixes but reads a
-        // warning's reason without that screen, so a policy can put one there
-        // and it would otherwise reach the record as a claim about who failed.
+        // `runtime_error:` belongs to the runtime, and the screen applied to a
+        // policy's top level reason does not extend to a warning's, so without
+        // this check one could reach the record as a claim about who failed.
         for prefix in ["runtime_error:", "host_error:"] {
             let mut s = session(&["t"], SafetyLevel::Blocking);
             s.observe(RES, 10).expect("observe");

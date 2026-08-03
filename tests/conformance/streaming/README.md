@@ -6,6 +6,8 @@ These fixtures define the cross-SDK contract for guarding streaming chat-complet
 
 A streaming response cannot be policy-checked incrementally because a verdict over partial content races the bytes already sent to the caller, and tool-call validation needs complete `arguments` JSON. The guard therefore buffers the full upstream stream, assembles it into a single non-streaming chat-completion shape, evaluates that shape with the existing post-model policy path, and only then releases output. On allow it re-emits the original bytes verbatim. On a transform it synthesizes a single replacement chunk. Anything that cannot be faithfully assembled fails closed.
 
+Specification section 18.1 defines an incremental profile that does not change this. That profile covers a text stream whose payloads are evaluable on arrival, it answers the racing bytes with a watermark that releases none of them before the verdict covering them exists, and it excludes tool calls outright. Neither answer reaches this surface, where a fragment of an arguments document is not an evaluable value at any granularity, so this guard stays buffer mode.
+
 ### Assembly rules
 
 - Caps guard against hostile upstreams. See `limits` in `manifest.json` for `max_stream_bytes` and `max_stream_events`. Caps account for raw bytes and event count.
