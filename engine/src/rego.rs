@@ -40,10 +40,19 @@
 //!   does not fire. Policies for this runtime are meant to be pure and
 //!   offline, so `http.send` should not appear in one; check a ported
 //!   bundle before relying on this dispatcher.
-//! * Numbers are IEEE-754 doubles, where OPA uses arbitrary precision.
-//!   `0.1 + 0.2 == 0.3` is true under OPA and false here, and a literal
-//!   too large for a double fails to load. Policies that compare exact
-//!   decimals near a threshold can therefore reach a different verdict.
+//! * Numeric precision differs, and this one can flip a verdict.
+//!   `regorus` holds integers exactly while they fit in `i64`/`u64` and
+//!   falls back to `f64` beyond that; every non-integer is `f64`. OPA
+//!   carries numbers as decimal text and computes on them at higher
+//!   precision. So integer counts and thresholds, which is what most
+//!   policy arithmetic is, agree exactly. Decimal arithmetic need not:
+//!   `sum([0.1, 0.2])` is `0.3` under OPA and `0.30000000000000004`
+//!   here, so a budget policy comparing that sum against a cap of `0.3`
+//!   allows under OPA and denies here. Integers past about 1.8e19 lose
+//!   their exact value, and a literal too large for an `f64` fails to
+//!   load. Comparing decimals straight out of the policy input is
+//!   unaffected at realistic precision; doing arithmetic on them first
+//!   is where the two engines part.
 //! * The dispatcher enforces the eval timeout twice. `regorus` checks a
 //!   cooperative deadline as it evaluates, and the evaluation, including
 //!   loading the bundle, runs on a worker thread the dispatcher abandons

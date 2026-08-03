@@ -39,9 +39,13 @@
     `io.jwt.*`, `json.patch`, GraphQL, AWS signing), where calling one is
     a loud fail-closed evaluation error, except `http.send`, which is
     registered but always undefined and so silently fails open for a deny
-    rule gated on it; and numbers are IEEE-754 doubles rather than
-    arbitrary precision, so `0.1 + 0.2 == 0.3` is true under OPA and
-    false here.
+    rule gated on it; and numeric precision differs, which can flip a
+    verdict. Integers agree exactly while they fit in `i64`/`u64`, so
+    counts and integer thresholds are unaffected, but every non-integer
+    is an `f64` here against OPA's higher-precision decimal arithmetic:
+    `sum([0.1, 0.2])` is `0.3` under OPA and `0.30000000000000004` here,
+    enough for a budget policy comparing it against a `0.3` cap to allow
+    under OPA and deny here.
   - A host can now be told that a decision was refused rather than
     evaluated. An evaluation abandoned at its deadline leaves a thread
     that cannot be killed, so once
