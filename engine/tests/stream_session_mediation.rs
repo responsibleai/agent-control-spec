@@ -12,9 +12,9 @@
 
 use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, JsonValue, Manifest, PolicyDispatcher,
-    PreparedPolicyInvocation, Runtime, RuntimeError, SafetyLevel, SegmentOutcome, StreamEndReason,
-    StreamError, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan, StreamTrack,
-    Verdict,
+    PreparedPolicyInvocation, RuneRange, Runtime, RuntimeError, SafetyLevel, SegmentOutcome,
+    StreamEndReason, StreamError, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan,
+    StreamTrack, Verdict,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -323,9 +323,22 @@ fn a_transform_verdict_records_the_host_obligation_to_substitute() {
     session
         .record_outcome("pii", &span, SegmentOutcome::Transformed)
         .expect("transform records");
-    assert_eq!(session.advance(StreamTrack::Response), Some(13));
+    // A rewrite ends the stream. The replacement is a new whole value whose
+    // runes are not the ones this session counted and which no task evaluated,
+    // so the accounting reports no watermark over it.
+    assert_eq!(
+        session.advance(StreamTrack::Response),
+        None,
+        "a rewritten track has no release point"
+    );
     let completion = session.finish();
-    assert_eq!(completion.reason, StreamEndReason::Complete);
+    assert_eq!(
+        completion.reason,
+        StreamEndReason::Rewritten {
+            task: "pii".to_string(),
+            range: RuneRange { start: 0, end: 13 },
+        }
+    );
     assert!(
         completion.transformed,
         "settlement must tell the host the stream was not verbatim"

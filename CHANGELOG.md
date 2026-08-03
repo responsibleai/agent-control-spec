@@ -8,23 +8,13 @@
   and has no exception. The sentence excluding enforcement below the snapshot
   level now excludes the token level only, since the new profile is segment
   level enforcement and the previous wording excluded that too.
-- Release on a track that recorded a `transform` is all or nothing. A
-  substitution replaces the policy target as one value, so the track has no
-  releasable prefix: its offsets describe the original text while the host holds
-  the replacement. A watermark landing strictly inside the track named a
-  position in a sequence that no longer existed, and with a second slower task
-  a host following it emitted part of the replacement before that task had
-  spoken, after which a refusal could no longer withhold it.
-- A second `transform` on a track fails closed with
-  `host_error:transform_conflict`. Two substitutions against the same policy
-  target have no defined composition.
-- A track that records a `transform` accepts no further payload, reporting
-  `host_error:streaming_unsupported`. A substitution of a different length than
-  the text it replaces makes the host's outgoing text a different sequence from
-  the one the offsets describe, so every later offset on that track would name
-  the wrong position in what the host is about to emit. The width of the
-  divergence is chosen by the replacement value and is never reported to the
-  accounting, which holds no text and so cannot rebase.
+- A `transform` is terminal for the session and no watermark is reported for a
+  track that records one. The substitution replaces the policy target with a new
+  whole value: its runes are not the ones the session counted, so an offset over
+  it names a position in a sequence that no longer exists, and no task evaluated
+  it, so no clearance against the original authorizes releasing it. Settlement
+  reports `StreamEndReason::Rewritten` with the task and range. The host
+  evaluates the replacement on the ordinary section 18 path.
 - Payload arriving after the host closed the payload stream now fails the
   session rather than only being refused, since a host that ignored the refusal
   would settle clean over runes no task evaluated.

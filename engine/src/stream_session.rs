@@ -40,15 +40,20 @@
 //!    doing. No verdict carries the mode, so nothing here can check it.
 //!
 //! One capability limit is worth stating plainly, because it is not obvious
-//! from the types. A `transform` ends its track. It is honored only before
-//! anything on that track was released, the track then accepts no further
-//! payload, and release becomes all or nothing. Masking a value mid stream and
-//! continuing to stream is therefore outside this profile. The cause is that
-//! [`SegmentOutcome::Transformed`] carries no length: the host performs the
-//! substitution and so knows the replacement's rune count, but never reports
-//! it, so the accounting cannot rebase the offsets the substitution shifted.
-//! An outcome carrying that count would lift the limit and is the natural
-//! extension if the limit proves too tight.
+//! from the types. A `transform` ends the session. The substitution replaces
+//! the policy target with a new whole value, and two things are then true of
+//! it at once: its runes are not the ones this session counted, and no task
+//! evaluated it. So the accounting can neither address it by offset nor vouch
+//! for it, and it reports [`StreamEndReason::Rewritten`] instead of a
+//! watermark. The host evaluates the replacement on the ordinary whole
+//! snapshot path, where every task sees the value actually being emitted.
+//!
+//! Masking a value mid stream and continuing to stream is therefore outside
+//! this profile. Lifting that would need the outcome to carry the
+//! replacement's rune count, so the accounting could rebase, and a way for the
+//! remaining tasks to evaluate the replacement rather than the text it
+//! replaced. Neither exists here, and inventing either without them is what
+//! three earlier attempts at this rule each did, in a different way.
 //!
 //! # Clearance is contiguous
 //!
@@ -226,30 +231,6 @@ pub enum StreamError {
     OffsetOverflow,
     /// A payload arrived after the payload stream closed.
     PayloadsClosed,
-    /// Payload arrived on a track after a `transform` was accepted on it.
-    ///
-    /// Offsets count the runes the host reported through
-    /// [`StreamSession::observe`], which are the runes of the original text.
-    /// Once the host substitutes a replacement of a different length, its
-    /// outgoing text and these offsets stop describing the same sequence, and
-    /// every later offset names the wrong position in what it is about to
-    /// emit. The session holds no text and is never told the replacement's
-    /// length, so it cannot rebase. Refusing further payload is the only sound
-    /// answer available to it.
-    PayloadAfterTransform {
-        /// Track that had already recorded a transform.
-        track: StreamTrack,
-    },
-    /// A second `transform` was recorded on a track that already had one.
-    ///
-    /// Two substitutions against the same policy target have no defined
-    /// composition. AGENT-HOOKS-0.1 resolves a conflict between them before a
-    /// verdict reaches a host, so one arriving here means the host recorded
-    /// two rewrites of the same value and neither is authoritative.
-    TransformConflict {
-        /// Track that already carried a transform.
-        track: StreamTrack,
-    },
     /// An outcome or payload arrived after the session went terminal.
     SessionClosed,
     /// A `transform` outcome reached text the host can no longer alter,
@@ -285,15 +266,11 @@ pub enum StreamError {
 /// verdict is reported as one rather than as a streaming fault.
 pub const VERDICT_INVALID_REASON: &str = "host_error:verdict_invalid";
 
-/// Reserved reason for two substitutions against the same policy target.
-pub const TRANSFORM_CONFLICT_REASON: &str = "host_error:transform_conflict";
-
 impl StreamError {
     /// Reserved reason a host records when this failure denies an action.
     pub fn reason(&self) -> &'static str {
         match self {
             Self::VerdictInvalid => VERDICT_INVALID_REASON,
-            Self::TransformConflict { .. } => TRANSFORM_CONFLICT_REASON,
             _ => STREAMING_FAIL_CLOSED_REASON,
         }
     }
@@ -321,16 +298,6 @@ impl fmt::Display for StreamError {
             ),
             Self::OffsetOverflow => f.write_str("streaming session exceeded the offset ceiling"),
             Self::PayloadsClosed => f.write_str("streaming payload stream already closed"),
-            Self::PayloadAfterTransform { track } => write!(
-                f,
-                "payload arrived on the {} track after a transform rebased its offsets",
-                track.as_str()
-            ),
-            Self::TransformConflict { track } => write!(
-                f,
-                "a second transform was recorded on the {} track",
-                track.as_str()
-            ),
             Self::SessionClosed => f.write_str("streaming session already closed"),
             Self::TransformTooLate => {
                 f.write_str("transform outcome named text the host has already emitted")
@@ -439,6 +406,15 @@ pub enum StreamEndReason {
     Complete,
     /// A host recorded a denial.
     Denied { task: String, range: RuneRange },
+    /// A task replaced the policy target, so the stream ended rewritten.
+    ///
+    /// The replacement is a new whole value. Its runes are not the runes this
+    /// session counted, and no task on the track evaluated it, so the
+    /// accounting cannot authorize releasing it and reports no watermark for
+    /// it. The host emits the replacement only after evaluating it on the
+    /// ordinary whole snapshot path of section 18, and starts a new session if
+    /// it must keep streaming.
+    Rewritten { task: String, range: RuneRange },
     /// The session failed closed.
     Failed(StreamError),
 }
@@ -477,10 +453,6 @@ pub struct StreamWatermark {
     tasks: BTreeMap<String, u32>,
     confirmed: u32,
     received: u32,
-    /// Whether a `transform` was accepted on this track. Once one is, the
-    /// track's offsets no longer describe the text the host will emit, so it
-    /// accepts no further payload.
-    transformed: bool,
 }
 
 impl StreamWatermark {
@@ -518,7 +490,6 @@ impl StreamWatermark {
             tasks,
             confirmed: start_offset,
             received: start_offset,
-            transformed: false,
         })
     }
 
@@ -608,20 +579,6 @@ impl StreamWatermark {
     /// a caller emits a watermark only on real progress.
     pub(crate) fn advance(&mut self) -> Option<u32> {
         let minimum = self.tasks.values().copied().min().unwrap_or(self.confirmed);
-        // A substitution replaces the policy target as one value, so the track
-        // has no releasable prefix afterwards. Its offsets describe the
-        // original text while the host holds the replacement, and any offset
-        // strictly inside the track would name a position in a sequence that
-        // no longer exists. Release becomes all or nothing: nothing until
-        // every task has cleared everything observed, then the whole track.
-        let minimum = if self.transformed {
-            if minimum < self.received {
-                return None;
-            }
-            self.received
-        } else {
-            minimum
-        };
         if minimum > self.confirmed {
             self.confirmed = minimum;
             Some(self.confirmed)
@@ -890,9 +847,6 @@ impl StreamSession {
             return Err(self.fail(StreamError::PayloadsClosed));
         }
         let track = source_type.track();
-        if self.watermark(track).transformed {
-            return Err(self.fail(StreamError::PayloadAfterTransform { track }));
-        }
         match self.watermark_mut(track).extend(runes) {
             Ok(end) => Ok(end),
             Err(error) => Err(self.fail(error)),
@@ -951,7 +905,6 @@ impl StreamSession {
         // text exists, and recording a refusal over runes the session was never
         // told about would carry that disagreement into the terminal reason and
         // into whatever audits it.
-        let mut records_transform = false;
         let received = self.watermark(track).received();
         if span.range.end > received {
             return Err(self.fail(StreamError::OffsetPastEnd {
@@ -992,14 +945,22 @@ impl StreamSession {
                 if self.watermark(track).confirmed() > 0 {
                     return Err(self.fail(StreamError::TransformTooLate));
                 }
-                // A second substitution against the same target is a conflict
-                // the composition contract resolves before a verdict reaches a
-                // host, so one arriving here means two policies rewrote the
-                // same value and neither result is authoritative.
-                if self.watermark(track).transformed {
-                    return Err(self.fail(StreamError::TransformConflict { track }));
-                }
-                records_transform = true;
+                // The substitution replaces the policy target with a new whole
+                // value, and this is where the track's offsets stop meaning
+                // anything. They count runes of the original; the host now
+                // holds a replacement of some other length that no task
+                // evaluated. Reporting any watermark over it would be reporting
+                // a position in a sequence that no longer exists, which is what
+                // three earlier attempts at this rule each got wrong in a
+                // different way. So the accounting reports none, and the stream
+                // ends rewritten. The replacement is a whole value and belongs
+                // on the ordinary path of section 18, where every task sees it.
+                self.transformed = true;
+                self.ended = Some(StreamEndReason::Rewritten {
+                    task: task.to_string(),
+                    range: span.range,
+                });
+                return Ok(());
             }
             SegmentOutcome::Cleared => {}
         }
@@ -1015,13 +976,6 @@ impl StreamSession {
         // for its task while still applicable, under reporting a rewrite the
         // host is about to perform. Acceptance is exactly the condition that
         // the substitution stands.
-        if records_transform {
-            self.transformed = true;
-            // Recorded per track as well, because the substitution rebases that
-            // track's offsets against the text the host will emit, and no later
-            // offset on it can be trusted.
-            self.watermark_mut(track).transformed = true;
-        }
         Ok(())
     }
 
@@ -1345,19 +1299,6 @@ mod tests {
     }
 
     #[test]
-    fn transform_clears_while_the_host_can_still_alter_the_text() {
-        let mut s = session(&["pii"], SafetyLevel::Blocking);
-        s.observe(RES, 20).expect("observe");
-        s.record_outcome("pii", &span(RES, 0, 20), SegmentOutcome::Transformed)
-            .expect("transform records");
-        assert!(s.transformed());
-        assert_eq!(s.advance(StreamTrack::Response), Some(20));
-        let completion = s.finish();
-        assert_eq!(completion.reason, StreamEndReason::Complete);
-        assert!(completion.transformed);
-    }
-
-    #[test]
     fn transform_fails_closed_under_a_non_withholding_level() {
         // Deferred emitted the payload on arrival, so there is nothing left
         // to substitute.
@@ -1365,23 +1306,6 @@ mod tests {
         s.observe(RES, 20).expect("observe");
         let error = s
             .record_outcome("pii", &span(RES, 0, 20), SegmentOutcome::Transformed)
-            .expect_err("transform must fail closed");
-        assert_eq!(error, StreamError::TransformTooLate);
-        assert!(s.is_ended());
-    }
-
-    #[test]
-    fn transform_fails_closed_over_already_released_text() {
-        // Anything already released is inside a cumulative policy target, so a
-        // transform over that target cannot be honored once the watermark has
-        // moved at all.
-        let mut s = session(&["pii"], SafetyLevel::Blocking);
-        s.observe(RES, 40).expect("observe");
-        s.record_outcome("pii", &span(RES, 0, 20), SegmentOutcome::Cleared)
-            .expect("first span clears");
-        assert_eq!(s.advance(StreamTrack::Response), Some(20));
-        let error = s
-            .record_outcome("pii", &span(RES, 10, 40), SegmentOutcome::Transformed)
             .expect_err("transform must fail closed");
         assert_eq!(error, StreamError::TransformTooLate);
         assert!(s.is_ended());
@@ -1539,23 +1463,6 @@ mod tests {
     }
 
     #[test]
-    fn transform_fails_closed_once_any_rune_was_released_even_ahead_of_the_span() {
-        // Regression. The guard used to compare against the span start, so a
-        // transform over [5,10) was accepted while runes 0..5 were already
-        // emitted. A cumulative policy target covers those runes, so honoring
-        // the transform would have rewritten text the caller already had.
-        let mut s = session(&["t"], SafetyLevel::Blocking);
-        s.observe(RES, 10).expect("observe");
-        s.record_outcome("t", &span(RES, 0, 5), SegmentOutcome::Cleared)
-            .expect("first span clears");
-        assert_eq!(s.advance(StreamTrack::Response), Some(5));
-        let error = s
-            .record_outcome("t", &span(RES, 5, 10), SegmentOutcome::Transformed)
-            .expect_err("a transform after any release must fail closed");
-        assert_eq!(error, StreamError::TransformTooLate);
-    }
-
-    #[test]
     fn a_transform_leaving_the_policy_target_fails_closed() {
         // Section 14 confines a transform to the policy target. The contract
         // check does not parse the path, because the runtime does that when it
@@ -1630,21 +1537,6 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_transform_does_not_mark_the_stream_modified() {
-        // The watermark rejects a span that leaves a gap. Marking the stream
-        // modified before that check would have a failed session report a
-        // rewrite the host never performed.
-        let mut s = session(&["t"], SafetyLevel::Blocking);
-        s.observe(RES, 20).expect("observe");
-        let error = s
-            .record_outcome("t", &span(RES, 10, 20), SegmentOutcome::Transformed)
-            .expect_err("a span leaving an unevaluated gap fails closed");
-        assert!(matches!(error, StreamError::NonContiguousOutcome { .. }));
-        assert!(!s.transformed());
-        assert!(!s.finish().transformed);
-    }
-
-    #[test]
     fn only_a_denial_may_carry_a_host_error_reason() {
         // A `host_error:` reason states that something the host relied on
         // failed. Withholding is the only sound reading, so exempting the whole
@@ -1668,115 +1560,6 @@ mod tests {
             assert_eq!(error, StreamError::VerdictInvalid, "for {decision:?}");
             assert_eq!(s.advance(StreamTrack::Response), None, "for {decision:?}");
         }
-    }
-
-    #[test]
-    fn an_applicable_transform_counts_even_when_its_span_is_stale() {
-        // Task `a` clears the track but `b` has not, so nothing is released and
-        // a transform is still possible. The span is below `a`'s own frontier,
-        // which the watermark ignores, but a transform is not a clearance
-        // report and settlement must still say the stream was rewritten. The
-        // span still covers everything observed, which is what keeps the
-        // offsets meaningful.
-        let mut s = session(&["a", "b"], SafetyLevel::Blocking);
-        s.observe(RES, 10).expect("observe");
-        s.record_outcome("a", &span(RES, 0, 10), SegmentOutcome::Cleared)
-            .expect("a clears");
-        assert_eq!(s.advance(StreamTrack::Response), None, "b still holds it");
-        s.record_outcome("a", &span(RES, 0, 10), SegmentOutcome::Transformed)
-            .expect("a transform is still applicable");
-        assert!(s.transformed());
-        assert!(s.finish().transformed);
-    }
-
-    #[test]
-    fn a_transformed_track_releases_all_or_nothing() {
-        // Regression for two routes to the same fail open. A substitution
-        // replaces the target as one value, so the track has no releasable
-        // prefix afterwards. A watermark landing strictly inside it would name
-        // a position in a sequence that no longer exists, and a host following
-        // it would emit part of the replacement before the slower task had
-        // spoken. Nothing is released until every task has cleared everything
-        // observed.
-        let mut s = session(&["pii", "secrets"], SafetyLevel::Blocking);
-        s.observe_text(RES, "call me on 555-0100 now")
-            .expect("23 runes");
-        s.record_outcome("pii", &span(RES, 0, 23), SegmentOutcome::Transformed)
-            .expect("the rewrite is recorded");
-        s.record_outcome("secrets", &span(RES, 0, 12), SegmentOutcome::Cleared)
-            .expect("the slower task reaches part way");
-        assert_eq!(
-            s.advance(StreamTrack::Response),
-            None,
-            "a partial frontier releases nothing on a rewritten track"
-        );
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
-        // Once it refuses the rest, nothing was ever emitted.
-        s.record_outcome("secrets", &span(RES, 12, 23), SegmentOutcome::Denied)
-            .expect("the refusal records");
-        assert!(matches!(
-            s.end_reason(),
-            Some(StreamEndReason::Denied { .. })
-        ));
-    }
-
-    #[test]
-    fn a_transformed_track_releases_once_every_task_clears_it() {
-        // The other half of all or nothing. Agreement releases the whole track.
-        let mut s = session(&["pii", "secrets"], SafetyLevel::Blocking);
-        s.observe(RES, 23).expect("observe");
-        s.record_outcome("pii", &span(RES, 0, 23), SegmentOutcome::Transformed)
-            .expect("rewrite");
-        assert_eq!(s.advance(StreamTrack::Response), None);
-        s.record_outcome("secrets", &span(RES, 0, 23), SegmentOutcome::Cleared)
-            .expect("the slower task agrees");
-        assert_eq!(s.advance(StreamTrack::Response), Some(23));
-        assert_eq!(s.finish().reason, StreamEndReason::Complete);
-    }
-
-    #[test]
-    fn outcomes_may_lag_payload_on_a_rewritten_track() {
-        // A policy returning a rewrite while the host is still reading upstream
-        // is the ordinary case for any real classifier latency. The transform
-        // covers what had arrived when it was evaluated, and the rest is
-        // cleared behind it. All or nothing release is what makes this safe,
-        // so it must not be refused.
-        let mut s = session(&["pii"], SafetyLevel::Blocking);
-        s.observe(RES, 15).expect("first payload");
-        s.observe(RES, 14)
-            .expect("more arrives while the policy runs");
-        s.record_outcome("pii", &span(RES, 0, 15), SegmentOutcome::Transformed)
-            .expect("a rewrite over what it saw is honored");
-        assert_eq!(s.advance(StreamTrack::Response), None, "the tail is unread");
-        s.record_outcome("pii", &span(RES, 15, 29), SegmentOutcome::Cleared)
-            .expect("the tail clears behind it");
-        assert_eq!(s.advance(StreamTrack::Response), Some(29));
-    }
-
-    #[test]
-    fn a_second_transform_on_a_track_fails_closed() {
-        // Two substitutions against the same policy target have no defined
-        // composition, and the contract resolves that conflict before a verdict
-        // reaches a host.
-        let mut s = session(&["pii"], SafetyLevel::Blocking);
-        s.observe(RES, 20).expect("observe");
-        s.record_outcome("pii", &span(RES, 0, 20), SegmentOutcome::Transformed)
-            .expect("the first rewrite records");
-        let error = s
-            .record_outcome("pii", &span(RES, 0, 20), SegmentOutcome::Transformed)
-            .expect_err("a second rewrite has no defined result");
-        assert_eq!(
-            error,
-            StreamError::TransformConflict {
-                track: StreamTrack::Response
-            }
-        );
-        assert_eq!(error.reason(), TRANSFORM_CONFLICT_REASON);
-        assert_eq!(
-            TRANSFORM_CONFLICT_REASON,
-            agent_hooks::HostError::TransformConflict.to_string(),
-            "the constant must track the agent-hooks reserved name"
-        );
     }
 
     #[test]
@@ -1804,27 +1587,6 @@ mod tests {
                 range: RuneRange { start: 0, end: 10 },
             })
         );
-    }
-
-    #[test]
-    fn a_resumed_session_can_never_transform() {
-        // Regression. The guard used to compare against the resume offset, so a
-        // session picking up at rune 5 accepted a transform while its watermark
-        // sat at 5. Those five runes are above zero precisely because a failed
-        // attempt already delivered them, and a cumulative target covers them.
-        let mut s = StreamSession::new(StreamSessionConfig {
-            safety_level: SafetyLevel::Blocking,
-            request_start_rune_offset: 5,
-            response_start_rune_offset: 5,
-            request_tasks: vec!["t".to_string()],
-            response_tasks: vec!["t".to_string()],
-        })
-        .expect("config");
-        s.observe(RES, 15).expect("observe");
-        let error = s
-            .record_outcome("t", &span(RES, 5, 15), SegmentOutcome::Transformed)
-            .expect_err("a resumed session has already released its prefix");
-        assert_eq!(error, StreamError::TransformTooLate);
     }
 
     #[test]
@@ -2070,30 +1832,69 @@ mod tests {
     }
 
     #[test]
-    fn payload_after_a_transform_is_terminal() {
-        // The offsets count runes the host reported, which are runes of the
-        // original text. A substitution of a different length makes the host's
-        // outgoing text a different sequence, so every later offset names the
-        // wrong position in it. A host that kept streaming would take the
-        // watermark as an index into the substituted text and release runes no
-        // task evaluated. The session is never told the replacement's length,
-        // so refusing further payload is the only sound answer it has.
-        let mut s = session(&["safety"], SafetyLevel::Blocking);
-        s.observe_text(RES, "MY SSN IS 123-45-6789")
-            .expect("21 runes");
-        s.record_outcome("safety", &span(RES, 0, 21), SegmentOutcome::Transformed)
-            .expect("a transform is accepted while nothing is released");
-        let error = s
-            .observe_text(RES, "and my card is 4111111111111111")
-            .expect_err("payload after a substitution must fail closed");
+    fn a_rewrite_ends_the_stream_and_reports_no_watermark() {
+        // Regression covering four rounds of the same category error. The
+        // replacement is a new whole value: its runes are not the ones this
+        // session counted, and no task evaluated it. Any watermark over it
+        // would name a position in a sequence that no longer exists, so the
+        // accounting reports none and the stream ends rewritten.
+        let mut s = session(&["pii"], SafetyLevel::Blocking);
+        s.observe_text(RES, "call me on 555-0100 now")
+            .expect("23 runes");
+        s.record_outcome("pii", &span(RES, 0, 23), SegmentOutcome::Transformed)
+            .expect("the rewrite records");
         assert_eq!(
-            error,
-            StreamError::PayloadAfterTransform {
-                track: StreamTrack::Response
+            s.advance(StreamTrack::Response),
+            None,
+            "a rewritten track has no release point"
+        );
+        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert!(s.is_ended());
+        let done = s.finish();
+        assert_eq!(
+            done.reason,
+            StreamEndReason::Rewritten {
+                task: "pii".to_string(),
+                range: RuneRange { start: 0, end: 23 },
             }
         );
-        assert!(s.is_ended());
-        assert_eq!(error.reason(), STREAMING_FAIL_CLOSED_REASON);
+        assert!(done.transformed);
+        assert!(!done.reason.is_clean(), "the host still owes an evaluation");
+    }
+
+    #[test]
+    fn a_rewrite_does_not_release_on_a_lagging_task() {
+        // The multi task case that broke every previous attempt. A slower task
+        // evaluated the original text, never the replacement, so its clearance
+        // cannot authorize releasing the replacement. Nothing is released and
+        // its later outcome cannot reopen the stream.
+        let mut s = session(&["pii", "harm"], SafetyLevel::Blocking);
+        s.observe(RES, 23).expect("observe");
+        s.record_outcome("pii", &span(RES, 0, 23), SegmentOutcome::Transformed)
+            .expect("the rewrite records");
+        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        s.record_outcome("harm", &span(RES, 0, 23), SegmentOutcome::Cleared)
+            .expect_err("the stream already ended rewritten");
+        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+    }
+
+    #[test]
+    fn a_rewrite_keeps_its_own_terminal_reason() {
+        // First terminal reason wins, so a later transport failure cannot
+        // downgrade a recorded rewrite.
+        let mut s = session(&["pii"], SafetyLevel::Blocking);
+        s.observe(RES, 10).expect("observe");
+        s.record_outcome("pii", &span(RES, 0, 10), SegmentOutcome::Transformed)
+            .expect("rewrite");
+        assert_eq!(
+            s.observe(RES, 5),
+            Err(StreamError::SessionClosed),
+            "a settled session takes no more payload"
+        );
+        assert!(matches!(
+            s.end_reason(),
+            Some(StreamEndReason::Rewritten { .. })
+        ));
     }
 
     #[test]
@@ -2163,18 +1964,6 @@ mod tests {
             .expect("and clears from there");
         assert_eq!(s.advance(StreamTrack::Response), Some(110));
         assert_eq!(s.finish().reason, StreamEndReason::Complete);
-    }
-
-    #[test]
-    fn a_transform_closes_only_its_own_track() {
-        // Tracks are separate offset spaces, so rebasing one says nothing
-        // about the other.
-        let mut s = session(&["safety"], SafetyLevel::Blocking);
-        s.observe(RES, 10).expect("observe response");
-        s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Transformed)
-            .expect("transform on the response track");
-        s.observe(REQ, 5)
-            .expect("the request track is untouched by it");
     }
 
     #[test]
@@ -2264,16 +2053,6 @@ mod tests {
             denied.end_reason(),
             Some(StreamEndReason::Denied { .. })
         ));
-    }
-
-    #[test]
-    fn a_transform_verdict_obliges_the_host_to_substitute() {
-        let mut s = session(&["pii"], SafetyLevel::Blocking);
-        s.observe(RES, 10).expect("observe");
-        s.record_verdict("pii", &span(RES, 0, 10), &transform_verdict())
-            .expect("transform records");
-        assert!(s.transformed());
-        assert!(s.finish().transformed);
     }
 
     #[test]

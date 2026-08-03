@@ -98,9 +98,6 @@ struct Shadow {
     received: u32,
     confirmed: u32,
     start: u32,
-    /// A substitution replaced the target as one value, so this track has no
-    /// releasable prefix afterwards.
-    transformed: bool,
 }
 
 impl Shadow {
@@ -110,23 +107,11 @@ impl Shadow {
             received: start,
             confirmed: start,
             start,
-            transformed: false,
         }
     }
 
     fn min_cleared(&self) -> u32 {
         self.cleared.values().copied().min().unwrap_or(self.start)
-    }
-
-    /// What the track may release. A substitution replaced the target as one
-    /// value, so a rewritten track releases all of itself or none of it.
-    fn releasable(&self) -> u32 {
-        let minimum = self.min_cleared();
-        if self.transformed && minimum < self.received {
-            self.start
-        } else {
-            minimum
-        }
     }
 }
 
@@ -271,10 +256,6 @@ fn run_one(seed: u64) {
                                 StreamError::SessionClosed
                                     | StreamError::PayloadsClosed
                                     | StreamError::OffsetOverflow
-                                    // A transform rebases the track's offsets
-                                    // against the text the host will emit, so
-                                    // no later payload on it can be counted.
-                                    | StreamError::PayloadAfterTransform { .. }
                             ),
                             "seed {seed} step {step}: unexpected observe error {error}"
                         );
@@ -362,11 +343,14 @@ fn run_one(seed: u64) {
                 let model_refuses = was_ended
                     || !task_belongs
                     || span_end > received
-                    // Contiguity governs clearance only. A denial clears
-                    // nothing and is terminal wherever it lands, so it is
-                    // accepted over a gap that a clearing outcome could not
-                    // confirm.
-                    || !matches!(outcome, SegmentOutcome::Denied) && {
+                    // Contiguity governs clearance only. A denial and a
+                    // rewrite each clear nothing and are terminal wherever they
+                    // land, so both are accepted over a gap that a clearing
+                    // outcome could not confirm.
+                    || !matches!(
+                        outcome,
+                        SegmentOutcome::Denied | SegmentOutcome::Transformed
+                    ) && {
                         let shadow = harness.shadow(track);
                         let current = shadow.cleared.get(&task).copied().unwrap_or(shadow.start);
                         span_end > current && span_start > current
@@ -376,12 +360,8 @@ fn run_one(seed: u64) {
                     // rune on the track was released. A session resuming above
                     // zero has already delivered its prefix, so it can never
                     // transform.
-                    // A second substitution against the same target has no
-                    // defined composition.
                     || matches!(outcome, SegmentOutcome::Transformed)
-                        && (!level.withholds()
-                            || confirmed_before > 0
-                            || harness.shadow(track).transformed);
+                        && (!level.withholds() || confirmed_before > 0);
 
                 let result = harness.session.record_outcome(&task, &span, outcome);
 
@@ -406,6 +386,15 @@ fn run_one(seed: u64) {
                             "seed {seed} step {step}: outcome accepted past received"
                         );
                         match outcome {
+                            // A rewrite ends the stream: the replacement is a
+                            // new whole value the accounting cannot vouch for.
+                            SegmentOutcome::Transformed => {
+                                assert!(
+                                    harness.session.is_ended(),
+                                    "seed {seed} step {step}: rewrite did not end the session"
+                                );
+                                harness.terminal = harness.session.end_reason().cloned();
+                            }
                             SegmentOutcome::Denied => {
                                 assert!(
                                     harness.session.is_ended(),
@@ -416,10 +405,7 @@ fn run_one(seed: u64) {
                             _ => {
                                 // The shadow advances only when the span is
                                 // contiguous with this task's frontier.
-                                let transformed_now =
-                                    matches!(outcome, SegmentOutcome::Transformed);
                                 let shadow = harness.shadow_mut(track);
-                                shadow.transformed |= transformed_now;
                                 let current =
                                     shadow.cleared.get(&task).copied().unwrap_or(shadow.start);
                                 if span_end > current {
@@ -470,7 +456,7 @@ fn run_one(seed: u64) {
                     );
                 }
                 if !harness.session.is_ended() {
-                    let expected = harness.shadow(track).releasable();
+                    let expected = harness.shadow(track).min_cleared();
                     assert_eq!(
                         after, expected,
                         "seed {seed} step {step}: {track:?} offset {after} disagrees with the \
