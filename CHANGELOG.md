@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Section 18's requirement that a host assemble streamed model output before
+  `post_model_call` now carries an exception for a host adopting section 18.1.
+  The requirement to assemble streamed final output before `output` is unchanged
+  and has no exception. The sentence excluding enforcement below the snapshot
+  level now excludes the token level only, since the new profile is segment
+  level enforcement and the previous wording excluded that too.
+- A track that records a `transform` accepts no further payload, reporting
+  `host_error:streaming_unsupported`. A substitution of a different length than
+  the text it replaces makes the host's outgoing text a different sequence from
+  the one the offsets describe, so every later offset on that track would name
+  the wrong position in what the host is about to emit. The width of the
+  divergence is chosen by the replacement value and is never reported to the
+  accounting, which holds no text and so cannot rebase.
+- Payload arriving after the host closed the payload stream now fails the
+  session rather than only being refused, since a host that ignored the refusal
+  would settle clean over runes no task evaluated.
+- A failing settlement no longer advances the watermark. Measuring residue is
+  now independent of committing it, so `safe_offset` cannot rise as a side
+  effect of failing.
+- The resume offset is per track, `request_start_rune_offset` and
+  `response_start_rune_offset`, replacing the single `start_rune_offset`. The
+  tracks are independent offset spaces and the ordinary retry re sends the
+  prompt while resuming the response, which one offset could not express.
 - Incremental stream mediation, specification section 18.1. A host that must
   release model output before the whole response exists can now drive
   `StreamSession`, which tracks how far each configured task has cleared a
