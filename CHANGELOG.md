@@ -37,7 +37,8 @@
   prefixes: `runtime_error:` belongs to the runtime, and the policy output
   normalizer screens a policy's top level reason for it but not a warning's. A liftable `deny`, meaning one carrying an
   `approval` block, is taken at its word and denies. Resolving it is a host
-  obligation under section 9, which a session cannot discharge because it cannot
+  obligation under AGENT-HOOKS-0.1 section 9, which a session cannot discharge
+  because it cannot
   hold its connection open across an out of band approval, so withholding the
   text is the conservative reading.
 - A `transform` is honored only while nothing on its track has been released.

@@ -922,7 +922,8 @@ impl StreamSession {
     /// with [`StreamError::VerdictInvalid`] before its decision is read.
     ///
     /// A `deny` denies, whether or not it carries an `approval` block. A deny
-    /// carrying one is liftable under section 9, but lifting is a host
+    /// carrying one is liftable through the host's approval seam, defined in
+    /// AGENT-HOOKS-0.1 section 9, but lifting is a host
     /// obligation that happens before the outcome reaches here, because a
     /// session cannot hold its connection open across an out of band approval.
     /// A host that runs an approval seam resolves the deny first and records
@@ -1057,7 +1058,8 @@ mod tests {
         }
     }
 
-    /// A `deny` carrying an `approval` block, which section 9 makes liftable.
+    /// A `deny` carrying an `approval` block, which AGENT-HOOKS-0.1 section 9
+    /// makes liftable through the host's approval seam.
     fn liftable_deny() -> Verdict {
         Verdict {
             approval: Some(serde_json::Map::new()),
