@@ -49,8 +49,9 @@
 //!   loading the bundle, runs on a worker thread the dispatcher abandons
 //!   once the deadline passes, so a caller's deadline holds even when one
 //!   builtin call runs long. An abandoned thread cannot be killed, so a
-//!   runner tolerates at most [`MAX_ABANDONED_WORKERS`] such threads and
-//!   fails closed past that rather than growing without bound.
+//!   runner stops starting new evaluations once [`MAX_ABANDONED_WORKERS`]
+//!   are outstanding, so the backlog converges instead of growing without
+//!   bound.
 
 use crate::{
     policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue,
@@ -62,7 +63,7 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU8, AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -83,19 +84,27 @@ const TIMER_CHECK_INTERVAL: u32 = 32;
 /// gives up. Guards against symlink cycles in a host supplied bundle.
 const MAX_BUNDLE_DEPTH: usize = 32;
 
-/// Ceiling on evaluation threads ABANDONED after blowing their deadline.
+/// How many evaluations may be abandoned past their deadline before the
+/// dispatcher refuses to start another.
 ///
 /// An abandoned worker cannot be killed: `regorus` has no cancellation
 /// point inside a builtin call, so the thread runs until its evaluation
-/// finishes on its own. Without a ceiling, a policy that reliably times
+/// finishes on its own. Without this gate a policy that reliably times
 /// out spawns a fresh thread per decision and the host grows without
-/// bound. Past the ceiling the dispatcher fails closed instead, which is
-/// a bounded, observable failure rather than an unbounded one.
+/// bound; past it the dispatcher fails closed instead.
 ///
-/// Only abandoned threads count. Threads doing work a caller is still
-/// waiting on are bounded by the host's own concurrency, so counting
-/// those would turn ordinary parallel load into fail-closed denials.
-const MAX_ABANDONED_WORKERS: usize = 32;
+/// This gates STARTING work, so it is a convergence bound rather than a
+/// hard ceiling on live threads. A burst of callers already in flight
+/// when the limit is crossed all go on to be abandoned, so the peak is
+/// this many plus the host's own concurrency. What it guarantees is that
+/// the count stops growing: no further threads are created while the
+/// backlog is over the limit. Read the current value with
+/// [`RegorusRegoRunner::abandoned_evaluations`].
+///
+/// Only abandoned evaluations count against it. Work a caller is still
+/// waiting on is bounded by the host's concurrency already, and counting
+/// that would turn ordinary parallel load into fail-closed denials.
+pub const MAX_ABANDONED_WORKERS: usize = 32;
 
 /// How many idle evaluation threads a runner keeps parked between calls.
 /// Evaluation runs on a worker thread so a deadline can be enforced even
@@ -274,6 +283,16 @@ impl RegorusRegoRunner {
         }
     }
 
+    /// How many evaluations are still running past their deadline.
+    ///
+    /// These threads cannot be stopped, so they are the runner's one
+    /// unbounded resource and worth watching: a value that sits near
+    /// [`MAX_ABANDONED_WORKERS`] means policies are not terminating, and
+    /// at the ceiling the runner starts failing closed.
+    pub fn abandoned_evaluations(&self) -> usize {
+        self.workers.counters.abandoned.load(Ordering::Acquire)
+    }
+
     /// Always available: unlike the `opa` CLI dispatcher there is no
     /// external binary that could be missing.
     pub fn is_available(&self) -> bool {
@@ -429,9 +448,82 @@ fn eval_timeout_from_environment() -> Option<Duration> {
 #[derive(Debug, Default)]
 struct WorkerPool {
     idle: Mutex<Vec<Worker>>,
-    /// Threads alive right now: parked, running, or abandoned after a
-    /// timeout. Decremented by the worker itself as it exits.
     counters: Arc<WorkerPoolCounters>,
+}
+
+#[derive(Debug, Default)]
+struct WorkerPoolCounters {
+    /// Threads still running an evaluation nobody is waiting for.
+    ///
+    /// Counted exactly rather than inferred from live/idle/in-flight
+    /// arithmetic: those three move independently, and the windows
+    /// between them read as phantom abandonment, which denies healthy
+    /// load.
+    abandoned: AtomicUsize,
+}
+
+/// Lifecycle of one worker thread, owned jointly by the thread and by
+/// whichever caller currently holds it.
+///
+/// A worker leaves `Running` exactly once, and the two racing parties
+/// resolve that transition by compare-exchange: the caller claims
+/// `Abandoned` when its deadline passes, the thread claims `Finished`
+/// when it exits. Whoever loses the race does nothing, so the abandoned
+/// count stays balanced even when a worker finishes in the same instant
+/// its caller gives up on it.
+const WORKER_RUNNING: u8 = 0;
+const WORKER_ABANDONED: u8 = 1;
+const WORKER_FINISHED: u8 = 2;
+
+#[derive(Debug)]
+struct WorkerState {
+    state: AtomicU8,
+    counters: Arc<WorkerPoolCounters>,
+}
+
+impl WorkerState {
+    /// Called by a caller that has stopped waiting.
+    fn abandon(&self) {
+        let claimed = self
+            .state
+            .compare_exchange(
+                WORKER_RUNNING,
+                WORKER_ABANDONED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok();
+        if claimed {
+            self.counters.abandoned.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+}
+
+/// Held by the worker thread for its whole life, so the thread settles
+/// its own accounting however it leaves, panic included.
+#[derive(Debug)]
+struct LiveCount {
+    state: Arc<WorkerState>,
+}
+
+impl Drop for LiveCount {
+    fn drop(&mut self) {
+        if self
+            .state
+            .state
+            .compare_exchange(
+                WORKER_RUNNING,
+                WORKER_FINISHED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            // A caller got there first, so this thread was charged
+            // against the abandoned budget. Give the slot back.
+            self.state.counters.abandoned.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
 }
 
 type EvalJob = Box<dyn FnOnce() -> Result<JsonValue, RuntimeError> + Send>;
@@ -441,21 +533,26 @@ type EvalOutcome = Result<JsonValue, RuntimeError>;
 struct Worker {
     jobs: mpsc::Sender<EvalJob>,
     outcomes: mpsc::Receiver<EvalOutcome>,
+    state: Arc<WorkerState>,
 }
 
 impl Worker {
-    /// Spawns a worker and charges it against the pool's live count. The
-    /// worker releases its own slot as it exits, which is what lets an
-    /// abandoned thread free capacity once its runaway evaluation ends.
-    fn spawn(live: Arc<LiveCount>) -> Result<Self, RuntimeError> {
+    /// Spawns a worker. The thread holds a [`LiveCount`] for its whole
+    /// life so it settles its own accounting however it exits.
+    fn spawn(counters: Arc<WorkerPoolCounters>) -> Result<Self, RuntimeError> {
         let (job_sender, job_receiver) = mpsc::channel::<EvalJob>();
         let (outcome_sender, outcome_receiver) = mpsc::channel::<EvalOutcome>();
+        let state = Arc::new(WorkerState {
+            state: AtomicU8::new(WORKER_RUNNING),
+            counters,
+        });
+        let thread_state = Arc::clone(&state);
         thread::Builder::new()
             .name("acs-rego-eval".to_string())
             .spawn(move || {
-                // Held for the thread's whole life; dropping it frees the
-                // slot however the thread leaves, panic included.
-                let _slot = live;
+                let _slot = LiveCount {
+                    state: thread_state,
+                };
                 while let Ok(job) = job_receiver.recv() {
                     // A closed outcome channel means the caller timed out
                     // and abandoned this worker, so it has no more work.
@@ -472,53 +569,8 @@ impl Worker {
         Ok(Self {
             jobs: job_sender,
             outcomes: outcome_receiver,
+            state,
         })
-    }
-}
-
-/// A reservation on the pool's live-thread budget, released on drop.
-#[derive(Debug)]
-struct LiveCount {
-    pool: Arc<WorkerPoolCounters>,
-}
-
-impl Drop for LiveCount {
-    fn drop(&mut self) {
-        self.pool.live.fetch_sub(1, Ordering::AcqRel);
-    }
-}
-
-#[derive(Debug, Default)]
-struct WorkerPoolCounters {
-    /// Threads alive: parked, working, or abandoned.
-    live: AtomicUsize,
-    /// Threads a caller is currently waiting on.
-    in_flight: AtomicUsize,
-}
-
-impl WorkerPoolCounters {
-    /// Threads still running an evaluation nobody is waiting for any more.
-    /// Every live thread is either parked in the idle list, working for a
-    /// caller, or abandoned, so the remainder is what cannot be reclaimed.
-    fn abandoned(&self, idle: usize) -> usize {
-        self.live
-            .load(Ordering::Acquire)
-            .saturating_sub(idle)
-            .saturating_sub(self.in_flight.load(Ordering::Acquire))
-    }
-}
-
-/// Marks a caller as waiting on a worker, released however the caller
-/// leaves. A worker whose caller has gone but whose thread is still live
-/// is, by definition, abandoned.
-#[derive(Debug)]
-struct InFlightGuard {
-    counters: Arc<WorkerPoolCounters>,
-}
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        self.counters.in_flight.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -531,10 +583,6 @@ impl WorkerPool {
             Some(worker) => worker,
             None => self.spawn_worker()?,
         };
-        self.counters.in_flight.fetch_add(1, Ordering::AcqRel);
-        let _in_flight = InFlightGuard {
-            counters: Arc::clone(&self.counters),
-        };
         if worker.jobs.send(Box::new(work)).is_err() {
             return Err(RuntimeError::PolicyInvocationFailed(
                 "Rego evaluation thread ended before it accepted the query".to_string(),
@@ -546,9 +594,15 @@ impl WorkerPool {
                 self.release(worker);
                 outcome
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => Err(RuntimeError::PolicyInvocationFailed(
-                format!("Rego eval exceeded timeout of {} ms", timeout.as_millis()),
-            )),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // The thread cannot be stopped, so charge it against the
+                // abandoned budget until it finishes on its own.
+                worker.state.abandon();
+                Err(RuntimeError::PolicyInvocationFailed(format!(
+                    "Rego eval exceeded timeout of {} ms",
+                    timeout.as_millis()
+                )))
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => Err(RuntimeError::PolicyInvocationFailed(
                 "Rego evaluation thread ended without producing a verdict".to_string(),
             )),
@@ -562,8 +616,7 @@ impl WorkerPool {
     /// Spawns a worker, or fails closed when too many earlier evaluations
     /// have been abandoned past their deadline.
     fn spawn_worker(&self) -> Result<Worker, RuntimeError> {
-        let idle = self.idle.lock().map(|idle| idle.len()).unwrap_or(0);
-        let abandoned = self.counters.abandoned(idle);
+        let abandoned = self.counters.abandoned.load(Ordering::Acquire);
         if abandoned >= MAX_ABANDONED_WORKERS {
             return Err(RuntimeError::PolicyInvocationFailed(format!(
                 "{abandoned} Rego evaluations are still running past their timeout and cannot be \
@@ -571,18 +624,7 @@ impl WorkerPool {
                  Raise ACS_OPA_TIMEOUT_MS, or fix the policy that is not terminating"
             )));
         }
-        self.counters.live.fetch_add(1, Ordering::AcqRel);
-        // On failure `thread::Builder::spawn` drops the closure, and with
-        // it the `LiveCount` that owns this slot, so the release happens
-        // exactly once and must NOT be compensated for here.
-        Worker::spawn(Arc::new(LiveCount {
-            pool: Arc::clone(&self.counters),
-        }))
-    }
-
-    #[cfg(test)]
-    fn live_workers(&self) -> usize {
-        self.counters.live.load(Ordering::Acquire)
+        Worker::spawn(Arc::clone(&self.counters))
     }
 
     fn release(&self, worker: Worker) {

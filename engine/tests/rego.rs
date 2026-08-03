@@ -640,19 +640,10 @@ fn rego_data_paths_mount_every_document_by_directory() {
 /// stop spawning rather than grow a thread per timed-out decision.
 #[test]
 fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
-    fn live_threads() -> usize {
-        fs::read_dir("/proc/self/task")
-            .map(|entries| entries.count())
-            .unwrap_or(0)
-    }
-    if live_threads() == 0 {
-        return; // not Linux; the ceiling is still asserted by the error path below
-    }
-    let dispatcher = RegorusPolicyDispatcher::with_runner(
-        RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(20)),
-    );
-    let before = live_threads();
-    let mut saturated = 0;
+    let runner = RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(20));
+    let dispatcher = RegorusPolicyDispatcher::with_runner(runner.clone());
+
+    let mut refused = 0;
     for _ in 0..120 {
         if let Err(error) = dispatcher.evaluate(&rego_invocation(
             "count(numbers.range(0, 40000000))",
@@ -661,18 +652,24 @@ fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
             json!({}),
         )) {
             if error.detail().contains("running past their timeout") {
-                saturated += 1;
+                refused += 1;
             }
         }
+        // Counted on the pool itself rather than by reading
+        // /proc/self/task, which the rest of this suite perturbs. These
+        // calls are serial, so at most one evaluation is in flight when
+        // the limit is crossed.
+        assert!(
+            runner.abandoned_evaluations() <= agent_control_spec::rego::MAX_ABANDONED_WORKERS + 1,
+            "abandoned evaluations grew past the gate: {}",
+            runner.abandoned_evaluations()
+        );
     }
 
-    // 2 baseline + at most MAX_ABANDONED_WORKERS still-running evaluations.
     assert!(
-        live_threads() < before + 40,
-        "threads grew from {before} to {} across 120 timeouts",
-        live_threads()
+        refused > 0,
+        "120 timed-out evaluations should have hit the abandoned ceiling"
     );
-    assert!(saturated > 0, "the pool ceiling should have refused work");
 }
 
 /// Loading the bundle must be inside the deadline, not before it.
@@ -699,9 +696,10 @@ fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
     ));
 
     // Discriminating: with the load outside the deadline this same
-    // bundle took several hundred milliseconds, scaling with file count.
+    // bundle measured ~176ms, scaling with file count, against ~50ms
+    // once the load is inside the 50ms deadline.
     assert!(
-        started.elapsed() < Duration::from_millis(200),
+        started.elapsed() < Duration::from_millis(120),
         "bundle load escaped the deadline: {:?}",
         started.elapsed()
     );
@@ -761,24 +759,28 @@ fn rego_directory_named_like_an_archive_still_loads() {
 /// only threads abandoned past a deadline are capped.
 #[test]
 fn rego_healthy_concurrency_is_not_refused() {
-    let mut adapter_config = BTreeMap::new();
-    adapter_config.insert("data_paths".to_string(), json!([fixture("verdict.rego")]));
     let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(
         RegorusRegoRunner::new()
             .with_policy_cache(true)
             .with_eval_timeout(Duration::from_secs(30)),
     ));
+    // The callers must genuinely overlap, and each must do enough work to
+    // still be in flight when the rest arrive. A microsecond query lets
+    // them run almost serially, which passes even against a pool that
+    // caps healthy concurrency.
+    let barrier = Arc::new(std::sync::Barrier::new(128));
 
     let handles: Vec<_> = (0..128)
         .map(|_| {
             let dispatcher = Arc::clone(&dispatcher);
-            let adapter_config = adapter_config.clone();
+            let barrier = Arc::clone(&barrier);
             std::thread::spawn(move || {
+                barrier.wait();
                 dispatcher.evaluate(&rego_invocation(
-                    "data.agent_control_specification.input.verdict",
+                    "count(numbers.range(0, 300000))",
                     None,
-                    adapter_config,
-                    json!({"policy_target": {"value": {"text": "hello"}}}),
+                    BTreeMap::new(),
+                    json!({}),
                 ))
             })
         })
