@@ -158,7 +158,7 @@ pub const ACS_MANIFEST_CALL_FAILED: i32 = -1;
 ///
 /// Authoring and migration tools need this answer before a policy is
 /// runnable, and `acs_interceptor_new` would additionally require the
-/// bundled dispatchers and, for Rego, an `opa` binary on PATH.
+/// bundled dispatchers and, for Rego, a loadable policy bundle.
 ///
 /// Returns `ACS_MANIFEST_VALID`, `ACS_MANIFEST_INVALID`, or
 /// `ACS_MANIFEST_CALL_FAILED`. A verdict on the manifest and a failure

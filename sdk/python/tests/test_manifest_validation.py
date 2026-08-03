@@ -43,7 +43,7 @@ def test_malformed_yaml_is_rejected():
 
 
 def test_validation_needs_no_policy_engine_on_path(monkeypatch):
-    # The point of the entry point: no dispatchers, no `opa` binary.
+    # The point of the entry point: no dispatchers, no policy bundle.
     monkeypatch.setenv("PATH", "")
     assert validate_manifest(VALID) is None
 

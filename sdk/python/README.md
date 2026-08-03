@@ -17,14 +17,14 @@ emitter = InterceptionEmitter(mode=EnforcementMode.ENFORCE)
 emitter.register(AcsInterceptor("manifest.yaml"), "acs")
 ```
 
-The manifest binds policies (Rego through OPA, Cedar through the
-built-in evaluator, or `test` doubles) to interception points; the
+The manifest binds policies (Rego and Cedar through their built-in
+evaluators, or `test` doubles) to interception points; the
 runtime evaluates each context and returns an agent-hooks verdict.
 Engine failures never raise into the host loop: they normalize into
 fail-closed `deny` verdicts with `runtime_error:*` reasons.
 
 Manifests can also be checked on their own, without building a runtime
-or having `opa` on PATH. Useful when generating or migrating manifests:
+or resolving a policy bundle. Useful when generating or migrating manifests:
 
 ```python
 from agent_control_spec import ManifestInvalidError, validate_manifest

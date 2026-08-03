@@ -14,17 +14,22 @@ use crate::{JsonValue, RuntimeError};
 
 #[cfg(feature = "cedar")]
 use crate::cedar::CedarBuiltinDispatcher;
-#[cfg(feature = "opa")]
+#[cfg(all(not(feature = "rego"), feature = "opa"))]
 use crate::opa::{OpaPolicyDispatcher, OpaRegoRunner};
+#[cfg(feature = "rego")]
+use crate::rego::{RegorusPolicyDispatcher, RegorusRegoRunner};
 
 /// Routes each policy invocation to the bundled evaluator for its
-/// engine type: Rego through the OPA runner (`opa` feature), Cedar
+/// engine type: Rego through the in-process `regorus` runner (`rego`
+/// feature) or the legacy `opa` CLI runner (`opa` feature), Cedar
 /// through the built-in evaluator (`cedar` feature), and `test`
 /// policies through their manifest-embedded `verdict` value. Custom
 /// policies require a host-supplied dispatcher and fail closed here.
 #[derive(Debug, Default)]
 pub struct BindingPolicyDispatcher {
-    #[cfg(feature = "opa")]
+    #[cfg(feature = "rego")]
+    rego: RegorusPolicyDispatcher,
+    #[cfg(all(not(feature = "rego"), feature = "opa"))]
     opa: OpaPolicyDispatcher,
     #[cfg(feature = "cedar")]
     cedar: CedarBuiltinDispatcher,
@@ -33,7 +38,14 @@ pub struct BindingPolicyDispatcher {
 impl BindingPolicyDispatcher {
     pub fn new() -> Self {
         Self {
-            #[cfg(feature = "opa")]
+            // Bindings are long-lived processes evaluating the same
+            // manifest repeatedly, so the compiled policy cache is worth
+            // its staleness trade here: policy files are read once.
+            #[cfg(feature = "rego")]
+            rego: RegorusPolicyDispatcher::with_runner(
+                RegorusRegoRunner::from_environment().with_policy_cache(true),
+            ),
+            #[cfg(all(not(feature = "rego"), feature = "opa"))]
             opa: OpaPolicyDispatcher::with_runner(OpaRegoRunner::from_environment()),
             #[cfg(feature = "cedar")]
             cedar: CedarBuiltinDispatcher::new(),
@@ -44,11 +56,14 @@ impl BindingPolicyDispatcher {
 impl PolicyDispatcher for BindingPolicyDispatcher {
     fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
         match invocation {
-            #[cfg(feature = "opa")]
+            #[cfg(feature = "rego")]
+            PreparedPolicyInvocation::Rego(_) => self.rego.evaluate(invocation),
+            #[cfg(all(not(feature = "rego"), feature = "opa"))]
             PreparedPolicyInvocation::Rego(_) => self.opa.evaluate(invocation),
-            #[cfg(not(feature = "opa"))]
+            #[cfg(not(any(feature = "rego", feature = "opa")))]
             PreparedPolicyInvocation::Rego(_) => Err(RuntimeError::PolicyInvocationFailed(
-                "Rego policies require the 'opa' feature or a host dispatcher".to_string(),
+                "Rego policies require the 'rego' or 'opa' feature or a host dispatcher"
+                    .to_string(),
             )),
             #[cfg(feature = "cedar")]
             PreparedPolicyInvocation::Cedar(_) => self.cedar.evaluate(invocation),

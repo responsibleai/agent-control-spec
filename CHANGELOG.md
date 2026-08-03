@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- The bundled Rego dispatcher evaluates policy in process through
+  [`regorus`](https://crates.io/crates/regorus) instead of shelling out to
+  an `opa` binary on PATH. Nothing has to be installed on the host, and a
+  decision no longer costs a process spawn, a pipe round trip, and a JSON
+  re-parse: measured over the `examples/bank_agent` policy set, one
+  intervention point drops from 26ms to 0.3ms. Verdicts do not change. The
+  new dispatcher reads the same single query expression value the `opa`
+  CLI returned, so the same manifest over the same bundle still produces
+  the same verdict.
+  - New default feature `rego`, exposing `RegorusRegoRunner` and
+    `RegorusPolicyDispatcher`. `default_policy_dispatcher` and the
+    language bindings use it.
+  - The `opa` CLI dispatcher is unchanged, but its `opa` feature is no
+    longer on by default. Hosts that need OPA's exact CLI semantics can
+    opt back in and register `OpaPolicyDispatcher` themselves. One
+    behaviour does differ: the in-process dispatcher reads a bundle
+    directory or a single file, never a packaged `.tar.gz`.
+  - `ACS_OPA_TIMEOUT_MS` still sets the eval timeout. The dispatcher
+    enforces it twice, through a cooperative deadline inside the
+    evaluator and through a pooled worker thread it abandons when the
+    deadline passes, so a caller returns on time even for a policy the
+    evaluator cannot interrupt. `ACS_OPA_PATH` applies only to the opt-in
+    CLI dispatcher.
+  - `RegorusRegoRunner::with_policy_cache(true)` reuses a parsed bundle
+    across evaluations. It stays off by default because it hides on-disk
+    policy edits until the runner is rebuilt; the language bindings turn
+    it on, since they hold one runtime for the life of the process.
+
 - Manifest grammar validation is reachable from every binding, not just
   the Rust crate: `validate_manifest` (Python), `validateManifest`
   (Node), `AcsManifest.Validate` (.NET), over the new C ABI entry point

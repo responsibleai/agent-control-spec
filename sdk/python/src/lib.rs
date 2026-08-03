@@ -66,7 +66,7 @@ create_exception!(
 ///
 /// Authoring and migration tools need this answer before a policy is
 /// runnable, and building a runtime would additionally require the
-/// bundled dispatchers and, for Rego, an `opa` binary on PATH. Fails
+/// bundled dispatchers and, for Rego, a loadable policy bundle. Fails
 /// closed with the engine's own error text.
 #[pyfunction]
 fn validate_manifest(source: &str) -> PyResult<()> {

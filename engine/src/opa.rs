@@ -1,10 +1,18 @@
+//! Legacy Rego policy dispatcher that shells out to the `opa` CLI.
+//!
+//! Gated behind the opt-in `opa` feature. The bundled default is
+//! [`crate::rego`], which evaluates Rego in process and so costs no
+//! process spawn per decision. This dispatcher stays available for two
+//! cases: a host that needs OPA's exact CLI semantics, most visibly the
+//! packaged `.tar.gz` bundles the in-process dispatcher does not read,
+//! and a host that must pin evaluation to a specific `opa` build.
+
 use crate::{
-    runtime::PolicyDispatcher, JsonValue, PreparedPolicyInvocation, RegoPolicyInvocation,
-    RuntimeError,
+    policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue,
+    PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
 };
 use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
     env,
     ffi::OsString,
     io::{self, Read, Write},
@@ -17,7 +25,6 @@ use std::{
 pub const OPA_PATH_ENV: &str = "ACS_OPA_PATH";
 pub const OPA_TIMEOUT_ENV: &str = "ACS_OPA_TIMEOUT_MS";
 const DEFAULT_OPA_TIMEOUT: Duration = Duration::from_secs(5);
-const OPA_DATA_KEYS: [&str; 2] = ["data", "data_paths"];
 const ERROR_OUTPUT_LIMIT: usize = 4096;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +135,7 @@ impl OpaRegoRunner {
     }
 
     fn run_opa_eval(&self, invocation: &RegoPolicyInvocation) -> Result<Output, RuntimeError> {
-        let adapter_data_paths = adapter_data_paths(&invocation.adapter_config)?;
+        let adapter_data_paths = rego_adapter_data_paths(&invocation.adapter_config)?;
         let mut command = Command::new(&self.executable);
         command
             .arg("eval")
@@ -311,55 +318,6 @@ struct OpaEvalExpression {
 struct OpaEvalError {
     code: Option<String>,
     message: String,
-}
-
-fn adapter_data_paths(
-    adapter_config: &BTreeMap<String, JsonValue>,
-) -> Result<Vec<PathBuf>, RuntimeError> {
-    let mut paths = Vec::new();
-    for key in OPA_DATA_KEYS {
-        if let Some(value) = adapter_config.get(key) {
-            push_adapter_data_paths(key, value, &mut paths)?;
-        }
-    }
-    Ok(paths)
-}
-
-fn push_adapter_data_paths(
-    key: &str,
-    value: &JsonValue,
-    paths: &mut Vec<PathBuf>,
-) -> Result<(), RuntimeError> {
-    match value {
-        JsonValue::Null => Ok(()),
-        JsonValue::String(path) => push_data_path(key, path, paths),
-        JsonValue::Array(items) => {
-            for item in items {
-                match item {
-                    JsonValue::String(path) => push_data_path(key, path, paths)?,
-                    _ => {
-                        return Err(RuntimeError::PolicyInvocationFailed(format!(
-                            "OPA adapter_config.{key} must be a string or array of strings"
-                        )))
-                    }
-                }
-            }
-            Ok(())
-        }
-        _ => Err(RuntimeError::PolicyInvocationFailed(format!(
-            "OPA adapter_config.{key} must be a string or array of strings"
-        ))),
-    }
-}
-
-fn push_data_path(key: &str, path: &str, paths: &mut Vec<PathBuf>) -> Result<(), RuntimeError> {
-    if path.trim().is_empty() {
-        return Err(RuntimeError::PolicyInvocationFailed(format!(
-            "OPA adapter_config.{key} entries must not be empty"
-        )));
-    }
-    paths.push(PathBuf::from(path));
-    Ok(())
 }
 
 fn opa_spawn_error(executable: &Path, err: io::Error) -> RuntimeError {

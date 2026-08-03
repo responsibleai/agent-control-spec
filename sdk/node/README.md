@@ -13,13 +13,13 @@ const emitter = new InterceptionEmitter();
 emitter.register(AcsInterceptor.fromPath("manifest.yaml"), "acs");
 ```
 
-Zero-config construction: bundled annotators; Rego policies through a
-local `opa` binary, Cedar through the built-in evaluator, `test`
+Zero-config construction: bundled annotators; Rego policies through the
+in-process Rego evaluator, Cedar through the built-in evaluator, `test`
 policies through their embedded verdict. Custom policies require a host
 dispatcher and fail closed under this construction.
 
 Manifests can also be checked on their own, without building a runtime
-or having `opa` on PATH. Useful when generating or migrating manifests:
+or resolving a policy bundle. Useful when generating or migrating manifests:
 
 ```ts
 import { validateManifest, ManifestInvalidError } from "@responsibleai/agent-control-spec";

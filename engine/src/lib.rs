@@ -30,6 +30,8 @@ pub mod point_ext;
 pub mod policy;
 pub mod policy_input;
 pub mod policy_output;
+#[cfg(feature = "rego")]
+pub mod rego;
 pub mod runtime;
 pub mod telemetry;
 pub mod tool_projection;
@@ -70,5 +72,7 @@ pub use policy::{
 };
 pub use policy_input::{build_policy_input, canonical_json};
 pub use policy_output::{normalize_policy_output, runtime_error_verdict};
+#[cfg(feature = "rego")]
+pub use rego::{RegorusPolicyDispatcher, RegorusRegoRunner};
 pub use runtime::{EvaluationRequest, EvaluationResult, PolicyDispatcher, Runtime};
 pub use telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetryEventType, TelemetrySink};

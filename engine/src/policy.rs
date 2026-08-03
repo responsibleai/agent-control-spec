@@ -413,6 +413,66 @@ fn merge_adapter_config(
     merged
 }
 
+/// Extra Rego data paths declared through `adapter_config`, under either the
+/// `data` or the `data_paths` key. Shared by both bundled Rego dispatchers so
+/// the in-process `regorus` path and the legacy `opa` CLI path accept exactly
+/// the same manifest surface.
+#[cfg(any(feature = "rego", feature = "opa"))]
+pub(crate) fn rego_adapter_data_paths(
+    adapter_config: &BTreeMap<String, JsonValue>,
+) -> Result<Vec<std::path::PathBuf>, RuntimeError> {
+    let mut paths = Vec::new();
+    for key in DATA_PATH_KEYS {
+        if let Some(value) = adapter_config.get(key) {
+            push_adapter_data_paths(key, value, &mut paths)?;
+        }
+    }
+    Ok(paths)
+}
+
+#[cfg(any(feature = "rego", feature = "opa"))]
+fn push_adapter_data_paths(
+    key: &str,
+    value: &JsonValue,
+    paths: &mut Vec<std::path::PathBuf>,
+) -> Result<(), RuntimeError> {
+    match value {
+        JsonValue::Null => Ok(()),
+        JsonValue::String(path) => push_data_path(key, path, paths),
+        JsonValue::Array(items) => {
+            for item in items {
+                match item {
+                    JsonValue::String(path) => push_data_path(key, path, paths)?,
+                    _ => {
+                        return Err(RuntimeError::PolicyInvocationFailed(format!(
+                            "rego adapter_config.{key} must be a string or array of strings"
+                        )))
+                    }
+                }
+            }
+            Ok(())
+        }
+        _ => Err(RuntimeError::PolicyInvocationFailed(format!(
+            "rego adapter_config.{key} must be a string or array of strings"
+        ))),
+    }
+}
+
+#[cfg(any(feature = "rego", feature = "opa"))]
+fn push_data_path(
+    key: &str,
+    path: &str,
+    paths: &mut Vec<std::path::PathBuf>,
+) -> Result<(), RuntimeError> {
+    if path.trim().is_empty() {
+        return Err(RuntimeError::PolicyInvocationFailed(format!(
+            "rego adapter_config.{key} entries must not be empty"
+        )));
+    }
+    paths.push(std::path::PathBuf::from(path));
+    Ok(())
+}
+
 #[cfg(test)]
 mod path_resolution_tests {
     use super::*;
