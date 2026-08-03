@@ -8,6 +8,10 @@
   and has no exception. The sentence excluding enforcement below the snapshot
   level now excludes the token level only, since the new profile is segment
   level enforcement and the previous wording excluded that too.
+- A `transform` must cover every rune its track has observed. A substitution
+  shifts the offsets of any text beyond the span it replaces, and text that
+  arrived before the transform cannot be excluded by refusing later payload, so
+  a shorter replacement let the watermark name runes no task had evaluated.
 - A track that records a `transform` accepts no further payload, reporting
   `host_error:streaming_unsupported`. A substitution of a different length than
   the text it replaces makes the host's outgoing text a different sequence from

@@ -361,8 +361,11 @@ fn run_one(seed: u64) {
                     // rune on the track was released. A session resuming above
                     // zero has already delivered its prefix, so it can never
                     // transform.
+                    // A transform must also cover everything the track has
+                    // observed, since a substitution shifts the offsets of any
+                    // text beyond it that already arrived.
                     || matches!(outcome, SegmentOutcome::Transformed)
-                        && (!level.withholds() || confirmed_before > 0);
+                        && (!level.withholds() || confirmed_before > 0 || span_end < received);
 
                 let result = harness.session.record_outcome(&task, &span, outcome);
 

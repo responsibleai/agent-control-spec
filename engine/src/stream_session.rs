@@ -225,6 +225,24 @@ pub enum StreamError {
         /// Track that had already recorded a transform.
         track: StreamTrack,
     },
+    /// A `transform` was recorded over less than the track's observed text.
+    ///
+    /// A substitution shifts every offset above the span it replaces. Text
+    /// already observed beyond that span keeps its original offsets in the
+    /// accounting while sitting at shifted positions in what the host emits, so
+    /// a later watermark would name the wrong runes. Refusing payload after a
+    /// transform does not help, because this text arrived before it. A
+    /// transform therefore has to cover everything the track has observed,
+    /// which is also what the policy target of a host evaluating its
+    /// accumulated prefix actually contains.
+    TransformLeavesObservedTail {
+        /// Track the transform was recorded on.
+        track: StreamTrack,
+        /// Offset the transformed span ended at.
+        span_end: u32,
+        /// Offset the track had observed up to.
+        observed: u32,
+    },
     /// An outcome or payload arrived after the session went terminal.
     SessionClosed,
     /// A `transform` outcome reached text the host can no longer alter,
@@ -296,6 +314,16 @@ impl fmt::Display for StreamError {
                 f,
                 "payload arrived on the {} track after a transform rebased its offsets",
                 track.as_str()
+            ),
+            Self::TransformLeavesObservedTail {
+                track,
+                span_end,
+                observed,
+            } => write!(
+                f,
+                "transform on the {} track ended at {span_end} leaving {} observed runes whose offsets it shifts",
+                track.as_str(),
+                observed.saturating_sub(*span_end)
             ),
             Self::SessionClosed => f.write_str("streaming session already closed"),
             Self::TransformTooLate => {
@@ -939,6 +967,22 @@ impl StreamSession {
                 // start would honor one over a prefix this attempt emitted.
                 if self.watermark(track).confirmed() > 0 {
                     return Err(self.fail(StreamError::TransformTooLate));
+                }
+                // The substitution shifts every offset above the span. Text
+                // already observed beyond it keeps its accounting offset while
+                // moving in the emitted sequence, so a later watermark would
+                // name the wrong runes. Refusing payload after the transform
+                // cannot help, since this text arrived first. Requiring the
+                // span to cover everything observed removes the tail entirely,
+                // and matches what the policy target of a host evaluating its
+                // accumulated prefix already holds.
+                let observed = self.watermark(track).received();
+                if span.range.end < observed {
+                    return Err(self.fail(StreamError::TransformLeavesObservedTail {
+                        track,
+                        span_end: span.range.end,
+                        observed,
+                    }));
                 }
                 records_transform = true;
             }
@@ -1614,16 +1658,54 @@ mod tests {
         // Task `a` clears the track but `b` has not, so nothing is released and
         // a transform is still possible. The span is below `a`'s own frontier,
         // which the watermark ignores, but a transform is not a clearance
-        // report and settlement must still say the stream was rewritten.
+        // report and settlement must still say the stream was rewritten. The
+        // span still covers everything observed, which is what keeps the
+        // offsets meaningful.
         let mut s = session(&["a", "b"], SafetyLevel::Blocking);
         s.observe(RES, 10).expect("observe");
         s.record_outcome("a", &span(RES, 0, 10), SegmentOutcome::Cleared)
             .expect("a clears");
         assert_eq!(s.advance(StreamTrack::Response), None, "b still holds it");
-        s.record_outcome("a", &span(RES, 0, 5), SegmentOutcome::Transformed)
+        s.record_outcome("a", &span(RES, 0, 10), SegmentOutcome::Transformed)
             .expect("a transform is still applicable");
         assert!(s.transformed());
         assert!(s.finish().transformed);
+    }
+
+    #[test]
+    fn a_transform_leaving_observed_text_behind_fails_closed() {
+        // Regression. Refusing payload after a transform closed only half the
+        // hole: text observed BEFORE the transform sits beyond the span, keeps
+        // its accounting offset, and moves in the emitted sequence. With a
+        // shorter replacement the watermark then named runes no task had
+        // evaluated, and a blocking host released them.
+        let mut s = session(&["t"], SafetyLevel::Blocking);
+        s.observe(RES, 29)
+            .expect("the whole response arrives at once");
+        let error = s
+            .record_outcome("t", &span(RES, 0, 15), SegmentOutcome::Transformed)
+            .expect_err("a transform must cover everything observed");
+        assert_eq!(
+            error,
+            StreamError::TransformLeavesObservedTail {
+                track: StreamTrack::Response,
+                span_end: 15,
+                observed: 29,
+            }
+        );
+        assert!(s.is_ended());
+        assert_eq!(error.reason(), STREAMING_FAIL_CLOSED_REASON);
+    }
+
+    #[test]
+    fn a_transform_covering_everything_observed_is_accepted() {
+        // The boundary the rule turns on: the same session, with the span
+        // extended to the observed end, is honored.
+        let mut s = session(&["t"], SafetyLevel::Blocking);
+        s.observe(RES, 29).expect("observe");
+        s.record_outcome("t", &span(RES, 0, 29), SegmentOutcome::Transformed)
+            .expect("covering the whole observed track is honored");
+        assert!(s.transformed());
     }
 
     #[test]
