@@ -21,10 +21,10 @@
 //! # Differences from the `opa` CLI dispatcher
 //!
 //! Data and policy loading follow `opa eval`: inside a `bundle` root only
-//! `data.json` / `data.yaml` documents are data, mounted under the `data`
-//! path their directory implies; a `data_paths` root additionally accepts
-//! any `.json` / `.yaml` file, and a single file mounts at the `data`
-//! root. What remains different:
+//! `data.json` / `data.yaml` / `data.yml` documents are data, mounted
+//! under the `data` path their directory implies; a `data_paths` root
+//! additionally accepts any `.json` / `.yaml` / `.yml` file, and a single
+//! file mounts at the `data` root. What remains different:
 //!
 //! * A `bundle` MUST be a directory or a single policy/data file. OPA's
 //!   packaged `.tar.gz` bundles are not read; the error message says so.

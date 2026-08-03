@@ -768,56 +768,56 @@ fn rego_directory_named_like_an_archive_still_loads() {
 /// only threads abandoned past a deadline are capped.
 #[test]
 fn rego_healthy_concurrency_is_not_refused() {
-    // Repeated because the defect this guards is a race in the window
-    // where a worker is being spawned: one burst catches it about two
-    // runs in five, four independent cold-pool bursts catch it about
-    // seven in eight. Each burst gets a fresh dispatcher so every caller
-    // has to spawn rather than reuse a parked worker.
-    for burst in 0..4 {
-        let runner = RegorusRegoRunner::new()
-            .with_policy_cache(true)
-            .with_eval_timeout(Duration::from_secs(30));
-        let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(runner.clone()));
-        let callers = 512;
-        let barrier = Arc::new(std::sync::Barrier::new(callers));
+    // 512 callers, released together against a cold pool. The defect this
+    // guards is a race in the window where a worker is being spawned, so
+    // detection is probabilistic: measured at roughly 45% per run against
+    // the tree that had it, up from 25% at 128 callers. Repeating the
+    // burst does not help, because every observed detection landed on the
+    // first burst; raising the caller count is what moved the number.
+    let runner = RegorusRegoRunner::new()
+        .with_policy_cache(true)
+        .with_eval_timeout(Duration::from_secs(30));
+    let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(runner.clone()));
+    let callers = 512;
+    let barrier = Arc::new(std::sync::Barrier::new(callers));
 
-        let handles: Vec<_> = (0..callers)
-            .map(|_| {
-                let dispatcher = Arc::clone(&dispatcher);
-                let barrier = Arc::clone(&barrier);
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    dispatcher.evaluate(&rego_invocation(
-                        "count(numbers.range(0, 300000))",
-                        None,
-                        BTreeMap::new(),
-                        json!({}),
-                    ))
-                })
+    let handles: Vec<_> = (0..callers)
+        .map(|_| {
+            let dispatcher = Arc::clone(&dispatcher);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                dispatcher.evaluate(&rego_invocation(
+                    "count(numbers.range(0, 300000))",
+                    None,
+                    BTreeMap::new(),
+                    json!({}),
+                ))
             })
-            .collect();
+        })
+        .collect();
 
-        let mut refused = Vec::new();
-        for handle in handles {
-            if let Err(error) = handle.join().unwrap() {
-                refused.push(error.detail().to_string());
-            }
+    let mut refused = Vec::new();
+    for handle in handles {
+        if let Err(error) = handle.join().unwrap() {
+            refused.push(error.detail().to_string());
         }
-
-        assert!(
-            refused.is_empty(),
-            "burst {burst}: {} of {callers} healthy concurrent evaluations were refused, first: {:?}",
-            refused.len(),
-            refused.first()
-        );
-        // Nothing came near the 30s deadline, so nothing may be charged
-        // as abandoned. This is the invariant the refusals violate.
-        assert_eq!(
-            runner.abandoned_evaluations(),
-            0,
-            "burst {burst}: evaluations counted as abandoned without timing out"
-        );
     }
+
+    assert!(
+        refused.is_empty(),
+        "{} of {callers} healthy concurrent evaluations were refused, first: {:?}",
+        refused.len(),
+        refused.first()
+    );
+    // A settled sanity check rather than the discriminating signal: by the
+    // time every caller has joined, nothing came near the 30s deadline, so
+    // nothing may still be charged as abandoned.
+    assert_eq!(
+        runner.abandoned_evaluations(),
+        0,
+        "evaluations remained charged as abandoned without timing out"
+    );
 }
 
 /// A bundle root matches file names the way `opa` does, case included.
