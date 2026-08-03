@@ -98,6 +98,9 @@ struct Shadow {
     received: u32,
     confirmed: u32,
     start: u32,
+    /// A substitution replaced the target as one value, so this track has no
+    /// releasable prefix afterwards.
+    transformed: bool,
 }
 
 impl Shadow {
@@ -107,11 +110,23 @@ impl Shadow {
             received: start,
             confirmed: start,
             start,
+            transformed: false,
         }
     }
 
     fn min_cleared(&self) -> u32 {
         self.cleared.values().copied().min().unwrap_or(self.start)
+    }
+
+    /// What the track may release. A substitution replaced the target as one
+    /// value, so a rewritten track releases all of itself or none of it.
+    fn releasable(&self) -> u32 {
+        let minimum = self.min_cleared();
+        if self.transformed && minimum < self.received {
+            self.start
+        } else {
+            minimum
+        }
     }
 }
 
@@ -361,11 +376,12 @@ fn run_one(seed: u64) {
                     // rune on the track was released. A session resuming above
                     // zero has already delivered its prefix, so it can never
                     // transform.
-                    // A transform must also cover everything the track has
-                    // observed, since a substitution shifts the offsets of any
-                    // text beyond it that already arrived.
+                    // A second substitution against the same target has no
+                    // defined composition.
                     || matches!(outcome, SegmentOutcome::Transformed)
-                        && (!level.withholds() || confirmed_before > 0 || span_end < received);
+                        && (!level.withholds()
+                            || confirmed_before > 0
+                            || harness.shadow(track).transformed);
 
                 let result = harness.session.record_outcome(&task, &span, outcome);
 
@@ -400,7 +416,10 @@ fn run_one(seed: u64) {
                             _ => {
                                 // The shadow advances only when the span is
                                 // contiguous with this task's frontier.
+                                let transformed_now =
+                                    matches!(outcome, SegmentOutcome::Transformed);
                                 let shadow = harness.shadow_mut(track);
+                                shadow.transformed |= transformed_now;
                                 let current =
                                     shadow.cleared.get(&task).copied().unwrap_or(shadow.start);
                                 if span_end > current {
@@ -451,7 +470,7 @@ fn run_one(seed: u64) {
                     );
                 }
                 if !harness.session.is_ended() {
-                    let expected = harness.shadow(track).min_cleared();
+                    let expected = harness.shadow(track).releasable();
                     assert_eq!(
                         after, expected,
                         "seed {seed} step {step}: {track:?} offset {after} disagrees with the \

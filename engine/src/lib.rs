@@ -77,6 +77,7 @@ pub use runtime::{EvaluationRequest, EvaluationResult, PolicyDispatcher, Runtime
 pub use stream_session::{
     RuneRange, SafetyLevel, SegmentOutcome, StreamCompletion, StreamEndReason, StreamError,
     StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan, StreamTrack, StreamWatermark,
-    MAX_RUNE_OFFSET, STREAMING_FAIL_CLOSED_REASON, VERDICT_INVALID_REASON,
+    MAX_RUNE_OFFSET, STREAMING_FAIL_CLOSED_REASON, TRANSFORM_CONFLICT_REASON,
+    VERDICT_INVALID_REASON,
 };
 pub use telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetryEventType, TelemetrySink};
