@@ -41,7 +41,7 @@ fn decode(what: &str, value: &Utf16String) -> napi::Result<String> {
 }
 
 /// Build a runtime handle from a manifest path using the zero-config
-/// dispatchers (bundled annotators; Rego through OPA, Cedar through the
+/// dispatchers (bundled annotators; Rego in process, Cedar through the
 /// built-in evaluator, `test` policies through their embedded verdict).
 #[napi]
 pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Handle>> {

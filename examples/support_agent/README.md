@@ -13,7 +13,6 @@ python -m pip install ./sdk/python
 python examples/support_agent/app/run_demo.py
 ```
 
-`opa` must be available on `PATH`.
 
 ## Expected verdicts
 

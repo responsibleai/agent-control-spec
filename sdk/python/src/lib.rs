@@ -22,7 +22,7 @@ struct RuntimeHandle {
 }
 
 /// Build a runtime handle from a manifest path using the zero-config
-/// dispatchers (bundled annotators; Rego through OPA, Cedar through the
+/// dispatchers (bundled annotators; Rego in process, Cedar through the
 /// built-in evaluator, `test` policies through their embedded verdict).
 #[pyfunction]
 fn interceptor_new(manifest_path: &str) -> PyResult<RuntimeHandle> {

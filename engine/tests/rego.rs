@@ -90,12 +90,10 @@ fn rego_dispatcher_evaluates_query_with_data_paths_from_adapter_config() {
 fn rego_dispatcher_loads_a_bundle_directory_with_policies_and_data() {
     let dir = test_artifact_dir("rego-bundle-directory");
     fs::create_dir_all(dir.join("nested")).unwrap();
-    fs::write(
-        dir.join("nested").join("limits.json"),
-        r#"{"limits": {"max_amount": 500}}"#,
-    )
-    .unwrap();
-    fs::write(dir.join("labels.yaml"), "labels:\n  tier: gold\n").unwrap();
+    // Inside a bundle root, `opa eval` accepts only documents named
+    // `data.*`, so that is what a bundle fixture must use.
+    fs::write(dir.join("data.json"), r#"{"limits": {"max_amount": 500}}"#).unwrap();
+    fs::write(dir.join("data.yaml"), "labels:\n  tier: gold\n").unwrap();
     fs::write(
         dir.join("policy.rego"),
         r#"package bundle
@@ -114,8 +112,14 @@ verdict := {"decision": "allow", "tier": data.labels.tier} if {
 "#,
     )
     .unwrap();
-    // A non-policy sibling file must be ignored rather than fail the load.
+    // Neither of these may contribute: one is not a policy or data file,
+    // the other is a data document a bundle root ignores by name.
     fs::write(dir.join("README.md"), "not a policy").unwrap();
+    fs::write(
+        dir.join("nested").join("limits.json"),
+        r#"{"ignored": true}"#,
+    )
+    .unwrap();
 
     let dispatcher = RegorusPolicyDispatcher::new();
     let allow = dispatcher
@@ -137,6 +141,17 @@ verdict := {"decision": "allow", "tier": data.labels.tier} if {
 
     assert_eq!(allow, json!({"decision": "allow", "tier": "gold"}));
     assert_eq!(deny, json!({"decision": "deny", "reason": "over_limit"}));
+    assert!(
+        dispatcher
+            .evaluate(&rego_invocation(
+                "data.nested.ignored",
+                Some(dir.display().to_string()),
+                BTreeMap::new(),
+                json!({}),
+            ))
+            .is_err(),
+        "a bundle root must ignore a data document not named data.*"
+    );
 }
 
 #[test]
@@ -551,6 +566,192 @@ fn rego_policy_cache_is_opt_in_and_preserves_results() {
     // Clearing forces a re-read without changing the verdict.
     cached.clear_policy_cache();
     assert_eq!(dispatcher.evaluate(&invocation("hello")).unwrap(), first);
+}
+
+/// `opa eval --bundle` mounts a data document under the `data` path its
+/// DIRECTORY implies, and inside a bundle it only accepts documents named
+/// `data.*`. Verified against the real `opa` binary.
+#[test]
+fn rego_bundle_mounts_data_documents_the_way_opa_does() {
+    let dir = test_artifact_dir("rego-bundle-data-mount");
+    fs::create_dir_all(dir.join("nested")).unwrap();
+    fs::write(dir.join("data.json"), r#"{"top": true}"#).unwrap();
+    fs::write(dir.join("nested").join("data.json"), r#"{"max": 5}"#).unwrap();
+    // Not named data.*, so a bundle root must ignore it entirely.
+    fs::write(dir.join("nested").join("limits.json"), r#"{"other": "x"}"#).unwrap();
+    fs::write(
+        dir.join("p.rego"),
+        "package t\n\nimport rego.v1\n\nv := 1\n",
+    )
+    .unwrap();
+    let bundle = dir.display().to_string();
+    let dispatcher = RegorusPolicyDispatcher::new();
+    let eval = |query: &str| {
+        dispatcher.evaluate(&rego_invocation(
+            query,
+            Some(bundle.clone()),
+            BTreeMap::new(),
+            json!({}),
+        ))
+    };
+
+    assert_eq!(eval("data.top").unwrap(), json!(true));
+    // Mounted under its directory, NOT flattened onto the data root.
+    assert_eq!(eval("data.nested.max").unwrap(), json!(5));
+    assert!(
+        eval("data.max").is_err(),
+        "must not flatten nested data onto the root"
+    );
+    assert!(
+        eval("data.other").is_err(),
+        "a bundle must ignore non-data.* documents"
+    );
+    assert!(eval("data.nested.other").is_err());
+}
+
+/// A `data_paths` root follows `opa eval --data`: every `.json`/`.yaml`
+/// counts, still mounted by directory rather than by file name.
+#[test]
+fn rego_data_paths_mount_every_document_by_directory() {
+    let dir = test_artifact_dir("rego-data-path-mount");
+    fs::create_dir_all(dir.join("nested")).unwrap();
+    fs::write(dir.join("nested").join("limits.json"), r#"{"other": "x"}"#).unwrap();
+    fs::write(
+        dir.join("p.rego"),
+        "package t\n\nimport rego.v1\n\nv := 1\n",
+    )
+    .unwrap();
+    let mut adapter_config = BTreeMap::new();
+    adapter_config.insert("data_paths".to_string(), json!([dir.display().to_string()]));
+
+    let verdict = RegorusPolicyDispatcher::new()
+        .evaluate(&rego_invocation(
+            "data.nested.other",
+            None,
+            adapter_config,
+            json!({}),
+        ))
+        .unwrap();
+
+    assert_eq!(verdict, json!("x"));
+}
+
+/// A worker abandoned at its deadline cannot be killed, so the pool must
+/// stop spawning rather than grow a thread per timed-out decision.
+#[test]
+fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
+    fn live_threads() -> usize {
+        fs::read_dir("/proc/self/task")
+            .map(|entries| entries.count())
+            .unwrap_or(0)
+    }
+    if live_threads() == 0 {
+        return; // not Linux; the ceiling is still asserted by the error path below
+    }
+    let dispatcher = RegorusPolicyDispatcher::with_runner(
+        RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(20)),
+    );
+    let before = live_threads();
+    let mut saturated = 0;
+    for _ in 0..120 {
+        if let Err(error) = dispatcher.evaluate(&rego_invocation(
+            "count(numbers.range(0, 40000000))",
+            None,
+            BTreeMap::new(),
+            json!({}),
+        )) {
+            if error.detail().contains("saturated") {
+                saturated += 1;
+            }
+        }
+    }
+
+    assert!(
+        live_threads() < before + 80,
+        "threads grew from {before} to {} across 120 timeouts",
+        live_threads()
+    );
+    assert!(saturated > 0, "the pool ceiling should have refused work");
+}
+
+/// Loading the bundle must be inside the deadline, not before it.
+#[test]
+fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
+    let dir = test_artifact_dir("rego-load-inside-deadline");
+    for index in 0..1500 {
+        fs::write(
+            dir.join(format!("p{index}.rego")),
+            format!("package p{index}\n\nimport rego.v1\n\nv := {index}\n"),
+        )
+        .unwrap();
+    }
+    let dispatcher = RegorusPolicyDispatcher::with_runner(
+        RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(50)),
+    );
+
+    let started = Instant::now();
+    let _ = dispatcher.evaluate(&rego_invocation(
+        "data.p0.v",
+        Some(dir.display().to_string()),
+        BTreeMap::new(),
+        json!({}),
+    ));
+
+    assert!(
+        started.elapsed() < Duration::from_millis(600),
+        "bundle load escaped the deadline: {:?}",
+        started.elapsed()
+    );
+}
+
+/// A bundle written for OPA 0.x needs the v0 escape hatch.
+#[test]
+fn rego_v0_dialect_is_available_behind_an_opt_in() {
+    let dir = test_artifact_dir("rego-v0-dialect");
+    fs::write(dir.join("v0.rego"), "package v0\nallow = 42 { 1 == 1 }\n").unwrap();
+    let bundle = dir.display().to_string();
+    let invocation = || {
+        rego_invocation(
+            "data.v0.allow",
+            Some(bundle.clone()),
+            BTreeMap::new(),
+            json!({}),
+        )
+    };
+
+    let under_v1 = RegorusPolicyDispatcher::new().evaluate(&invocation());
+    let under_v0 =
+        RegorusPolicyDispatcher::with_runner(RegorusRegoRunner::new().with_rego_v0(true))
+            .evaluate(&invocation());
+
+    assert!(under_v1.is_err(), "v0 grammar must not parse as v1");
+    assert_eq!(under_v0.unwrap(), json!(42));
+    assert!(!RegorusRegoRunner::new().rego_v0());
+    assert!(RegorusRegoRunner::new().with_rego_v0(true).rego_v0());
+}
+
+/// A directory whose name ends in an archive suffix is still a directory.
+#[test]
+fn rego_directory_named_like_an_archive_still_loads() {
+    let root = test_artifact_dir("rego-archive-named-dir");
+    let dir = root.join("policies.tar");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("p.rego"),
+        "package t\n\nimport rego.v1\n\nv := 7\n",
+    )
+    .unwrap();
+
+    let verdict = RegorusPolicyDispatcher::new()
+        .evaluate(&rego_invocation(
+            "data.t.v",
+            Some(dir.display().to_string()),
+            BTreeMap::new(),
+            json!({}),
+        ))
+        .unwrap();
+
+    assert_eq!(verdict, json!(7));
 }
 
 #[test]

@@ -38,7 +38,7 @@ class AcsInterceptor:
 
     Register an instance with any agent-hooks host emitter. The manifest
     is loaded once at construction with the zero-config dispatchers
-    (bundled annotators; Rego through OPA, Cedar through the built-in
+    (bundled annotators; Rego in process, Cedar through the built-in
     evaluator, ``test`` policies through their embedded verdict).
     """
 
@@ -62,7 +62,7 @@ def validate_manifest(source: str) -> None:
     Raises :class:`ManifestInvalidError` when the manifest is rejected,
     and returns ``None`` when it is accepted. Nothing is evaluated and no
     runtime is built, so this works before a policy is runnable and
-    without an ``opa`` binary on PATH.
+    without resolving a policy bundle.
 
     Anything else the call raises is a boundary problem rather than a
     verdict on the manifest, and propagates unchanged.

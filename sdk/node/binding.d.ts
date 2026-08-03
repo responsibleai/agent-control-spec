@@ -15,7 +15,7 @@ export declare function intercept(handle: ExternalObject<Handle>, contextJson: s
 
 /**
  * Build a runtime handle from a manifest path using the zero-config
- * dispatchers (bundled annotators; Rego through OPA, Cedar through the
+ * dispatchers (bundled annotators; Rego in process, Cedar through the
  * built-in evaluator, `test` policies through their embedded verdict).
  */
 export declare function interceptorNew(manifestPath: string): ExternalObject<Handle>

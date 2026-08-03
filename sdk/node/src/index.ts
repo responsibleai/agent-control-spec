@@ -52,7 +52,7 @@ export class AcsInterceptor implements Interceptor {
 
   /**
    * Build an interceptor from a manifest path using the zero-config
-   * dispatchers: bundled annotators; Rego policies through OPA, Cedar
+   * dispatchers: bundled annotators; Rego policies in process, Cedar
    * through the built-in evaluator, `test` policies through their
    * embedded verdict. Custom policies require a host dispatcher and
    * fail closed under this construction.
@@ -90,7 +90,7 @@ export class ManifestInvalidError extends Error {
  * Throws {@link ManifestInvalidError} when the manifest is rejected and
  * returns nothing when it is accepted. No runtime is built and nothing
  * is evaluated, so this works before a policy is runnable and without
- * an `opa` binary on PATH.
+ * a loadable policy bundle.
  */
 export function validateManifest(source: string): void {
   if (typeof source !== "string") {

@@ -7,10 +7,11 @@
   an `opa` binary on PATH. Nothing has to be installed on the host, and a
   decision no longer costs a process spawn, a pipe round trip, and a JSON
   re-parse: measured over the `examples/bank_agent` policy set, one
-  intervention point drops from 26ms to 0.3ms. Verdicts do not change. The
-  new dispatcher reads the same single query expression value the `opa`
-  CLI returned, so the same manifest over the same bundle still produces
-  the same verdict.
+  intervention point drops from 26ms to 0.3ms. The new dispatcher reads
+  the same single query expression value the `opa` CLI returned, and
+  loads bundles and data documents by OPA's own rules, so a bundle within
+  the Rego that `regorus` implements produces the same verdict. It is not
+  a drop-in for every bundle: see the divergences below.
   - New default feature `rego`, exposing `RegorusRegoRunner` and
     `RegorusPolicyDispatcher`. `default_policy_dispatcher` and the
     language bindings use it.
@@ -26,9 +27,23 @@
     evaluator cannot interrupt. `ACS_OPA_PATH` applies only to the opt-in
     CLI dispatcher.
   - `RegorusRegoRunner::with_policy_cache(true)` reuses a parsed bundle
-    across evaluations. It stays off by default because it hides on-disk
-    policy edits until the runner is rebuilt; the language bindings turn
-    it on, since they hold one runtime for the life of the process.
+    across evaluations. It stays off by default on the bare runner
+    because it hides on-disk policy edits until the runner is rebuilt.
+    `default_policy_dispatcher` and the language bindings turn it on,
+    since they hold one runtime for the life of the process and would
+    otherwise re-read the whole policy set on every decision.
+  - Known divergences from the `opa` CLI, for hosts porting a bundle:
+    Rego parses as v1 unless `ACS_REGO_V0=1` or
+    `RegorusRegoRunner::with_rego_v0(true)`; packaged `.tar.gz` bundles
+    are not read; `regorus` lacks some OPA builtins (`crypto.*`,
+    `io.jwt.*`, `json.patch`, GraphQL, AWS signing) and registers
+    `http.send` as always-undefined, which is fail-open for a deny rule
+    gated on it; and numbers are IEEE-754 doubles rather than arbitrary
+    precision, so `0.1 + 0.2 == 0.3` is true under OPA and false here.
+  - A policy's `print()` output is captured and discarded rather than
+    reaching the host's stderr. The CLI dispatcher kept it inside the
+    child process, so letting it through would have been a new way for
+    policy input to land in host logs.
 
 - Manifest grammar validation is reachable from every binding, not just
   the Rust crate: `validate_manifest` (Python), `validateManifest`

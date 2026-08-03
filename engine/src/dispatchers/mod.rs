@@ -68,8 +68,14 @@ pub fn default_policy_dispatcher(
     }
     #[cfg(feature = "rego")]
     {
+        // The cache is on here, unlike the bare `RegorusRegoRunner`
+        // default: this dispatcher is built once per manifest and then
+        // asked for a verdict at every intervention point, so without it
+        // the whole policy set is re-read and re-parsed on every
+        // decision. Hosts that hot-reload policy from disk should build
+        // their own runner with the cache off.
         Ok(Arc::new(crate::RegorusPolicyDispatcher::with_runner(
-            crate::RegorusRegoRunner::from_environment(),
+            crate::RegorusRegoRunner::from_environment().with_policy_cache(true),
         )))
     }
     #[cfg(all(not(feature = "rego"), feature = "opa"))]

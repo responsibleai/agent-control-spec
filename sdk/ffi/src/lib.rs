@@ -115,7 +115,7 @@ fn to_c_string(s: String, err_out: *mut *mut c_char) -> *mut c_char {
 }
 
 /// Build an interceptor from a manifest path using the zero-config
-/// dispatchers (bundled annotators; Rego through OPA, Cedar through the
+/// dispatchers (bundled annotators; Rego in process, Cedar through the
 /// built-in evaluator, `test` policies through their embedded verdict).
 ///
 /// # Safety
