@@ -29,7 +29,7 @@ export declare function supportedManifestVersions(): Array<string>
  *
  * Authoring and migration tools need this answer before a policy is
  * runnable, and building a runtime would additionally require the
- * bundled dispatchers and, for Rego, an `opa` binary on PATH.
+ * bundled dispatchers and, for Rego, a loadable policy bundle.
  *
  * A rejected manifest comes back as `Some(message)` rather than being
  * thrown, so a thrown error from this function always means the call
