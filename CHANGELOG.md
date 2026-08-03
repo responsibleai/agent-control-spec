@@ -45,7 +45,12 @@
     is an `f64` here against OPA's higher-precision decimal arithmetic:
     `sum([0.1, 0.2])` is `0.3` under OPA and `0.30000000000000004` here,
     enough for a budget policy comparing it against a `0.3` cap to allow
-    under OPA and deny here.
+    under OPA and deny here. Upstream tracks this as
+    microsoft/regorus#202. Integers past `u64` likewise arrive as
+    doubles, which is this crate's choice rather than a `regorus` limit:
+    carrying them exactly needs `serde_json/arbitrary_precision`, a
+    global feature that makes `canonical_json` non-idempotent (`0.5` and
+    `5e-1` would canonicalize differently and so hash differently).
   - A host can now be told that a decision was refused rather than
     evaluated. An evaluation abandoned at its deadline leaves a thread
     that cannot be killed, so once

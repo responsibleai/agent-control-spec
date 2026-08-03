@@ -48,11 +48,20 @@
 //!   policy arithmetic is, agree exactly. Decimal arithmetic need not:
 //!   `sum([0.1, 0.2])` is `0.3` under OPA and `0.30000000000000004`
 //!   here, so a budget policy comparing that sum against a cap of `0.3`
-//!   allows under OPA and denies here. Integers past about 1.8e19 lose
-//!   their exact value, and a literal too large for an `f64` fails to
-//!   load. Comparing decimals straight out of the policy input is
-//!   unaffected at realistic precision; doing arithmetic on them first
-//!   is where the two engines part.
+//!   allows under OPA and denies here. Comparing decimals straight out
+//!   of the policy input is unaffected at realistic precision; doing
+//!   arithmetic on them first is where the two engines part. Upstream
+//!   tracks the decimal case as microsoft/regorus#202, open since 2024
+//!   and deliberately accepted there as a performance tradeoff.
+//!
+//!   Integers past `u64` also arrive as `f64` here, though `regorus`
+//!   computes them exactly. That one is this crate's own doing: carrying
+//!   them through would mean enabling `serde_json/arbitrary_precision`,
+//!   which is a global feature, and it makes canonicalization
+//!   non-idempotent: `0.5` and `5e-1` canonicalize to different strings
+//!   under it, so equal values would hash differently in
+//!   [`crate::canonical_json`]. Exact integers past `u64` are not worth
+//!   an unsound content hash.
 //! * The dispatcher enforces the eval timeout twice. `regorus` checks a
 //!   cooperative deadline as it evaluates, and the evaluation, including
 //!   loading the bundle, runs on a worker thread the dispatcher abandons
