@@ -687,21 +687,30 @@ fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
         RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(50)),
     );
 
-    let started = Instant::now();
-    let _ = dispatcher.evaluate(&rego_invocation(
-        "data.p0.v",
-        Some(dir.display().to_string()),
-        BTreeMap::new(),
-        json!({}),
-    ));
+    // Best of five. A single wall-clock reading is not stable under
+    // `cargo test` parallelism, but the minimum across runs is: a
+    // scheduling spike inflates a sample, it cannot deflate one.
+    let best = (0..5)
+        .map(|_| {
+            let started = Instant::now();
+            let _ = dispatcher.evaluate(&rego_invocation(
+                "data.p0.v",
+                Some(dir.display().to_string()),
+                BTreeMap::new(),
+                json!({}),
+            ));
+            started.elapsed()
+        })
+        .min()
+        .unwrap();
 
-    // Discriminating: with the load outside the deadline this same
-    // bundle measured ~176ms, scaling with file count, against ~50ms
-    // once the load is inside the 50ms deadline.
+    // With the load inside the 50ms deadline this returns at the
+    // deadline whatever the bundle size. With the load outside it, the
+    // same 2500-file bundle measured ~180-230ms, because parsing is
+    // unmetered and scales with the policy count.
     assert!(
-        started.elapsed() < Duration::from_millis(120),
-        "bundle load escaped the deadline: {:?}",
-        started.elapsed()
+        best < Duration::from_millis(120),
+        "bundle load escaped the deadline: best of five was {best:?}"
     );
 }
 
@@ -759,46 +768,56 @@ fn rego_directory_named_like_an_archive_still_loads() {
 /// only threads abandoned past a deadline are capped.
 #[test]
 fn rego_healthy_concurrency_is_not_refused() {
-    let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(
-        RegorusRegoRunner::new()
+    // Repeated because the defect this guards is a race in the window
+    // where a worker is being spawned: one burst catches it about two
+    // runs in five, four independent cold-pool bursts catch it about
+    // seven in eight. Each burst gets a fresh dispatcher so every caller
+    // has to spawn rather than reuse a parked worker.
+    for burst in 0..4 {
+        let runner = RegorusRegoRunner::new()
             .with_policy_cache(true)
-            .with_eval_timeout(Duration::from_secs(30)),
-    ));
-    // The callers must genuinely overlap, and each must do enough work to
-    // still be in flight when the rest arrive. A microsecond query lets
-    // them run almost serially, which passes even against a pool that
-    // caps healthy concurrency.
-    let barrier = Arc::new(std::sync::Barrier::new(128));
+            .with_eval_timeout(Duration::from_secs(30));
+        let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(runner.clone()));
+        let callers = 512;
+        let barrier = Arc::new(std::sync::Barrier::new(callers));
 
-    let handles: Vec<_> = (0..128)
-        .map(|_| {
-            let dispatcher = Arc::clone(&dispatcher);
-            let barrier = Arc::clone(&barrier);
-            std::thread::spawn(move || {
-                barrier.wait();
-                dispatcher.evaluate(&rego_invocation(
-                    "count(numbers.range(0, 300000))",
-                    None,
-                    BTreeMap::new(),
-                    json!({}),
-                ))
+        let handles: Vec<_> = (0..callers)
+            .map(|_| {
+                let dispatcher = Arc::clone(&dispatcher);
+                let barrier = Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    dispatcher.evaluate(&rego_invocation(
+                        "count(numbers.range(0, 300000))",
+                        None,
+                        BTreeMap::new(),
+                        json!({}),
+                    ))
+                })
             })
-        })
-        .collect();
+            .collect();
 
-    let mut refused = Vec::new();
-    for handle in handles {
-        if let Err(error) = handle.join().unwrap() {
-            refused.push(error.detail().to_string());
+        let mut refused = Vec::new();
+        for handle in handles {
+            if let Err(error) = handle.join().unwrap() {
+                refused.push(error.detail().to_string());
+            }
         }
-    }
 
-    assert!(
-        refused.is_empty(),
-        "128 healthy concurrent evaluations must all succeed; {} were refused, first: {:?}",
-        refused.len(),
-        refused.first()
-    );
+        assert!(
+            refused.is_empty(),
+            "burst {burst}: {} of {callers} healthy concurrent evaluations were refused, first: {:?}",
+            refused.len(),
+            refused.first()
+        );
+        // Nothing came near the 30s deadline, so nothing may be charged
+        // as abandoned. This is the invariant the refusals violate.
+        assert_eq!(
+            runner.abandoned_evaluations(),
+            0,
+            "burst {burst}: evaluations counted as abandoned without timing out"
+        );
+    }
 }
 
 /// A bundle root matches file names the way `opa` does, case included.

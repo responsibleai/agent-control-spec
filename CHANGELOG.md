@@ -42,6 +42,14 @@
     rule gated on it; and numbers are IEEE-754 doubles rather than
     arbitrary precision, so `0.1 + 0.2 == 0.3` is true under OPA and
     false here.
+  - A host can now be told that a decision was refused rather than
+    evaluated. An evaluation abandoned at its deadline leaves a thread
+    that cannot be killed, so once
+    `agent_control_spec::rego::MAX_ABANDONED_WORKERS` of them are
+    outstanding the dispatcher stops starting new ones and fails closed
+    with `runtime_error:policy_invocation_failed` until the backlog
+    drains. `RegorusRegoRunner::abandoned_evaluations()` reports the
+    current count.
   - A policy's `print()` output is captured and discarded rather than
     reaching the host's stderr. The CLI dispatcher kept it inside the
     child process, so letting it through would have been a new way for
