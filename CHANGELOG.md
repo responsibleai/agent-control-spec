@@ -36,10 +36,12 @@
     Rego parses as v1 unless `ACS_REGO_V0=1` or
     `RegorusRegoRunner::with_rego_v0(true)`; packaged `.tar.gz` bundles
     are not read; `regorus` lacks some OPA builtins (`crypto.*`,
-    `io.jwt.*`, `json.patch`, GraphQL, AWS signing) and registers
-    `http.send` as always-undefined, which is fail-open for a deny rule
-    gated on it; and numbers are IEEE-754 doubles rather than arbitrary
-    precision, so `0.1 + 0.2 == 0.3` is true under OPA and false here.
+    `io.jwt.*`, `json.patch`, GraphQL, AWS signing), where calling one is
+    a loud fail-closed evaluation error, except `http.send`, which is
+    registered but always undefined and so silently fails open for a deny
+    rule gated on it; and numbers are IEEE-754 doubles rather than
+    arbitrary precision, so `0.1 + 0.2 == 0.3` is true under OPA and
+    false here.
   - A policy's `print()` output is captured and discarded rather than
     reaching the host's stderr. The CLI dispatcher kept it inside the
     child process, so letting it through would have been a new way for

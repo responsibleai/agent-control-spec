@@ -33,12 +33,13 @@
 //!   `ACS_REGO_V0=1`.
 //! * `regorus` implements most but not all OPA builtins. Notably absent
 //!   or inert: `crypto.*`, `io.jwt.*`, `json.patch`, `regex.globs_match`,
-//!   GraphQL, and AWS signing; `http.send` is registered but always
-//!   undefined. A missing builtin leaves its rule undefined, which is
-//!   fail-closed for an allow rule but fail-OPEN for a deny rule gated on
-//!   it. Policies for this runtime are meant to be pure and offline, so
-//!   `http.send` should not appear in one; check a ported bundle before
-//!   relying on this dispatcher.
+//!   GraphQL, and AWS signing. Calling an absent builtin is an
+//!   evaluation error, so the verdict fails closed and the divergence is
+//!   loud. `http.send` is the exception and the dangerous one: it is
+//!   registered but always undefined, so a deny rule gated on it silently
+//!   does not fire. Policies for this runtime are meant to be pure and
+//!   offline, so `http.send` should not appear in one; check a ported
+//!   bundle before relying on this dispatcher.
 //! * Numbers are IEEE-754 doubles, where OPA uses arbitrary precision.
 //!   `0.1 + 0.2 == 0.3` is true under OPA and false here, and a literal
 //!   too large for a double fails to load. Policies that compare exact
@@ -48,8 +49,8 @@
 //!   loading the bundle, runs on a worker thread the dispatcher abandons
 //!   once the deadline passes, so a caller's deadline holds even when one
 //!   builtin call runs long. An abandoned thread cannot be killed, so a
-//!   runner holds at most [`MAX_LIVE_WORKERS`] threads and fails closed
-//!   past that rather than growing without bound.
+//!   runner tolerates at most [`MAX_ABANDONED_WORKERS`] such threads and
+//!   fails closed past that rather than growing without bound.
 
 use crate::{
     policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue,
@@ -82,8 +83,7 @@ const TIMER_CHECK_INTERVAL: u32 = 32;
 /// gives up. Guards against symlink cycles in a host supplied bundle.
 const MAX_BUNDLE_DEPTH: usize = 32;
 
-/// Ceiling on evaluation threads a runner may have alive at once,
-/// including threads abandoned after blowing their deadline.
+/// Ceiling on evaluation threads ABANDONED after blowing their deadline.
 ///
 /// An abandoned worker cannot be killed: `regorus` has no cancellation
 /// point inside a builtin call, so the thread runs until its evaluation
@@ -91,7 +91,11 @@ const MAX_BUNDLE_DEPTH: usize = 32;
 /// out spawns a fresh thread per decision and the host grows without
 /// bound. Past the ceiling the dispatcher fails closed instead, which is
 /// a bounded, observable failure rather than an unbounded one.
-const MAX_LIVE_WORKERS: usize = 64;
+///
+/// Only abandoned threads count. Threads doing work a caller is still
+/// waiting on are bounded by the host's own concurrency, so counting
+/// those would turn ordinary parallel load into fail-closed denials.
+const MAX_ABANDONED_WORKERS: usize = 32;
 
 /// How many idle evaluation threads a runner keeps parked between calls.
 /// Evaluation runs on a worker thread so a deadline can be enforced even
@@ -486,7 +490,36 @@ impl Drop for LiveCount {
 
 #[derive(Debug, Default)]
 struct WorkerPoolCounters {
+    /// Threads alive: parked, working, or abandoned.
     live: AtomicUsize,
+    /// Threads a caller is currently waiting on.
+    in_flight: AtomicUsize,
+}
+
+impl WorkerPoolCounters {
+    /// Threads still running an evaluation nobody is waiting for any more.
+    /// Every live thread is either parked in the idle list, working for a
+    /// caller, or abandoned, so the remainder is what cannot be reclaimed.
+    fn abandoned(&self, idle: usize) -> usize {
+        self.live
+            .load(Ordering::Acquire)
+            .saturating_sub(idle)
+            .saturating_sub(self.in_flight.load(Ordering::Acquire))
+    }
+}
+
+/// Marks a caller as waiting on a worker, released however the caller
+/// leaves. A worker whose caller has gone but whose thread is still live
+/// is, by definition, abandoned.
+#[derive(Debug)]
+struct InFlightGuard {
+    counters: Arc<WorkerPoolCounters>,
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        self.counters.in_flight.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl WorkerPool {
@@ -497,6 +530,10 @@ impl WorkerPool {
         let worker = match self.take_idle() {
             Some(worker) => worker,
             None => self.spawn_worker()?,
+        };
+        self.counters.in_flight.fetch_add(1, Ordering::AcqRel);
+        let _in_flight = InFlightGuard {
+            counters: Arc::clone(&self.counters),
         };
         if worker.jobs.send(Box::new(work)).is_err() {
             return Err(RuntimeError::PolicyInvocationFailed(
@@ -522,30 +559,25 @@ impl WorkerPool {
         self.idle.lock().ok()?.pop()
     }
 
-    /// Reserves a slot and spawns a worker, or fails closed when the pool
-    /// is already at [`MAX_LIVE_WORKERS`]. Reserving before spawning keeps
-    /// concurrent callers from collectively overshooting the ceiling.
+    /// Spawns a worker, or fails closed when too many earlier evaluations
+    /// have been abandoned past their deadline.
     fn spawn_worker(&self) -> Result<Worker, RuntimeError> {
-        let reserved =
-            self.counters
-                .live
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
-                    (live < MAX_LIVE_WORKERS).then_some(live + 1)
-                });
-        if reserved.is_err() {
+        let idle = self.idle.lock().map(|idle| idle.len()).unwrap_or(0);
+        let abandoned = self.counters.abandoned(idle);
+        if abandoned >= MAX_ABANDONED_WORKERS {
             return Err(RuntimeError::PolicyInvocationFailed(format!(
-                "Rego evaluation thread pool is saturated at {MAX_LIVE_WORKERS} threads; \
-                 earlier evaluations exceeded their timeout and cannot be interrupted. \
+                "{abandoned} Rego evaluations are still running past their timeout and cannot be \
+                 interrupted, at the limit of {MAX_ABANDONED_WORKERS}; refusing to start another. \
                  Raise ACS_OPA_TIMEOUT_MS, or fix the policy that is not terminating"
             )));
         }
-        let slot = Arc::new(LiveCount {
+        self.counters.live.fetch_add(1, Ordering::AcqRel);
+        // On failure `thread::Builder::spawn` drops the closure, and with
+        // it the `LiveCount` that owns this slot, so the release happens
+        // exactly once and must NOT be compensated for here.
+        Worker::spawn(Arc::new(LiveCount {
             pool: Arc::clone(&self.counters),
-        });
-        Worker::spawn(slot).inspect_err(|_| {
-            // Spawn failed, so no thread will ever release the slot.
-            self.counters.live.fetch_sub(1, Ordering::AcqRel);
-        })
+        }))
     }
 
     #[cfg(test)]
@@ -594,9 +626,7 @@ enum DataScope {
 impl DataScope {
     fn accepts_data_file(self, path: &Path) -> bool {
         match self {
-            Self::Bundle => path
-                .file_stem()
-                .is_some_and(|stem| stem.eq_ignore_ascii_case("data")),
+            Self::Bundle => path.file_stem().is_some_and(|stem| stem == "data"),
             Self::DataPath => true,
         }
     }
@@ -804,9 +834,12 @@ fn add_data(
     })
 }
 
+/// The file extension exactly as written. `opa` matches these case
+/// sensitively, so `p.REGO` is not a policy and `data.YAML` is not a data
+/// document; lowercasing here would load files OPA ignores.
 fn extension(path: &Path) -> Option<String> {
     path.extension()
-        .map(|extension| extension.to_string_lossy().to_ascii_lowercase())
+        .map(|extension| extension.to_string_lossy().into_owned())
 }
 
 fn is_rego_file(path: &Path) -> bool {
@@ -888,21 +921,25 @@ mod tests {
     #[test]
     fn loadable_extensions_cover_policies_and_data_only() {
         assert!(is_rego_file(Path::new("a.rego")));
-        assert!(is_rego_file(Path::new("a.REGO")));
         assert!(!is_rego_file(Path::new("a.json")));
         assert!(is_data_file(Path::new("a.json")));
         assert!(is_data_file(Path::new("a.yaml")));
         assert!(is_data_file(Path::new("a.yml")));
         assert!(!is_data_file(Path::new("a.md")));
         assert!(!is_data_file(Path::new(".manifest")));
+        // `opa` matches extensions case sensitively.
+        assert!(!is_rego_file(Path::new("a.REGO")));
+        assert!(!is_data_file(Path::new("a.JSON")));
     }
 
     /// `opa eval --bundle` treats only `data.json` / `data.yaml` as data.
     #[test]
     fn bundle_scope_accepts_only_data_named_documents() {
         assert!(DataScope::Bundle.accepts_data_file(Path::new("/b/data.json")));
-        assert!(DataScope::Bundle.accepts_data_file(Path::new("/b/DATA.yaml")));
+        assert!(!DataScope::Bundle.accepts_data_file(Path::new("/b/DATA.yaml")));
         assert!(!DataScope::Bundle.accepts_data_file(Path::new("/b/limits.json")));
+        // A name that merely starts with "data" is not a data document.
+        assert!(!DataScope::Bundle.accepts_data_file(Path::new("/b/database.json")));
         assert!(DataScope::DataPath.accepts_data_file(Path::new("/b/limits.json")));
     }
 

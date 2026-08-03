@@ -660,14 +660,15 @@ fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
             BTreeMap::new(),
             json!({}),
         )) {
-            if error.detail().contains("saturated") {
+            if error.detail().contains("running past their timeout") {
                 saturated += 1;
             }
         }
     }
 
+    // 2 baseline + at most MAX_ABANDONED_WORKERS still-running evaluations.
     assert!(
-        live_threads() < before + 80,
+        live_threads() < before + 40,
         "threads grew from {before} to {} across 120 timeouts",
         live_threads()
     );
@@ -678,7 +679,7 @@ fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
 #[test]
 fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
     let dir = test_artifact_dir("rego-load-inside-deadline");
-    for index in 0..1500 {
+    for index in 0..2500 {
         fs::write(
             dir.join(format!("p{index}.rego")),
             format!("package p{index}\n\nimport rego.v1\n\nv := {index}\n"),
@@ -697,8 +698,10 @@ fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
         json!({}),
     ));
 
+    // Discriminating: with the load outside the deadline this same
+    // bundle took several hundred milliseconds, scaling with file count.
     assert!(
-        started.elapsed() < Duration::from_millis(600),
+        started.elapsed() < Duration::from_millis(200),
         "bundle load escaped the deadline: {:?}",
         started.elapsed()
     );
@@ -752,6 +755,79 @@ fn rego_directory_named_like_an_archive_still_loads() {
         .unwrap();
 
     assert_eq!(verdict, json!(7));
+}
+
+/// Ordinary parallel load must not be mistaken for runaway evaluation:
+/// only threads abandoned past a deadline are capped.
+#[test]
+fn rego_healthy_concurrency_is_not_refused() {
+    let mut adapter_config = BTreeMap::new();
+    adapter_config.insert("data_paths".to_string(), json!([fixture("verdict.rego")]));
+    let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(
+        RegorusRegoRunner::new()
+            .with_policy_cache(true)
+            .with_eval_timeout(Duration::from_secs(30)),
+    ));
+
+    let handles: Vec<_> = (0..128)
+        .map(|_| {
+            let dispatcher = Arc::clone(&dispatcher);
+            let adapter_config = adapter_config.clone();
+            std::thread::spawn(move || {
+                dispatcher.evaluate(&rego_invocation(
+                    "data.agent_control_specification.input.verdict",
+                    None,
+                    adapter_config,
+                    json!({"policy_target": {"value": {"text": "hello"}}}),
+                ))
+            })
+        })
+        .collect();
+
+    let mut refused = Vec::new();
+    for handle in handles {
+        if let Err(error) = handle.join().unwrap() {
+            refused.push(error.detail().to_string());
+        }
+    }
+
+    assert!(
+        refused.is_empty(),
+        "128 healthy concurrent evaluations must all succeed; {} were refused, first: {:?}",
+        refused.len(),
+        refused.first()
+    );
+}
+
+/// A bundle root matches file names the way `opa` does, case included.
+#[test]
+fn rego_bundle_data_file_matching_is_case_sensitive_like_opa() {
+    let dir = test_artifact_dir("rego-data-case");
+    fs::write(
+        dir.join("p.rego"),
+        "package t\n\nimport rego.v1\n\nv := 1\n",
+    )
+    .unwrap();
+    fs::write(dir.join("data.JSON"), r#"{"upper_ext": true}"#).unwrap();
+    fs::write(dir.join("DATA.json"), r#"{"upper_stem": true}"#).unwrap();
+    fs::write(dir.join("database.json"), r#"{"prefix_only": true}"#).unwrap();
+    let bundle = dir.display().to_string();
+    let dispatcher = RegorusPolicyDispatcher::new();
+    let eval = |query: &str| {
+        dispatcher.evaluate(&rego_invocation(
+            query,
+            Some(bundle.clone()),
+            BTreeMap::new(),
+            json!({}),
+        ))
+    };
+
+    for query in ["data.upper_ext", "data.upper_stem", "data.prefix_only"] {
+        assert!(
+            eval(query).is_err(),
+            "{query} must not load; opa ignores these names"
+        );
+    }
 }
 
 #[test]
