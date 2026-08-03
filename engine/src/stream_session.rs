@@ -26,14 +26,29 @@
 //! runes. So the host declares the range it evaluated, and the session tracks
 //! only what that clears.
 //!
-//! This leaves the host owing two obligations that a session cannot check for
-//! it:
+//! This leaves the host owing three obligations that a session cannot check
+//! for it:
 //!
 //! 1. The text evaluated for a span covers at least that span. A policy
 //!    target smaller than the span it gates lets a banned term slip through a
 //!    segment boundary, because the policy sees `for`, then `bidden`, and
 //!    allows both.
 //! 2. The rune counts reported match the text accumulated.
+//! 3. The outcomes fed in come from enforcement and not from an
+//!    `evaluate_only` evaluation. A cleared span releases text, which
+//!    specification section 20 forbids presenting an `evaluate_only` result as
+//!    doing. No verdict carries the mode, so nothing here can check it.
+//!
+//! One capability limit is worth stating plainly, because it is not obvious
+//! from the types. A `transform` ends its track. It is honored only before
+//! anything on that track was released, the track then accepts no further
+//! payload, and release becomes all or nothing. Masking a value mid stream and
+//! continuing to stream is therefore outside this profile. The cause is that
+//! [`SegmentOutcome::Transformed`] carries no length: the host performs the
+//! substitution and so knows the replacement's rune count, but never reports
+//! it, so the accounting cannot rebase the offsets the substitution shifted.
+//! An outcome carrying that count would lift the limit and is the natural
+//! extension if the limit proves too tight.
 //!
 //! # Clearance is contiguous
 //!
@@ -754,10 +769,14 @@ pub struct StreamSessionConfig {
     /// the other, and a shared set would stall a track on a task that can
     /// never evaluate it.
     pub response_tasks: Vec<String>,
+    // Note for maintainers: every task on a track binds at the same
+    // intervention point, because the point is a function of the source type
+    // and so of the track. That is what makes the minimum across a track's
+    // tasks a meaningful quantity.
 }
 
 impl StreamSessionConfig {
-    /// Build a withholding config with one task gating each track.
+    /// Tasks gating one track.
     fn tasks_for(&self, track: StreamTrack) -> &[String] {
         match track {
             StreamTrack::Request => &self.request_tasks,
@@ -1372,8 +1391,10 @@ mod tests {
     fn the_watermark_type_validates_its_own_inputs() {
         // StreamWatermark is a public export, so a host may drive it directly
         // rather than through a session. The session validates the same things
-        // before delegating, which makes these checks redundant on that path
-        // and load bearing on this one.
+        // before delegating. No host path reaches these directly, since the
+        // mutators are crate internal and the constructor is test only, so
+        // these assertions pin the layer's own behavior rather than a public
+        // contract.
         let mut watermark =
             StreamWatermark::new(["a", "b"], 0).expect("two tasks is a valid watermark");
         assert_eq!(watermark.received(), 0);
