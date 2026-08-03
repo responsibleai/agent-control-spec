@@ -206,7 +206,12 @@ impl StreamTrack {
     }
 }
 
-/// Failure that puts a session into its terminal fail closed state.
+/// A fail closed condition in the streaming accounting.
+///
+/// Most variants put a session into its terminal state. Two do not:
+/// [`StreamError::UnknownSafetyLevel`] and [`StreamError::UnknownSourceType`]
+/// come from parsing wire values before a session exists, so they have nothing
+/// to terminate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamError {
     UnknownSafetyLevel(String),
