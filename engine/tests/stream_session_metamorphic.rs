@@ -77,7 +77,8 @@ fn mediate(
 
     let mut session = StreamSession::new(StreamSessionConfig {
         safety_level: level,
-        start_rune_offset: 0,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: 0,
         request_tasks: owned.clone(),
         response_tasks: owned.clone(),
     })

@@ -71,6 +71,16 @@ pub const STREAMING_FAIL_CLOSED_REASON: &str = "host_error:streaming_unsupported
 /// How much of an evaluated stream a host may release before the
 /// corresponding policy decisions exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// How much a host may release ahead of the watermark.
+///
+/// `Blocking` and `Complete` are deliberately identical to this accounting.
+/// Section 18.1 groups them: under either, a host withholds a rune until the
+/// watermark covers it, so there is one release rule and no code here reads
+/// them apart. They stay distinct because the level is part of the contract a
+/// host receives and must round trip, and because they differ in what the host
+/// asks a policy to evaluate, which is the host's concern and not the
+/// accounting's. `Deferred` is the only level this module branches on, through
+/// [`SafetyLevel::withholds`].
 pub enum SafetyLevel {
     /// Hold every span until the watermark covers it.
     Blocking,
@@ -201,6 +211,20 @@ pub enum StreamError {
     OffsetOverflow,
     /// A payload arrived after the payload stream closed.
     PayloadsClosed,
+    /// Payload arrived on a track after a `transform` was accepted on it.
+    ///
+    /// Offsets count the runes the host reported through
+    /// [`StreamSession::observe`], which are the runes of the original text.
+    /// Once the host substitutes a replacement of a different length, its
+    /// outgoing text and these offsets stop describing the same sequence, and
+    /// every later offset names the wrong position in what it is about to
+    /// emit. The session holds no text and is never told the replacement's
+    /// length, so it cannot rebase. Refusing further payload is the only sound
+    /// answer available to it.
+    PayloadAfterTransform {
+        /// Track that had already recorded a transform.
+        track: StreamTrack,
+    },
     /// An outcome or payload arrived after the session went terminal.
     SessionClosed,
     /// A `transform` outcome reached text the host can no longer alter,
@@ -211,6 +235,12 @@ pub enum StreamError {
     /// `transform` carrying no transform body.
     VerdictInvalid,
     /// The payload stream ended while text remained uncleared.
+    /// Runes that no task cleared were still outstanding at settlement.
+    ///
+    /// A session may hold residue on both tracks. This names the first in
+    /// track order, request before response, so the reason is deterministic.
+    /// The host fails closed over the whole session either way, so the choice
+    /// affects which track the audit record names and nothing else.
     UnclearedResidue {
         track: StreamTrack,
         pending: u32,
@@ -262,6 +292,11 @@ impl fmt::Display for StreamError {
             ),
             Self::OffsetOverflow => f.write_str("streaming session exceeded the offset ceiling"),
             Self::PayloadsClosed => f.write_str("streaming payload stream already closed"),
+            Self::PayloadAfterTransform { track } => write!(
+                f,
+                "payload arrived on the {} track after a transform rebased its offsets",
+                track.as_str()
+            ),
             Self::SessionClosed => f.write_str("streaming session already closed"),
             Self::TransformTooLate => {
                 f.write_str("transform outcome named text the host has already emitted")
@@ -408,6 +443,10 @@ pub struct StreamWatermark {
     tasks: BTreeMap<String, u32>,
     confirmed: u32,
     received: u32,
+    /// Whether a `transform` was accepted on this track. Once one is, the
+    /// track's offsets no longer describe the text the host will emit, so it
+    /// accepts no further payload.
+    transformed: bool,
 }
 
 impl StreamWatermark {
@@ -445,6 +484,7 @@ impl StreamWatermark {
             tasks,
             confirmed: start_offset,
             received: start_offset,
+            transformed: false,
         })
     }
 
@@ -467,6 +507,14 @@ impl StreamWatermark {
     /// `advance`.
     pub fn pending(&self) -> u32 {
         self.received.saturating_sub(self.confirmed)
+    }
+
+    /// Runes no task has cleared, measured against the tasks themselves rather
+    /// than the committed offset, so it is accurate without an `advance` and
+    /// can be read without moving the release point.
+    fn uncleared(&self) -> u32 {
+        let lowest = self.tasks.values().copied().min().unwrap_or(self.confirmed);
+        self.received.saturating_sub(lowest)
     }
 
     /// Extend the observed length by `runes` and return the new end offset.
@@ -650,10 +698,20 @@ fn verdict_shape_is_invalid(verdict: &Verdict) -> bool {
 pub struct StreamSessionConfig {
     /// How much the host may release ahead of the watermark.
     pub safety_level: SafetyLevel,
-    /// Offset the first rune of this session occupies. A retry that resumes a
-    /// partially delivered stream sets this so offsets stay comparable with
-    /// the earlier attempt.
-    pub start_rune_offset: u32,
+    /// Offset the first rune of the request track occupies. A retry that
+    /// resumes a partially delivered stream sets this so offsets stay
+    /// comparable with the earlier attempt.
+    ///
+    /// Held per track because the tracks are independent offset spaces and a
+    /// retry rarely resumes both. Re sending the prompt while resuming the
+    /// response is the ordinary case, and a single offset could not express
+    /// it: the re sent prompt's spans would fall below the resumed frontier,
+    /// read as already cleared, and the session would settle with residue the
+    /// host was never warned about.
+    pub request_start_rune_offset: u32,
+    /// Offset the first rune of the response track occupies, with the same
+    /// meaning as `request_start_rune_offset`.
+    pub response_start_rune_offset: u32,
     /// Tasks that gate the request track. These correspond to whatever the
     /// host binds at `input`.
     pub request_tasks: Vec<String>,
@@ -667,16 +725,6 @@ pub struct StreamSessionConfig {
 
 impl StreamSessionConfig {
     /// Build a withholding config with one task gating each track.
-    pub fn single_task(task: impl Into<String>) -> Self {
-        let task = task.into();
-        Self {
-            safety_level: SafetyLevel::Blocking,
-            start_rune_offset: 0,
-            request_tasks: vec![task.clone()],
-            response_tasks: vec![task],
-        }
-    }
-
     fn tasks_for(&self, track: StreamTrack) -> &[String] {
         match track {
             StreamTrack::Request => &self.request_tasks,
@@ -708,13 +756,15 @@ pub struct StreamSession {
 impl StreamSession {
     /// Open a session.
     pub fn new(config: StreamSessionConfig) -> Result<Self, StreamError> {
-        let start = config.start_rune_offset;
-        let request =
-            StreamWatermark::for_track(StreamTrack::Request, config.request_tasks.clone(), start)?;
+        let request = StreamWatermark::for_track(
+            StreamTrack::Request,
+            config.request_tasks.clone(),
+            config.request_start_rune_offset,
+        )?;
         let response = StreamWatermark::for_track(
             StreamTrack::Response,
             config.response_tasks.clone(),
-            start,
+            config.response_start_rune_offset,
         )?;
         Ok(Self {
             config,
@@ -785,9 +835,12 @@ impl StreamSession {
             return Err(StreamError::SessionClosed);
         }
         if self.payloads_closed {
-            return Err(StreamError::PayloadsClosed);
+            return Err(self.fail(StreamError::PayloadsClosed));
         }
         let track = source_type.track();
+        if self.watermark(track).transformed {
+            return Err(self.fail(StreamError::PayloadAfterTransform { track }));
+        }
         match self.watermark_mut(track).extend(runes) {
             Ok(end) => Ok(end),
             Err(error) => Err(self.fail(error)),
@@ -877,8 +930,8 @@ impl StreamSession {
                 // ever been released is therefore the only bound that holds
                 // without the host declaring the rewritten extent.
                 //
-                // The comparison is against zero and not against
-                // `start_rune_offset`, because a session resuming a partially
+                // The comparison is against zero and not against the track's
+                // resume offset, because a session resuming a partially
                 // delivered stream starts above zero precisely because those
                 // earlier runes already reached the caller. Comparing against
                 // the resume offset would honor a transform over text a failed
@@ -905,6 +958,10 @@ impl StreamSession {
         // the substitution stands.
         if records_transform {
             self.transformed = true;
+            // Recorded per track as well, because the substitution rebases that
+            // track's offsets against the text the host will emit, and no later
+            // offset on it can be trusted.
+            self.watermark_mut(track).transformed = true;
         }
         Ok(())
     }
@@ -986,10 +1043,13 @@ impl StreamSession {
             };
         }
         self.payloads_closed = true;
-        self.request.advance();
-        self.response.advance();
+        // Residue is measured without committing it. Recomputing through
+        // `advance` here would raise the release point as a side effect of
+        // failing, and a settlement that fails is exactly when the host must
+        // emit nothing further. `advance` itself already refuses to move a
+        // terminal session, so committing here would also contradict it.
         for track in [StreamTrack::Request, StreamTrack::Response] {
-            let pending = self.watermark(track).pending();
+            let pending = self.watermark(track).uncleared();
             if pending > 0 {
                 let reason =
                     StreamEndReason::Failed(StreamError::UnclearedResidue { track, pending });
@@ -1000,6 +1060,10 @@ impl StreamSession {
                 };
             }
         }
+        // Nothing is outstanding, so committing is safe and lets a host that
+        // recorded every outcome skip a final explicit `advance`.
+        self.request.advance();
+        self.response.advance();
         self.ended = Some(StreamEndReason::Complete);
         StreamCompletion {
             reason: StreamEndReason::Complete,
@@ -1071,7 +1135,8 @@ mod tests {
         let tasks: Vec<String> = tasks.iter().map(|task| (*task).to_string()).collect();
         StreamSessionConfig {
             safety_level: level,
-            start_rune_offset: 0,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 0,
             request_tasks: tasks.clone(),
             response_tasks: tasks,
         }
@@ -1596,7 +1661,8 @@ mod tests {
         // attempt already delivered them, and a cumulative target covers them.
         let mut s = StreamSession::new(StreamSessionConfig {
             safety_level: SafetyLevel::Blocking,
-            start_rune_offset: 5,
+            request_start_rune_offset: 5,
+            response_start_rune_offset: 5,
             request_tasks: vec!["t".to_string()],
             response_tasks: vec!["t".to_string()],
         })
@@ -1785,7 +1851,8 @@ mod tests {
     fn tracks_carry_independent_offsets_and_task_sets() {
         let config = StreamSessionConfig {
             safety_level: SafetyLevel::Blocking,
-            start_rune_offset: 0,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 0,
             request_tasks: vec!["jailbreak".to_string()],
             response_tasks: vec!["safety".to_string()],
         };
@@ -1806,7 +1873,8 @@ mod tests {
     #[test]
     fn a_resumed_session_keeps_offsets_comparable() {
         let mut config = config(&["safety"], SafetyLevel::Blocking);
-        config.start_rune_offset = 100;
+        config.request_start_rune_offset = 100;
+        config.response_start_rune_offset = 100;
         let mut s = StreamSession::new(config).expect("config is valid");
         assert_eq!(s.safe_offset(StreamTrack::Response), 100);
         assert_eq!(s.observe(RES, 20), Ok(120));
@@ -1837,22 +1905,147 @@ mod tests {
     }
 
     #[test]
-    fn payloads_closed_rejects_later_text() {
+    fn outcomes_still_land_after_the_payload_stream_closes() {
+        // The separation a deferred classifier needs. Payload arrival and
+        // settlement are distinct, so a verdict can still arrive at EOF.
         let mut s = session(&["safety"], SafetyLevel::Blocking);
         s.observe(RES, 10).expect("observe");
         s.end_of_payloads();
-        assert_eq!(s.observe(RES, 5), Err(StreamError::PayloadsClosed));
-        // Outcomes still land, which is what a deferred classifier needs.
         s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Cleared)
             .expect("outcome still records");
         assert_eq!(s.finish().reason, StreamEndReason::Complete);
     }
 
     #[test]
+    fn payload_after_a_transform_is_terminal() {
+        // The offsets count runes the host reported, which are runes of the
+        // original text. A substitution of a different length makes the host's
+        // outgoing text a different sequence, so every later offset names the
+        // wrong position in it. A host that kept streaming would take the
+        // watermark as an index into the substituted text and release runes no
+        // task evaluated. The session is never told the replacement's length,
+        // so refusing further payload is the only sound answer it has.
+        let mut s = session(&["safety"], SafetyLevel::Blocking);
+        s.observe_text(RES, "MY SSN IS 123-45-6789")
+            .expect("21 runes");
+        s.record_outcome("safety", &span(RES, 0, 21), SegmentOutcome::Transformed)
+            .expect("a transform is accepted while nothing is released");
+        let error = s
+            .observe_text(RES, "and my card is 4111111111111111")
+            .expect_err("payload after a substitution must fail closed");
+        assert_eq!(
+            error,
+            StreamError::PayloadAfterTransform {
+                track: StreamTrack::Response
+            }
+        );
+        assert!(s.is_ended());
+        assert_eq!(error.reason(), STREAMING_FAIL_CLOSED_REASON);
+    }
+
+    #[test]
+    fn a_failing_settlement_does_not_raise_the_release_point() {
+        // Settlement measures residue without committing it. Recomputing the
+        // watermark here would raise `safe_offset` as a side effect of
+        // failing, and a failed settlement is exactly when the host must emit
+        // nothing further.
+        let mut s = session(&["safety"], SafetyLevel::Blocking);
+        s.observe(RES, 20).expect("observe");
+        s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Cleared)
+            .expect("half clears");
+        let before = s.safe_offset(StreamTrack::Response);
+        let done = s.finish();
+        assert!(matches!(
+            done.reason,
+            StreamEndReason::Failed(StreamError::UnclearedResidue { .. })
+        ));
+        assert_eq!(
+            s.safe_offset(StreamTrack::Response),
+            before,
+            "failing must not move the release point"
+        );
+    }
+
+    #[test]
+    fn settlement_sees_residue_without_an_explicit_advance() {
+        // The residue measure reads the tasks directly, so a host that
+        // recorded every outcome but never called `advance` still settles
+        // clean, and one with an unevaluated tail still fails.
+        let mut clean = session(&["safety"], SafetyLevel::Blocking);
+        clean.observe(RES, 10).expect("observe");
+        clean
+            .record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Cleared)
+            .expect("clears");
+        assert_eq!(clean.finish().reason, StreamEndReason::Complete);
+
+        let mut short = session(&["safety"], SafetyLevel::Blocking);
+        short.observe(RES, 10).expect("observe");
+        short
+            .record_outcome("safety", &span(RES, 0, 4), SegmentOutcome::Cleared)
+            .expect("clears a prefix");
+        assert!(!short.finish().reason.is_clean());
+    }
+
+    #[test]
+    fn a_retry_may_resume_one_track_while_restarting_the_other() {
+        // The ordinary retry: the prompt is re sent from the beginning while
+        // the response picks up where the failed attempt stopped. A single
+        // resume offset could not express this. The re sent prompt's spans
+        // would fall below a frontier of 100, read as already cleared, and the
+        // session would settle with residue the host was never warned about.
+        let mut s = StreamSession::new(StreamSessionConfig {
+            safety_level: SafetyLevel::Blocking,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 100,
+            request_tasks: vec!["safety".to_string()],
+            response_tasks: vec!["safety".to_string()],
+        })
+        .expect("config");
+        s.observe(REQ, 12).expect("the prompt is re sent in full");
+        s.record_outcome("safety", &span(REQ, 0, 12), SegmentOutcome::Cleared)
+            .expect("and clears from zero");
+        assert_eq!(s.advance(StreamTrack::Request), Some(12));
+        s.observe(RES, 10).expect("the response resumes at 100");
+        s.record_outcome("safety", &span(RES, 100, 110), SegmentOutcome::Cleared)
+            .expect("and clears from there");
+        assert_eq!(s.advance(StreamTrack::Response), Some(110));
+        assert_eq!(s.finish().reason, StreamEndReason::Complete);
+    }
+
+    #[test]
+    fn a_transform_closes_only_its_own_track() {
+        // Tracks are separate offset spaces, so rebasing one says nothing
+        // about the other.
+        let mut s = session(&["safety"], SafetyLevel::Blocking);
+        s.observe(RES, 10).expect("observe response");
+        s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Transformed)
+            .expect("transform on the response track");
+        s.observe(REQ, 5)
+            .expect("the request track is untouched by it");
+    }
+
+    #[test]
+    fn payload_after_the_stream_closes_is_terminal() {
+        // Text arriving after the host declared EOF means the session was told
+        // the stream ended when it had not. Rejecting the call is not enough,
+        // because a host that ignores the error would settle clean over runes
+        // the session never counted and no task ever evaluated.
+        let mut s = session(&["safety"], SafetyLevel::Blocking);
+        s.observe(RES, 10).expect("observe");
+        s.end_of_payloads();
+        assert_eq!(s.observe(RES, 5), Err(StreamError::PayloadsClosed));
+        assert!(s.is_ended(), "the disagreement must end the session");
+        s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Cleared)
+            .expect_err("a closed session records nothing");
+        assert!(!s.finish().reason.is_clean());
+    }
+
+    #[test]
     fn a_track_with_no_tasks_is_refused() {
         let config = StreamSessionConfig {
             safety_level: SafetyLevel::Blocking,
-            start_rune_offset: 0,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 0,
             request_tasks: Vec::new(),
             response_tasks: vec!["safety".to_string()],
         };

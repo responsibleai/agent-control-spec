@@ -109,7 +109,8 @@ impl Host {
     fn new(level: SafetyLevel, cumulative: bool) -> Self {
         let session = StreamSession::new(StreamSessionConfig {
             safety_level: level,
-            start_rune_offset: 0,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 0,
             request_tasks: vec!["harm".to_string()],
             response_tasks: vec!["harm".to_string()],
         })
@@ -238,7 +239,8 @@ fn withholding_holds_text_that_no_task_has_cleared() {
     let runtime = runtime("forbidden");
     let mut session = StreamSession::new(StreamSessionConfig {
         safety_level: SafetyLevel::Blocking,
-        start_rune_offset: 0,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: 0,
         request_tasks: vec!["harm".to_string()],
         response_tasks: vec!["harm".to_string(), "pii".to_string()],
     })
@@ -264,7 +266,8 @@ fn withholding_holds_text_that_no_task_has_cleared() {
 fn an_unevaluated_tail_fails_closed_at_the_end_of_the_stream() {
     let mut session = StreamSession::new(StreamSessionConfig {
         safety_level: SafetyLevel::Blocking,
-        start_rune_offset: 0,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: 0,
         request_tasks: vec!["harm".to_string()],
         response_tasks: vec!["harm".to_string()],
     })
@@ -307,7 +310,8 @@ fn deferred_emits_on_arrival_and_still_terminates_on_a_denial() {
 fn a_transform_verdict_records_the_host_obligation_to_substitute() {
     let mut session = StreamSession::new(StreamSessionConfig {
         safety_level: SafetyLevel::Blocking,
-        start_rune_offset: 0,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: 0,
         request_tasks: vec!["pii".to_string()],
         response_tasks: vec!["pii".to_string()],
     })

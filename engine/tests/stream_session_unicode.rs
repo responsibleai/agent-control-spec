@@ -15,7 +15,8 @@ use agent_control_spec::{
 fn session(level: SafetyLevel) -> StreamSession {
     StreamSession::new(StreamSessionConfig {
         safety_level: level,
-        start_rune_offset: 0,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: 0,
         request_tasks: vec!["t".to_string()],
         response_tasks: vec!["t".to_string()],
     })

@@ -37,7 +37,8 @@ const RES: StreamSourceType = StreamSourceType::ModelGenerated;
 fn session(level: SafetyLevel) -> StreamSession {
     StreamSession::new(StreamSessionConfig {
         safety_level: level,
-        start_rune_offset: 0,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: 0,
         request_tasks: vec!["harm".to_string()],
         response_tasks: vec!["harm".to_string()],
     })
@@ -182,7 +183,8 @@ fn a_skipped_outcome_fails_closed_rather_than_confirming_the_gap() {
 fn a_resumed_attempt_continues_the_earlier_offset_space() {
     let mut s = StreamSession::new(StreamSessionConfig {
         safety_level: SafetyLevel::Blocking,
-        start_rune_offset: 42,
+        request_start_rune_offset: 42,
+        response_start_rune_offset: 42,
         request_tasks: vec!["harm".to_string()],
         response_tasks: vec!["harm".to_string()],
     })

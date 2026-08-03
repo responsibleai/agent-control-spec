@@ -194,7 +194,8 @@ fn run_one(seed: u64) {
 
     let config = StreamSessionConfig {
         safety_level: level,
-        start_rune_offset: start,
+        request_start_rune_offset: start,
+        response_start_rune_offset: start,
         request_tasks: policy.request_tasks.clone(),
         response_tasks: policy.response_tasks.clone(),
     };
@@ -255,6 +256,10 @@ fn run_one(seed: u64) {
                                 StreamError::SessionClosed
                                     | StreamError::PayloadsClosed
                                     | StreamError::OffsetOverflow
+                                    // A transform rebases the track's offsets
+                                    // against the text the host will emit, so
+                                    // no later payload on it can be counted.
+                                    | StreamError::PayloadAfterTransform { .. }
                             ),
                             "seed {seed} step {step}: unexpected observe error {error}"
                         );
@@ -519,7 +524,8 @@ fn contiguity_is_never_violated_under_adversarial_ordering() {
         let tasks = vec!["a".to_string(), "b".to_string()];
         let mut session = StreamSession::new(StreamSessionConfig {
             safety_level: SafetyLevel::Blocking,
-            start_rune_offset: 0,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 0,
             request_tasks: tasks.clone(),
             response_tasks: tasks.clone(),
         })
@@ -585,7 +591,8 @@ fn offset_ceiling_arithmetic_never_wraps() {
     for start in [0u32, 1, MAX_RUNE_OFFSET - 10, MAX_RUNE_OFFSET] {
         let mut session = StreamSession::new(StreamSessionConfig {
             safety_level: SafetyLevel::Blocking,
-            start_rune_offset: start,
+            request_start_rune_offset: start,
+            response_start_rune_offset: start,
             request_tasks: vec!["t".to_string()],
             response_tasks: vec!["t".to_string()],
         })
@@ -622,7 +629,8 @@ fn a_denial_is_never_downgraded_by_any_later_operation() {
         let mut rng = Rng::new(seed);
         let mut session = StreamSession::new(StreamSessionConfig {
             safety_level: SafetyLevel::Blocking,
-            start_rune_offset: 0,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 0,
             request_tasks: vec!["t".to_string()],
             response_tasks: vec!["t".to_string()],
         })
