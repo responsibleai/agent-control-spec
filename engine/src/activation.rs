@@ -82,7 +82,10 @@ impl ActivatedPolicy {
     /// The zero-config path: bundled annotators, Rego evaluated in
     /// process, Cedar through the built-in evaluator, `test` policies
     /// through their embedded verdict.
-    #[cfg(feature = "default-dispatchers")]
+    #[cfg(all(
+        feature = "default-dispatchers",
+        any(feature = "rego", feature = "opa")
+    ))]
     pub fn activate_from_path(path: impl AsRef<std::path::Path>) -> Result<Self, RuntimeError> {
         let manifest = Manifest::from_path(path)?;
         Self::activate_manifest(manifest)
@@ -90,7 +93,10 @@ impl ActivatedPolicy {
 
     /// Activates an already-parsed `manifest` against the bundled
     /// dispatchers.
-    #[cfg(feature = "default-dispatchers")]
+    #[cfg(all(
+        feature = "default-dispatchers",
+        any(feature = "rego", feature = "opa")
+    ))]
     pub fn activate_manifest(manifest: Manifest) -> Result<Self, RuntimeError> {
         let annotations = crate::dispatchers::default_annotator_dispatcher();
         let policy = crate::dispatchers::default_policy_dispatcher(&manifest)?;
@@ -123,10 +129,15 @@ impl ActivatedPolicy {
         self.points.contains(&point)
     }
 
+    /// The runtime this policy version evaluates through, for a host
+    /// that needs the lower-level surface: telemetry, limits, or the
+    /// whole-context [`Runtime::evaluate`] rather than a named point.
     pub fn runtime(&self) -> &Runtime {
         &self.runtime
     }
 
+    /// The manifest this version activated, for a host that reports or
+    /// diffs policy versions.
     pub fn manifest(&self) -> &Manifest {
         self.runtime.manifest()
     }

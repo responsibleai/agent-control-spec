@@ -70,4 +70,4 @@ jsonschema = { version = "0.17", default-features = false }
 # under the default feature set.
 [[example]]
 name = "benchmark"
-required-features = ["default-dispatchers"]
+required-features = ["default-dispatchers", "rego"]

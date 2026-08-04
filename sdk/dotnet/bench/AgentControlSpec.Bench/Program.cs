@@ -61,17 +61,36 @@ internal static class Program
         // time the annotator error path instead of Rego evaluation. The
         // Node and Python benches use the same variant, which is what
         // makes the three sets of numbers comparable.
+        // Named outright rather than probed for: falling back to the
+        // annotated manifest is exactly how this benchmark previously
+        // came to time the annotation error path while printing
+        // plausible numbers.
         string Manifest = Path.Combine(exampleDir, "manifest.bench.yaml");
-        if (!File.Exists(Manifest))
-        {
-            Manifest = Path.Combine(exampleDir, "manifest.yaml");
-        }
 
         var workload = Workload.Load(Path.Combine(exampleDir, "snapshots"));
         if (workload.Count == 0)
         {
             Console.Error.WriteLine($"no usable snapshots under {exampleDir}/snapshots");
             return 1;
+        }
+
+        // Refuses to report numbers for work that never reached the
+        // policy: an evaluation that fails closed before Rego runs costs
+        // about a tenth of a real decision.
+        using (var probe = AcsPolicy.Activate(Manifest))
+        {
+            foreach (var (point, context) in workload.Cases)
+            {
+                var reason = probe.Evaluate(point, context).Reason;
+                if (reason is not null
+                    && reason.StartsWith("runtime_error", StringComparison.Ordinal))
+                {
+                    Console.Error.WriteLine(
+                        $"{point.ToWireName()} fails closed with '{reason}' before reaching the "
+                        + "policy; timing it would measure the error path.");
+                    return 1;
+                }
+            }
         }
 
         Console.WriteLine("Agent Control Specification — .NET activated-policy benchmark");

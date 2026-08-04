@@ -6,11 +6,13 @@ use agent_control_spec::{
 };
 use serde_json::json;
 use std::{
+    fs,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
+    time::{Duration, Instant},
 };
 
 fn bank_agent_dir() -> PathBuf {
@@ -18,6 +20,19 @@ fn bank_agent_dir() -> PathBuf {
         .join("..")
         .join("examples")
         .join("bank_agent")
+}
+
+fn test_artifact_dir(name: &str) -> PathBuf {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("activation-tests")
+        .join(format!("{name}-{}-{unique}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    root
 }
 
 fn snapshot(stem: &str) -> JsonValue {
@@ -32,10 +47,15 @@ fn snapshot(stem: &str) -> JsonValue {
     .unwrap()
 }
 
+/// The bench manifest, not `manifest.yaml`: every annotator the latter
+/// declares calls an HTTP endpoint that nothing serves, so both arms
+/// would fail closed at annotation and agree on
+/// `runtime_error:annotation_failed` without either reaching Rego. The
+/// assertion would hold and prove nothing.
 #[test]
 fn activation_evaluates_the_same_verdicts_as_a_lazy_runtime() {
     let dir = bank_agent_dir();
-    let manifest = Manifest::from_path(dir.join("manifest.yaml")).unwrap();
+    let manifest = Manifest::from_path(dir.join("manifest.bench.yaml")).unwrap();
     let lazy = agent_control_spec::Runtime::new(
         manifest.clone(),
         agent_control_spec::dispatchers::default_annotator_dispatcher(),
@@ -53,6 +73,15 @@ fn activation_evaluates_the_same_verdicts_as_a_lazy_runtime() {
         let context = snapshot(stem);
         let lazy_verdict = lazy.evaluate_point(point, context.clone()).verdict;
         let active_verdict = activated.evaluate(point, context).verdict;
+        assert!(
+            !lazy_verdict
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .starts_with("runtime_error"),
+            "{point} never reached the policy: {:?}",
+            lazy_verdict.reason
+        );
         assert_eq!(
             serde_json::to_value(&lazy_verdict).unwrap(),
             serde_json::to_value(&active_verdict).unwrap(),
@@ -200,6 +229,72 @@ fn activation_resolves_bundles_relative_to_the_manifest_not_the_process() {
         None,
         "a bundle that failed to load would fail closed with a runtime_error reason"
     );
+}
+
+/// Activation readies a policy, and readying is bounded by the same
+/// deadline evaluation uses. A policy whose entrypoint does input
+/// independent work would otherwise run unbounded on the caller's
+/// thread, turning `activate` into a call that never returns: worse for
+/// a host than a slow first decision, and in a Node binding it would
+/// block the event loop outright.
+#[test]
+fn activation_is_bounded_by_the_eval_deadline() {
+    let dir = test_artifact_dir("activation-deadline");
+    fs::create_dir_all(dir.join("policy")).unwrap();
+    // Costly regardless of input, so warming cannot skip it.
+    fs::write(
+        dir.join("policy").join("hang.rego"),
+        r#"package acs.hang
+
+import rego.v1
+
+big := count([x | x := numbers.range(1, 60000000)[_]])
+
+input_verdict := {"decision": "allow"} if big > 0
+"#,
+    )
+    .unwrap();
+    fs::write(
+        dir.join("manifest.yaml"),
+        r#"agent_control_specification_version: "0.4.0-alpha.1"
+policies:
+  p:
+    type: rego
+    bundle: ./policy
+    query: data.acs.hang.input_verdict
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    policy:
+      id: p
+"#,
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let policy = ActivatedPolicy::activate_with(
+        Manifest::from_path(dir.join("manifest.yaml")).unwrap(),
+        agent_control_spec::dispatchers::default_annotator_dispatcher(),
+        Arc::new(agent_control_spec::RegorusPolicyDispatcher::with_runner(
+            agent_control_spec::RegorusRegoRunner::new()
+                .with_policy_cache(true)
+                .with_eval_timeout(Duration::from_millis(200)),
+        )),
+    )
+    .expect("a policy too slow to warm still activates");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "activation ran past the deadline it is supposed to honour: {elapsed:?}"
+    );
+    // Left unwarmed rather than unusable: evaluation applies the same
+    // deadline and fails closed, which is the documented behaviour.
+    let verdict = policy
+        .evaluate(InterceptionPoint::Input, json!({"input": {"text": "hi"}}))
+        .verdict;
+    assert_eq!(verdict.decision.as_str(), "deny");
 }
 
 #[test]

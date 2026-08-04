@@ -327,6 +327,18 @@ impl RegorusRegoRunner {
     /// every single decision. Warming runs the real query once against an
     /// empty input to move that cost to activation time.
     ///
+    /// Bounded by the same deadline and the same worker pool as
+    /// [`Self::evaluate`]. A policy whose entrypoint does input
+    /// independent work would otherwise run unbounded on the caller's
+    /// thread, which for a host is worse than a slow first decision: it
+    /// is an activation that never returns.
+    ///
+    /// Exceeding the deadline is not an activation failure. Warming is an
+    /// optimization, so a policy too slow to warm is left cached but
+    /// uncompiled and evaluated normally later, where the deadline
+    /// applies again and a runaway policy fails closed. A bundle that
+    /// cannot be READ is a different matter and is reported.
+    ///
     /// Only meaningful with the policy cache enabled; without it there is
     /// nowhere to keep the result and this is a no-op.
     pub fn warm(&self, invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
@@ -334,22 +346,60 @@ impl RegorusRegoRunner {
             return Ok(());
         }
         let key = self.cache_key(invocation)?;
-        let engine = self.prepared_engine(key.clone())?;
-        let mut warmed = (*engine).clone();
-        warmed.set_input_json("{}").map_err(|err| {
-            RuntimeError::PolicyInvocationFailed(format!("failed to set Rego warm-up input: {err}"))
-        })?;
-        // The verdict is irrelevant; an undefined result or a policy that
-        // needs real input still leaves the engine compiled, which is the
-        // point. Only a load failure is worth reporting, and
-        // `prepared_engine` above has already reported that.
-        let _ = warmed.eval_query(invocation.query.clone(), false);
-        if let Some(cache) = &self.cache {
-            if let Ok(mut cache) = cache.lock() {
-                cache.insert(key, Arc::new(warmed));
+        let query = invocation.query.clone();
+        let timeout = self.eval_timeout;
+        let loader = self.clone();
+
+        let work = move || -> Result<JsonValue, RuntimeError> {
+            // Inside the deadline, because reading and parsing a bundle
+            // is unbounded disk work on a path a host may not control.
+            let engine = loader.prepared_engine(key.clone())?;
+            let mut warmed = (*engine).clone();
+            warmed.set_execution_timer_config(regorus::utils::limits::ExecutionTimerConfig {
+                limit: timeout,
+                check_interval: NonZeroU32::new(TIMER_CHECK_INTERVAL).unwrap_or(NonZeroU32::MIN),
+            });
+            warmed.set_input_json("{}").map_err(|err| {
+                RuntimeError::PolicyInvocationFailed(format!(
+                    "failed to set Rego warm-up input: {err}"
+                ))
+            })?;
+            // The verdict is irrelevant. An undefined result, or a policy
+            // that needs real input, still leaves the engine compiled,
+            // which is the whole point.
+            let _ = warmed.eval_query(query, false);
+            loader.store_warmed(key, warmed);
+            Ok(JsonValue::Null)
+        };
+
+        let outcome = if self.hard_deadline {
+            self.workers.run_with_deadline(timeout, work)
+        } else {
+            work()
+        };
+        match outcome {
+            Ok(_) => Ok(()),
+            // Too slow to warm: the bundle may already be cached
+            // unwarmed, and evaluation will apply the deadline again.
+            Err(error) if error.detail().contains("timeout") => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Keeps a compiled engine for later evaluations, under the same cap
+    /// [`Self::prepared_engine`] respects: activation is exactly the path
+    /// a host could otherwise use to grow the cache without bound.
+    fn store_warmed(&self, key: CacheKey, engine: regorus::Engine) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        if let Ok(mut cache) = cache.lock() {
+            // Replacing a key already present is not growth, so it stays
+            // allowed at the cap: that is the cold-to-warm upgrade.
+            if cache.len() < MAX_CACHED_POLICY_SETS || cache.contains_key(&key) {
+                cache.insert(key, Arc::new(engine));
             }
         }
-        Ok(())
     }
 
     pub fn evaluate(&self, invocation: &RegoPolicyInvocation) -> Result<JsonValue, RuntimeError> {

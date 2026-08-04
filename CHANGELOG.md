@@ -13,10 +13,16 @@
   - `PolicyDispatcher` gains a `warm` method with a default no-op, so any
     dispatcher can prepare a policy ahead of the first decision and none
     is required to.
-  - Over `examples/bank_agent`, activation costs about 1.2ms and each
-    later decision 10 to 20us at p50; on a 200-module bundle, readying at
-    activation rather than lazily cuts steady-state cost by about a fifth
-    because compilation is otherwise re-charged on every call.
+  - Over `examples/bank_agent`, activation costs a few milliseconds and
+    each later decision about 200 to 300us at p50, consistently across
+    Rust, .NET, Node, and Python, so activation is repaid within roughly
+    ten decisions. Absolute figures are hardware specific; run the
+    benchmarks rather than trusting these.
+  - Warming earns its keep in proportion to the policy set. The
+    benchmark takes a module count and builds a synthetic bundle of that
+    size, so the claim is reproducible from this tree: at 200 modules,
+    activation moves about 18ms of load and compile off the first
+    decision, which lazily is charged to it.
   - Reachable from every binding: `AcsPolicy.Activate` (.NET),
     `policyActivate` (Node), `ActivatedPolicy` (Python), and
     `acs_policy_activate` / `acs_policy_evaluate` / `acs_policy_free`
