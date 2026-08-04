@@ -31,6 +31,7 @@
     "build:native": "napi build --release --platform --manifest-path native/Cargo.toml --cwd . --js binding.js --dts binding.d.ts --output-dir .",
     "build:native:debug": "napi build --platform --manifest-path native/Cargo.toml --cwd . --js binding.js --dts binding.d.ts --output-dir .",
     "build": "npm run build:native && tsc",
+    "bench": "npm run build && node bench/activation.bench.mjs",
     "test": "npm run build && node --test test/*.mjs"
   },
   "dependencies": {
