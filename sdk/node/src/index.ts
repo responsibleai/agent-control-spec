@@ -14,13 +14,22 @@
  * `@responsibleai/agent-hooks`; its types are re-exported here so a
  * host needs a single import.
  */
-import type { AgentContext, Interceptor, Verdict } from "@responsibleai/agent-hooks";
+import type {
+  AgentContext,
+  InterceptionPoint,
+  Interceptor,
+  Verdict,
+} from "@responsibleai/agent-hooks";
+
 
 // Generated loader for the native engine binding (napi).
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const native = require("../binding.js") as {
   interceptorNew(manifestPath: string): unknown;
   intercept(handle: unknown, contextJson: string): string;
+  policyActivate(manifestPath: string): unknown;
+  policyEvaluate(handle: unknown, point: string, contextJson: string): string;
+  policyInterventionPoints(handle: unknown): string[];
   validateManifestFile(path: string): string | null;
   validateManifest(source: string): string | null;
   supportedManifestVersions(): string[];
@@ -29,6 +38,7 @@ const native = require("../binding.js") as {
 export type {
   AgentContext,
   Decision,
+  InterceptionPoint,
   Interceptor,
   Transform,
   Verdict,
@@ -68,6 +78,76 @@ export class AcsInterceptor implements Interceptor {
    */
   intercept(context: AgentContext): Verdict {
     return JSON.parse(native.intercept(this.handle, JSON.stringify(context))) as Verdict;
+  }
+}
+
+/**
+ * One policy version, readied once and evaluated many times.
+ *
+ * {@link AcsInterceptor} answers "evaluate this agent context against a
+ * manifest" and readies the policy lazily on the first call. This class
+ * is the other split: {@link ActivatedPolicy.activate} pays for reading
+ * the manifest, loading every Rego module and data document, and
+ * compiling the entrypoint each intervention point queries; every later
+ * {@link ActivatedPolicy.evaluate} costs no I/O and no compile.
+ *
+ * Activate once per policy version and keep the instance. A policy edit
+ * on disk needs a new activation, which is the point: the host controls
+ * when a version changes. The underlying handle is immutable and safe to
+ * share across concurrent evaluations.
+ */
+export class ActivatedPolicy {
+  private readonly handle: unknown;
+
+  private constructor(handle: unknown) {
+    this.handle = handle;
+  }
+
+  /**
+   * Activate the manifest at `manifestPath` using the zero-config
+   * dispatchers: bundled annotators; Rego policies in process, Cedar
+   * through the built-in evaluator, `test` policies through their
+   * embedded verdict.
+   *
+   * Throws when the manifest cannot be read, is rejected, or binds a
+   * policy that cannot be readied at all (a missing bundle, say). A
+   * policy that merely needs real input to produce a verdict activates
+   * fine.
+   *
+   * A manifest names its bundle relative to itself, so an absolute
+   * manifest path is enough and the working directory does not matter.
+   */
+  static activate(manifestPath: string): ActivatedPolicy {
+    return new ActivatedPolicy(native.policyActivate(manifestPath));
+  }
+
+  /**
+   * Evaluate one intervention point. This is the hot path.
+   *
+   * Evaluation failures return a fail-closed `deny` verdict
+   * (`runtime_error:*` reason), including a point this policy version
+   * does not bind. Throws only on boundary problems (unknown point
+   * name, non-object context).
+   */
+  evaluate(point: InterceptionPoint, context: AgentContext): Verdict {
+    return JSON.parse(
+      native.policyEvaluate(this.handle, point, JSON.stringify(context)),
+    ) as Verdict;
+  }
+
+  /**
+   * The intervention points this policy version binds, in manifest
+   * order. Use it to skip emitting points the policy does not govern.
+   */
+  interventionPoints(): readonly InterceptionPoint[] {
+    return Object.freeze(
+      native.policyInterventionPoints(this.handle) as InterceptionPoint[],
+    );
+  }
+
+  /** Whether this policy version governs `point`. */
+  governs(point: InterceptionPoint): boolean {
+    return this.interventionPoints().includes(point);
   }
 }
 

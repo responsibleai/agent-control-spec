@@ -589,6 +589,9 @@ if (!nativeBinding) {
 module.exports = nativeBinding
 module.exports.intercept = nativeBinding.intercept
 module.exports.interceptorNew = nativeBinding.interceptorNew
+module.exports.policyActivate = nativeBinding.policyActivate
+module.exports.policyEvaluate = nativeBinding.policyEvaluate
+module.exports.policyInterventionPoints = nativeBinding.policyInterventionPoints
 module.exports.supportedManifestVersions = nativeBinding.supportedManifestVersions
 module.exports.validateManifest = nativeBinding.validateManifest
 module.exports.validateManifestFile = nativeBinding.validateManifestFile

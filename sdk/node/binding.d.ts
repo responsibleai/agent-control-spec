@@ -20,6 +20,38 @@ export declare function intercept(handle: ExternalObject<Handle>, contextJson: s
  */
 export declare function interceptorNew(manifestPath: string): ExternalObject<Handle>
 
+/**
+ * Activate the manifest at `manifest_path`, readying every policy it
+ * binds, against the zero-config dispatchers.
+ *
+ * This is the expensive call: it reads the manifest, loads every Rego
+ * module and data document, and compiles the entrypoint each
+ * intervention point queries. Do it once per policy version and keep
+ * the handle; `policyEvaluate` then costs no I/O and no compile.
+ */
+export declare function policyActivate(manifestPath: string): ExternalObject<PolicyHandle>
+
+/**
+ * Evaluate one intervention point against an activated policy and
+ * return the verdict as wire JSON.
+ *
+ * `point` is an agent-hooks intervention point name, such as `input`
+ * or `pre_tool_call`. `context_json` is the agent context object
+ * (AGENT-HOOKS-0.1 §4).
+ *
+ * A policy that does not bind `point` is not thrown at: it fails
+ * closed with a `runtime_error:*` deny, exactly as every other
+ * evaluation failure does. An unknown point name is a boundary problem
+ * and throws.
+ */
+export declare function policyEvaluate(handle: ExternalObject<PolicyHandle>, point: string, contextJson: string): string
+
+/**
+ * The intervention points this policy version binds, in manifest
+ * order, as agent-hooks wire names.
+ */
+export declare function policyInterventionPoints(handle: ExternalObject<PolicyHandle>): Array<string>
+
 /** The manifest grammar versions this engine accepts. */
 export declare function supportedManifestVersions(): Array<string>
 

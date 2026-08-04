@@ -23,6 +23,29 @@ runtime evaluates each context and returns an agent-hooks verdict.
 Engine failures never raise into the host loop: they normalize into
 fail-closed `deny` verdicts with `runtime_error:*` reasons.
 
+## Activating a policy version
+
+A host that pins a policy version and serves traffic against it wants
+the expensive work done once, at a moment of its choosing.
+`ActivatedPolicy` reads the manifest, loads every Rego module and data
+document, and compiles the entrypoint each intervention point queries;
+every later `evaluate` costs no I/O and no compile.
+
+```python
+from agent_control_spec import ActivatedPolicy
+
+policy = ActivatedPolicy("manifest.yaml")  # once per policy version
+verdict = policy.evaluate("input", context)  # many times, hot path
+policy.intervention_points  # what this version governs
+```
+
+The instance is immutable and evaluation releases the GIL, so one
+instance serves concurrent threads. A policy edit on disk needs a new
+activation: the host decides when a version changes. Evaluation stays
+fail-closed, including for a point the version does not bind; only
+boundary problems (an unknown point name, a context that will not
+serialize) raise.
+
 Manifests can also be checked on their own, without building a runtime
 or resolving a policy bundle. Useful when generating or migrating manifests:
 
@@ -50,5 +73,9 @@ engine accepts. Read it rather than hardcoding the set.
 
 Trust model: a cooperative contract, not a security boundary — the host
 is fully trusted. See the repository's SECURITY.md.
+
+Benchmark: `python sdk/python/bench/activation_bench.py` runs against
+`examples/bank_agent`, reporting activation cost, first-evaluate cost,
+warm p50/p95/p99, and a thread-count throughput sweep up to 32.
 
 Docs and spec: https://github.com/responsibleai/agent-control-spec

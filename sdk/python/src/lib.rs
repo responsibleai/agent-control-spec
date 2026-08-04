@@ -9,7 +9,9 @@
 // non-object context JSON).
 
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
-use agent_control_spec::{Manifest, RuntimeError, Runtime, SUPPORTED_VERSIONS};
+use agent_control_spec::{
+    ActivatedPolicy, InterceptionPoint, Manifest, Runtime, RuntimeError, SUPPORTED_VERSIONS,
+};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
@@ -111,11 +113,109 @@ fn supported_manifest_versions() -> Vec<String> {
     SUPPORTED_VERSIONS.iter().map(|v| (*v).to_string()).collect()
 }
 
+// ---------------------------------------------------------------------
+// Activated policy: one policy version, readied once, evaluated many
+// times.
+//
+// `interceptor_new`/`intercept` answer "evaluate this agent context
+// against a manifest", and ready the policy lazily on the first call. A
+// host that pins a policy version and serves traffic against it wants
+// the opposite split: pay for reading and compiling the bundle once, at
+// a moment of its choosing, then evaluate a named intervention point
+// with nothing left to set up. These entry points are that split, and
+// mirror `policyActivate`/`policyEvaluate` in the Node binding and
+// `acs_policy_*` in the C ABI.
+// ---------------------------------------------------------------------
+
+#[pyclass(frozen)]
+struct PolicyHandle {
+    policy: ActivatedPolicy,
+}
+
+/// Activate the manifest at `manifest_path`, readying every policy it
+/// binds, against the zero-config dispatchers.
+///
+/// This is the expensive call: it reads the manifest, loads every Rego
+/// module and data document, and compiles the entrypoint each
+/// intervention point queries. Do it once per policy version and keep
+/// the handle; `policy_evaluate` then costs no I/O and no compile.
+#[pyfunction]
+fn policy_activate(py: Python<'_>, manifest_path: &str) -> PyResult<PolicyHandle> {
+    let manifest_path = manifest_path.to_string();
+    // Activation is the expensive call and touches no Python object, so
+    // it must not hold the GIL: a host activating a new policy version
+    // in a background thread would otherwise stall every request thread
+    // for the whole bundle load and compile.
+    let policy = py.detach(move || {
+        let manifest = Manifest::from_path(&manifest_path)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        ActivatedPolicy::activate_with(
+            manifest,
+            default_annotator_dispatcher(),
+            Arc::new(BindingPolicyDispatcher::new()),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    })?;
+    Ok(PolicyHandle { policy })
+}
+
+/// Evaluate one intervention point against an activated policy and
+/// return the verdict as wire JSON.
+///
+/// `point` is an agent-hooks intervention point name, such as ``input``
+/// or ``pre_tool_call``. `context_json` is the agent context object
+/// (AGENT-HOOKS-0.1 §4).
+///
+/// A policy that does not bind `point` does not raise: it fails closed
+/// with a ``runtime_error:*`` deny, exactly as every other evaluation
+/// failure does. An unknown point name is a boundary problem and
+/// raises.
+#[pyfunction]
+fn policy_evaluate(
+    py: Python<'_>,
+    handle: &PolicyHandle,
+    point: &str,
+    context_json: &str,
+) -> PyResult<String> {
+    let point: InterceptionPoint = point
+        .parse()
+        .map_err(|_| PyValueError::new_err(format!("unknown intervention point '{point}'")))?;
+    let snapshot: Value = serde_json::from_str(context_json)
+        .map_err(|e| PyValueError::new_err(format!("context_json does not parse: {e}")))?;
+    if !snapshot.is_object() {
+        return Err(PyValueError::new_err("context_json must be a JSON object"));
+    }
+    // Evaluation is pure Rust over data already copied out of Python, so
+    // the GIL is released for it. Without this, threads calling
+    // `evaluate` would serialize on the interpreter even though the
+    // engine itself is `Sync` and holds no Python state.
+    let policy = handle.policy.clone();
+    let verdict = py.detach(move || policy.evaluate(point, snapshot).verdict);
+    serde_json::to_string(&verdict)
+        .map_err(|e| PyRuntimeError::new_err(format!("verdict serialization failed: {e}")))
+}
+
+/// The intervention points this policy version binds, in manifest
+/// order, as agent-hooks wire names.
+#[pyfunction]
+fn policy_intervention_points(handle: &PolicyHandle) -> Vec<String> {
+    handle
+        .policy
+        .intervention_points()
+        .iter()
+        .map(|point| point.to_string())
+        .collect()
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeHandle>()?;
     m.add_function(wrap_pyfunction!(interceptor_new, m)?)?;
     m.add_function(wrap_pyfunction!(intercept, m)?)?;
+    m.add_class::<PolicyHandle>()?;
+    m.add_function(wrap_pyfunction!(policy_activate, m)?)?;
+    m.add_function(wrap_pyfunction!(policy_evaluate, m)?)?;
+    m.add_function(wrap_pyfunction!(policy_intervention_points, m)?)?;
     m.add("ManifestInvalid", m.py().get_type::<ManifestInvalid>())?;
     m.add_function(wrap_pyfunction!(validate_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(validate_manifest_file, m)?)?;

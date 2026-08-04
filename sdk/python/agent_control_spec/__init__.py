@@ -23,6 +23,7 @@ from agent_control_spec import _native
 
 __all__ = [
     "AcsInterceptor",
+    "ActivatedPolicy",
     "ManifestInvalidError",
     "__version__",
     "supported_manifest_versions",
@@ -48,6 +49,77 @@ class AcsInterceptor:
     def intercept(self, context: Mapping[str, Any]) -> Verdict:
         wire = _native.intercept(self._handle, json.dumps(context, allow_nan=False))
         return Verdict.from_wire(json.loads(wire))
+
+
+class ActivatedPolicy:
+    """One policy version, readied once and evaluated many times.
+
+    :class:`AcsInterceptor` answers "evaluate this agent context against
+    a manifest" and readies the policy lazily on the first call. This
+    class is the other split: :meth:`activate` pays for reading the
+    manifest, loading every Rego module and data document, and compiling
+    the entrypoint each intervention point queries, so that every later
+    :meth:`evaluate` costs no I/O and no compile.
+
+    Activate once per policy version and keep the instance. A policy edit
+    on disk needs a new activation, which is the point: the host controls
+    when a version changes. The handle is immutable and evaluation
+    releases the GIL, so one instance serves concurrent threads.
+
+    A manifest names its bundle relative to itself, so an absolute
+    manifest path is enough and the working directory does not matter.
+    """
+
+    __slots__ = ("_handle",)
+
+    def __init__(self, manifest_path: str) -> None:
+        """Activate the manifest at ``manifest_path`` with the
+        zero-config dispatchers (bundled annotators; Rego in process,
+        Cedar through the built-in evaluator, ``test`` policies through
+        their embedded verdict).
+
+        Raises :class:`ValueError` when the manifest cannot be read or is
+        rejected, and :class:`RuntimeError` when it binds a policy that
+        cannot be readied at all, such as a missing bundle. A policy that
+        merely needs real input to produce a verdict activates fine.
+        """
+        self._handle = _native.policy_activate(manifest_path)
+
+    @classmethod
+    def activate(cls, manifest_path: str) -> ActivatedPolicy:
+        """Activate the manifest at ``manifest_path``.
+
+        Same as the constructor, named for the lifecycle it belongs to.
+        """
+        return cls(manifest_path)
+
+    def evaluate(self, point: str, context: Mapping[str, Any]) -> Verdict:
+        """Evaluate one intervention point. This is the hot path.
+
+        ``point`` is an agent-hooks intervention point name, such as
+        ``"input"`` or ``"pre_tool_call"``.
+
+        Evaluation failures return a fail-closed ``deny`` verdict
+        (``runtime_error:*`` reason), including a point this policy
+        version does not bind. Raises only on boundary problems: an
+        unknown point name or a context that will not serialize.
+        """
+        wire = _native.policy_evaluate(
+            self._handle, point, json.dumps(context, allow_nan=False)
+        )
+        return Verdict.from_wire(json.loads(wire))
+
+    @property
+    def intervention_points(self) -> tuple[str, ...]:
+        """The intervention points this policy version binds, in manifest
+        order. Read it to skip emitting points the policy does not
+        govern.
+        """
+        return tuple(_native.policy_intervention_points(self._handle))
+
+    def governs(self, point: str) -> bool:
+        """Whether this policy version governs ``point``."""
+        return point in self.intervention_points
 
 
 #: A manifest failed grammar validation. Raised by
