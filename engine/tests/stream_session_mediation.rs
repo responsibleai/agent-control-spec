@@ -312,7 +312,7 @@ fn a_transform_verdict_records_the_host_obligation_to_substitute() {
         safety_level: SafetyLevel::Blocking,
         request_start_rune_offset: 0,
         response_start_rune_offset: 0,
-        request_tasks: vec!["pii".to_string()],
+        request_tasks: Vec::new(),
         response_tasks: vec!["pii".to_string()],
     })
     .unwrap();
@@ -335,6 +335,7 @@ fn a_transform_verdict_records_the_host_obligation_to_substitute() {
     assert_eq!(
         completion.reason,
         StreamEndReason::Rewritten {
+            track: StreamTrack::Response,
             task: "pii".to_string(),
             range: RuneRange { start: 0, end: 13 },
         }

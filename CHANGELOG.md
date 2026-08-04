@@ -6,8 +6,10 @@
   `post_model_call` now carries an exception for a host adopting section 18.1.
   The requirement to assemble streamed final output before `output` is unchanged
   and has no exception. The sentence excluding enforcement below the snapshot
-  level now excludes the token level only, since the new profile is segment
-  level enforcement and the previous wording excluded that too.
+  level now excludes the token level only. It previously excluded the chunk
+  level too, which was ambiguous once this profile existed: a transport chunk
+  is what the wire delivers, while the unit this profile evaluates is a span
+  the host chooses, and the two need not coincide.
 - A `transform` is terminal for the session and no watermark is reported for a
   track that records one. The substitution replaces the policy target with a new
   whole value: its runes are not the ones the session counted, so an offset over
@@ -25,6 +27,13 @@
   `response_start_rune_offset`, replacing the single `start_rune_offset`. The
   tracks are independent offset spaces and the ordinary retry re sends the
   prompt while resuming the response, which one offset could not express.
+- A track declared with no tasks is not mediated rather than rejected, so a host
+  guarding only the model stream no longer has to invent a request task that
+  evaluates nothing. Payload on an unmediated track fails closed, and a session
+  mediating neither track is refused.
+- `StreamEndReason::Denied` and `StreamEndReason::Rewritten` carry the track.
+  The same task name may gate both tracks, which left the audit record
+  ambiguous about which one ended the session.
 - Incremental stream mediation, specification section 18.1. A host that must
   release model output before the whole response exists can now drive
   `StreamSession`, which tracks how far each configured task has cleared a

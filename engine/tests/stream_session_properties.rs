@@ -652,6 +652,7 @@ fn a_denial_is_never_downgraded_by_any_later_operation() {
             .expect("denial records");
 
         let expected = StreamEndReason::Denied {
+            track: StreamTrack::Response,
             task: "t".to_string(),
             range: RuneRange { start: 0, end: 50 },
         };

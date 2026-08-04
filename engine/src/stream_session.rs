@@ -387,17 +387,19 @@ impl StreamSpan {
 pub enum SegmentOutcome {
     /// The policy permitted the evaluated text unchanged.
     Cleared,
-    /// The policy returned `transform`, so the host substitutes the replacement
-    /// value before emitting. Accepting one records that the stream was
-    /// modified even when the span carries no new clearance, since the
-    /// substitution stands either way. Under section 14 a transform names a node of the
-    /// policy target rather than a rune range, so what it rewrites is not this
-    /// span but whatever the host evaluated, which reaches at least as far. The
-    /// session records that the stream was modified, and clears the span to the
-    /// extent any accepted outcome does. It is the host's job to apply the
-    /// replacement, since the session holds no text to apply it to, and that
-    /// same absence is why a transform is honored only while nothing on the
-    /// track has been released.
+    /// The policy replaced the policy target, so the host emits a substitute.
+    ///
+    /// Recording one **ends the session** with [`StreamEndReason::Rewritten`].
+    /// It clears nothing and moves no frontier. Under section 14 a transform
+    /// names a node of the policy target rather than a rune range, so the value
+    /// it produces is a new whole value whose runes are not the ones this
+    /// session counted and which no task evaluated. The accounting can neither
+    /// address it by offset nor vouch for it, so it reports no watermark and
+    /// stops. The host applies the replacement, evaluates it on the ordinary
+    /// whole snapshot path, and starts a new session if it must keep streaming.
+    ///
+    /// It is honored only while nothing on the track has been released, since
+    /// otherwise the host can no longer alter the text it rewrites.
     Transformed,
     /// The policy refused the text, or an escalation did not resolve to an
     /// allow.
@@ -410,7 +412,14 @@ pub enum StreamEndReason {
     /// Every observed rune was cleared by every task.
     Complete,
     /// A host recorded a denial.
-    Denied { task: String, range: RuneRange },
+    Denied {
+        /// Track the refused span belongs to.
+        track: StreamTrack,
+        /// Task that refused it.
+        task: String,
+        /// Range it refused.
+        range: RuneRange,
+    },
     /// A task replaced the policy target, so the stream ended rewritten.
     ///
     /// The replacement is a new whole value. Its runes are not the runes this
@@ -419,7 +428,14 @@ pub enum StreamEndReason {
     /// it. The host emits the replacement only after evaluating it on the
     /// ordinary whole snapshot path of section 18, and starts a new session if
     /// it must keep streaming.
-    Rewritten { task: String, range: RuneRange },
+    Rewritten {
+        /// Track that was rewritten.
+        track: StreamTrack,
+        /// Task that produced the substitution.
+        task: String,
+        /// Range it reported.
+        range: RuneRange,
+    },
     /// The session failed closed.
     Failed(StreamError),
 }
@@ -435,10 +451,11 @@ impl StreamEndReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamCompletion {
     pub reason: StreamEndReason,
-    /// Whether the session accepted a `Transformed` outcome, so the text the
-    /// host emitted is not verbatim model output. Set on acceptance rather than
-    /// on clearance advancing, because a transform obliges a substitution
-    /// whether or not its span also moved a frontier.
+    /// Whether the host emitted a substitute rather than verbatim model
+    /// output, which is exactly `reason` being
+    /// [`StreamEndReason::Rewritten`]. Kept as its own member because a host
+    /// reporting whether a response was modified should not have to match on
+    /// the terminal reason to find out.
     pub transformed: bool,
 }
 
@@ -473,10 +490,10 @@ impl StreamWatermark {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        Self::for_track(StreamTrack::Response, tasks, start_offset)
+        Self::for_track(tasks, start_offset)
     }
 
-    fn for_track<I, S>(track: StreamTrack, tasks: I, start_offset: u32) -> Result<Self, StreamError>
+    fn for_track<I, S>(tasks: I, start_offset: u32) -> Result<Self, StreamError>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -488,9 +505,6 @@ impl StreamWatermark {
             .into_iter()
             .map(|task| (task.into(), start_offset))
             .collect();
-        if tasks.is_empty() {
-            return Err(StreamError::NoTasks(track));
-        }
         Ok(Self {
             tasks,
             confirmed: start_offset,
@@ -723,7 +737,9 @@ pub struct StreamSessionConfig {
     /// meaning as `request_start_rune_offset`.
     pub response_start_rune_offset: u32,
     /// Tasks that gate the request track. These correspond to whatever the
-    /// host binds at `input`.
+    /// host binds at `input`. Empty means the request track is not mediated,
+    /// which is the ordinary shape for a host guarding only the model stream;
+    /// payload on an unmediated track then fails closed.
     pub request_tasks: Vec<String>,
     /// Tasks that gate the response track. These correspond to whatever the
     /// host binds at `post_model_call`. Kept separate from `request_tasks`
@@ -764,19 +780,23 @@ pub struct StreamSession {
     response: StreamWatermark,
     ended: Option<StreamEndReason>,
     payloads_closed: bool,
-    transformed: bool,
 }
 
 impl StreamSession {
     /// Open a session.
     pub fn new(config: StreamSessionConfig) -> Result<Self, StreamError> {
+        // A track with no tasks is not mediated, which is the ordinary shape
+        // for a host guarding only the model stream. Payload on such a track
+        // fails closed, since nothing would gate it. A session mediating
+        // neither track would gate nothing at all, so that is refused.
+        if config.request_tasks.is_empty() && config.response_tasks.is_empty() {
+            return Err(StreamError::NoTasks(StreamTrack::Response));
+        }
         let request = StreamWatermark::for_track(
-            StreamTrack::Request,
             config.request_tasks.clone(),
             config.request_start_rune_offset,
         )?;
         let response = StreamWatermark::for_track(
-            StreamTrack::Response,
             config.response_tasks.clone(),
             config.response_start_rune_offset,
         )?;
@@ -786,7 +806,6 @@ impl StreamSession {
             response,
             ended: None,
             payloads_closed: false,
-            transformed: false,
         })
     }
 
@@ -807,7 +826,7 @@ impl StreamSession {
 
     /// Whether any span cleared through a `Transformed` outcome.
     pub fn transformed(&self) -> bool {
-        self.transformed
+        matches!(self.ended, Some(StreamEndReason::Rewritten { .. }))
     }
 
     /// Watermark for a track.
@@ -852,6 +871,9 @@ impl StreamSession {
             return Err(self.fail(StreamError::PayloadsClosed));
         }
         let track = source_type.track();
+        if self.config.tasks_for(track).is_empty() {
+            return Err(self.fail(StreamError::NoTasks(track)));
+        }
         match self.watermark_mut(track).extend(runes) {
             Ok(end) => Ok(end),
             Err(error) => Err(self.fail(error)),
@@ -920,6 +942,7 @@ impl StreamSession {
         match outcome {
             SegmentOutcome::Denied => {
                 self.ended = Some(StreamEndReason::Denied {
+                    track,
                     task: task.to_string(),
                     range: span.range,
                 });
@@ -960,8 +983,8 @@ impl StreamSession {
                 // different way. So the accounting reports none, and the stream
                 // ends rewritten. The replacement is a whole value and belongs
                 // on the ordinary path of section 18, where every task sees it.
-                self.transformed = true;
                 self.ended = Some(StreamEndReason::Rewritten {
+                    track,
                     task: task.to_string(),
                     range: span.range,
                 });
@@ -973,14 +996,6 @@ impl StreamSession {
         if let Err(error) = watermark.record(track, task, span.range.start, span.range.end) {
             return Err(self.fail(error));
         }
-        // Recorded on acceptance, which is neither of the two nearby readings
-        // that are wrong. Setting it inside the arm above would mark the stream
-        // modified even when the watermark then rejects the span, so a failed
-        // session would claim a rewrite that never happened. Gating it on the
-        // span advancing a frontier would drop a transform whose span is stale
-        // for its task while still applicable, under reporting a rewrite the
-        // host is about to perform. Acceptance is exactly the condition that
-        // the substitution stands.
         Ok(())
     }
 
@@ -1057,7 +1072,7 @@ impl StreamSession {
         if let Some(reason) = &self.ended {
             return StreamCompletion {
                 reason: reason.clone(),
-                transformed: self.transformed,
+                transformed: self.transformed(),
             };
         }
         self.payloads_closed = true;
@@ -1074,7 +1089,7 @@ impl StreamSession {
                 self.ended = Some(reason.clone());
                 return StreamCompletion {
                     reason,
-                    transformed: self.transformed,
+                    transformed: self.transformed(),
                 };
             }
         }
@@ -1085,7 +1100,7 @@ impl StreamSession {
         self.ended = Some(StreamEndReason::Complete);
         StreamCompletion {
             reason: StreamEndReason::Complete,
-            transformed: self.transformed,
+            transformed: self.transformed(),
         }
     }
 
@@ -1277,6 +1292,7 @@ mod tests {
         assert_eq!(
             s.end_reason(),
             Some(&StreamEndReason::Denied {
+                track: StreamTrack::Response,
                 task: "safety".to_string(),
                 range: RuneRange { start: 0, end: 20 },
             })
@@ -1318,12 +1334,10 @@ mod tests {
 
     #[test]
     fn the_watermark_type_validates_its_own_inputs() {
-        // StreamWatermark is a public export, so a host may drive it directly
-        // rather than through a session. The session validates the same things
-        // before delegating. No host path reaches these directly, since the
-        // mutators are crate internal and the constructor is test only, so
-        // these assertions pin the layer's own behavior rather than a public
-        // contract.
+        // No host path reaches these directly: the mutators are crate internal
+        // and the constructor is test only. The session validates the same
+        // things before delegating, so these assertions pin the watermark
+        // layer's own behavior rather than a public contract.
         let mut watermark =
             StreamWatermark::new(["a", "b"], 0).expect("two tasks is a valid watermark");
         assert_eq!(watermark.received(), 0);
@@ -1389,10 +1403,6 @@ mod tests {
 
     #[test]
     fn the_watermark_type_refuses_an_impossible_configuration() {
-        assert!(matches!(
-            StreamWatermark::new(Vec::<String>::new(), 0),
-            Err(StreamError::NoTasks(_))
-        ));
         assert_eq!(
             StreamWatermark::new(["a"], MAX_RUNE_OFFSET + 1),
             Err(StreamError::OffsetOverflow)
@@ -1588,6 +1598,7 @@ mod tests {
         assert_eq!(
             s.end_reason(),
             Some(&StreamEndReason::Denied {
+                track: StreamTrack::Response,
                 task: "t".to_string(),
                 range: RuneRange { start: 0, end: 10 },
             })
@@ -1687,6 +1698,7 @@ mod tests {
         assert_eq!(
             s.end_reason(),
             Some(&StreamEndReason::Denied {
+                track: StreamTrack::Response,
                 task: "t".to_string(),
                 range: RuneRange { start: 0, end: 10 },
             })
@@ -1859,6 +1871,7 @@ mod tests {
         assert_eq!(
             done.reason,
             StreamEndReason::Rewritten {
+                track: StreamTrack::Response,
                 task: "pii".to_string(),
                 range: RuneRange { start: 0, end: 23 },
             }
@@ -1988,18 +2001,56 @@ mod tests {
     }
 
     #[test]
-    fn a_track_with_no_tasks_is_refused() {
-        let config = StreamSessionConfig {
+    fn a_track_with_no_tasks_is_unmediated_and_takes_no_payload() {
+        // Guarding only the model stream is the ordinary case, so an empty task
+        // set means that track is not mediated rather than being an error.
+        // Payload on it still fails closed, since nothing would gate it.
+        let mut s = StreamSession::new(StreamSessionConfig {
             safety_level: SafetyLevel::Blocking,
             request_start_rune_offset: 0,
             response_start_rune_offset: 0,
             request_tasks: Vec::new(),
             response_tasks: vec!["safety".to_string()],
-        };
+        })
+        .expect("a response only session is valid");
         assert_eq!(
-            StreamSession::new(config).err(),
-            Some(StreamError::NoTasks(StreamTrack::Request))
+            s.observe(REQ, 5),
+            Err(StreamError::NoTasks(StreamTrack::Request)),
+            "an unmediated track gates nothing, so it takes nothing"
         );
+        assert!(s.is_ended());
+    }
+
+    #[test]
+    fn a_session_mediating_neither_track_is_refused() {
+        assert_eq!(
+            StreamSession::new(StreamSessionConfig {
+                safety_level: SafetyLevel::Blocking,
+                request_start_rune_offset: 0,
+                response_start_rune_offset: 0,
+                request_tasks: Vec::new(),
+                response_tasks: Vec::new(),
+            })
+            .map(|_| ()),
+            Err(StreamError::NoTasks(StreamTrack::Response))
+        );
+    }
+
+    #[test]
+    fn a_response_only_session_settles_on_its_own_track() {
+        let mut s = StreamSession::new(StreamSessionConfig {
+            safety_level: SafetyLevel::Blocking,
+            request_start_rune_offset: 0,
+            response_start_rune_offset: 0,
+            request_tasks: Vec::new(),
+            response_tasks: vec!["safety".to_string()],
+        })
+        .expect("config");
+        s.observe(RES, 10).expect("observe");
+        s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Cleared)
+            .expect("clears");
+        assert_eq!(s.advance(StreamTrack::Response), Some(10));
+        assert_eq!(s.finish().reason, StreamEndReason::Complete);
     }
 
     #[test]
