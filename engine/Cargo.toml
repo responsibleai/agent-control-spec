@@ -30,6 +30,11 @@ crate-type = ["lib"]
 default = ["opa", "cedar"]
 opa = []
 cedar = ["dep:cedar-policy"]
+# NOTE: because this gate is off by default, `cargo test` without
+# `--all-features` compiles the streaming test binaries to nothing and reports
+# green having run none of them. CI passes `--all-features`, so use that
+# locally before trusting a green run that touched this module.
+#
 # `streaming` gates `pub mod stream_session` and its re-exports, the host
 # side accounting for the incremental stream profile in specification
 # section 18.1. OFF by default for two reasons. The profile is opt in, so a
