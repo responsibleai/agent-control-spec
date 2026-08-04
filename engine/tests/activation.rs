@@ -364,55 +364,66 @@ fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
 fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
     let dir = test_artifact_dir("activation-saturated-warm-pool");
     fs::create_dir_all(dir.join("policy")).unwrap();
+    // A single builtin call, because that is the one thing regorus
+    // cannot interrupt: a Rego-level loop is cut by the cooperative
+    // timer, the worker finishes, and nothing is ever abandoned. 200k
+    // elements is ~5MB and ~25ms, far past the 2ms deadline below, and
+    // small enough that the workers this deliberately strands cannot
+    // exhaust a CI runner the way a 40M range did in ec04178.
     fs::write(
         dir.join("policy").join("slow.rego"),
-        // 200k elements is ~4MB and still far past a 20ms deadline. The
-        // 40M range that makes one worker slow on its own is 960MB
-        // apiece, and this test deliberately abandons dozens: that is
-        // the pattern ec04178 removed after it aborted the Windows CI
-        // job, and it must not come back through a new test.
-        "package slow\n\nimport rego.v1\n\n         big := count([x | x := numbers.range(1, 200000)[_]])\n\n         verdict := {\"decision\": \"allow\"} if big > 0\n",
+        "package slow\n\nimport rego.v1\n\n         big := count(numbers.range(1, 200000))\n\n         verdict := {\"decision\": \"allow\"} if big > 0\n",
     )
     .unwrap();
 
     // One runner, shared, as a multi-tenant host would.
     let runner = RegorusRegoRunner::new()
         .with_policy_cache(true)
-        .with_eval_timeout(Duration::from_millis(20));
+        .with_eval_timeout(Duration::from_millis(2));
 
-    // Saturate the warming pool through concurrency rather than through
-    // one enormous evaluation: enough warms have to be in flight at once
-    // to cross the ceiling, and each abandoned worker holds only ~4MB.
+    // Sustained load rather than one burst: each worker holds its slot
+    // only until its evaluation ends, so a burst leaves a window of tens
+    // of milliseconds in which the pool is full. Warming in a loop keeps
+    // it full for as long as the test needs, at a bounded number of
+    // strandings in flight.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let bundle = dir.join("policy").display().to_string();
-    let barrier = Arc::new(std::sync::Barrier::new(48));
-    let handles: Vec<_> = (0..48)
-        .map(|index| {
+    let saturating: Vec<_> = (0..24)
+        .map(|thread| {
             let runner = runner.clone();
-            let barrier = Arc::clone(&barrier);
             let bundle = bundle.clone();
+            let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
-                barrier.wait();
-                let _ = runner.warm(&RegoPolicyInvocation {
-                    // A distinct cache key per thread, so each really warms.
-                    query: format!("data.slow.verdict # {index}"),
-                    bundle: Some(bundle),
-                    adapter_config: Default::default(),
-                    input: json!({}),
-                    canonical_input: "{}".to_string(),
-                });
+                let mut round = 0;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = runner.warm(&RegoPolicyInvocation {
+                        // A distinct cache key per attempt, so each
+                        // really loads and warms rather than hitting the
+                        // entry a sibling just cached.
+                        query: format!("data.slow.verdict # {thread}.{round}"),
+                        bundle: Some(bundle.clone()),
+                        adapter_config: Default::default(),
+                        input: json!({}),
+                        canonical_input: "{}".to_string(),
+                    });
+                    round += 1;
+                }
             })
         })
         .collect();
-    for handle in handles {
-        handle.join().unwrap();
-    }
-    assert!(
-        runner.abandoned_evaluations() > 0,
-        "the fixture must actually abandon warming workers, or this test \
-         cannot reach the state it exists to check"
-    );
 
-    // Now ask it to ready a bundle that does not exist.
+    // Wait for the state under test rather than assuming timing reached
+    // it. If the fixture is ever too fast to saturate the pool, this
+    // fails loudly instead of passing for the wrong reason.
+    let ceiling = agent_control_spec::rego::MAX_ABANDONED_WORKERS;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while runner.abandoned_evaluations() < ceiling && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let reached = runner.abandoned_evaluations();
+
+    // With the pool provably saturated, ask it to ready a bundle that
+    // does not exist.
     let missing = RegoPolicyInvocation {
         query: "data.nope.verdict".to_string(),
         bundle: Some(dir.join("does-not-exist").display().to_string()),
@@ -421,6 +432,15 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
         canonical_input: "{}".to_string(),
     };
     let outcome = runner.warm(&missing);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for handle in saturating {
+        handle.join().unwrap();
+    }
+
+    assert!(
+        reached >= ceiling,
+        "fixture never saturated the warming pool: {reached} abandoned, need {ceiling}"
+    );
 
     assert!(
         outcome.is_err(),

@@ -102,6 +102,10 @@ pub fn intercept(handle: &External<Handle>, context_json: Utf16String) -> napi::
 /// module and data document, and compiles the entrypoint each
 /// intervention point queries. Do it once per policy version and keep
 /// the handle; `policyEvaluate` then costs no I/O and no compile.
+///
+/// Readying is bounded by the eval timeout. A policy too slow to ready
+/// inside it activates anyway and pays that cost on its first
+/// evaluation instead.
 #[napi]
 pub fn policy_activate(manifest_path: Utf16String) -> napi::Result<External<PolicyHandle>> {
     let manifest_path = decode("manifest_path", &manifest_path)?;

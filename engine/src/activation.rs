@@ -72,13 +72,17 @@ impl ActivatedPolicy {
     /// [`PolicyDispatcher::warm`], so the bundle is read and compiled
     /// here rather than on the first agent action.
     ///
-    /// Fails when a bound policy cannot be readied, such as a bundle
-    /// that does not exist, and when readying cannot be attempted at
-    /// all. A policy that merely needs real input to produce a verdict
-    /// warms fine.
+    /// Fails when readying a bound policy finds it broken, such as a
+    /// bundle that does not exist, and when readying cannot be
+    /// attempted at all. A policy that merely needs real input to
+    /// produce a verdict warms fine.
+    ///
+    /// The first of those is conditional on readying finishing: a
+    /// bundle whose load does not complete inside the deadline is
+    /// not reported here, and surfaces at the first decision.
     ///
     /// Readying is bounded by the dispatcher's eval timeout. A policy
-    /// too slow to compile inside it is left loaded but uncompiled, and
+    /// too slow to compile inside it is left not necessarily fully readied, and
     /// activation still succeeds: it pays compilation on its first
     /// decision instead, and fails closed there if it cannot finish.
     /// So activation compiles the policy in the ordinary case, but a

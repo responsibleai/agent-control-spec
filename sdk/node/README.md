@@ -27,7 +27,7 @@ and data document, and compiles the entrypoint each intervention point
 queries; every later `evaluate` costs no I/O and no compile.
 
 Compiling is bounded by the eval timeout. A policy too slow to compile in
-that window activates anyway, loaded but uncompiled, and pays compilation
+that window activates anyway, not necessarily fully readied, and pays compilation
 on its first decision instead.
 
 

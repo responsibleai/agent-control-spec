@@ -62,7 +62,7 @@ class ActivatedPolicy:
     :meth:`evaluate` costs no I/O and no compile.
 
     Compiling is bounded by the eval timeout: a policy too slow to
-    compile in that window activates anyway, loaded but uncompiled, and
+    compile in that window activates anyway, not necessarily fully readied, and
     pays compilation on its first evaluation instead.
 
     Activate once per policy version and keep the instance. A policy edit

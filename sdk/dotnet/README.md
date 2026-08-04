@@ -43,7 +43,7 @@ that pins a policy version and serves traffic against it wants the
 opposite split — pay to read and compile the bundle once, at a moment of
 its choosing, then evaluate a named intervention point with nothing left
 to set up. Compiling is bounded by the eval timeout: a policy too slow to
-compile in that window activates anyway, loaded but uncompiled, and pays
+compile in that window activates anyway, not necessarily fully readied, and pays
 compilation on its first evaluation instead:
 
 ```csharp

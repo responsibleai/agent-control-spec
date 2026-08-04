@@ -28,6 +28,10 @@ export declare function interceptorNew(manifestPath: string): ExternalObject<Han
  * module and data document, and compiles the entrypoint each
  * intervention point queries. Do it once per policy version and keep
  * the handle; `policyEvaluate` then costs no I/O and no compile.
+ *
+ * Readying is bounded by the eval timeout. A policy too slow to ready
+ * inside it activates anyway and pays that cost on its first
+ * evaluation instead.
  */
 export declare function policyActivate(manifestPath: string): ExternalObject<PolicyHandle>
 

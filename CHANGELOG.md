@@ -7,7 +7,7 @@
   and data document, and compiles the entrypoint each intervention point
   queries, so a decision afterwards costs no I/O and no compilation. Readying is bounded by the eval
   timeout, so a policy too slow to compile inside it activates anyway,
-  loaded but uncompiled, and pays compilation on its first decision. The
+  not necessarily fully readied, and pays compilation on its first decision. The
   handle is immutable, `Send + Sync`, and cheap to clone, so a host holds
   one per policy version and shares it across threads under its own
   versioning scheme rather than relying on the runtime to guess when a

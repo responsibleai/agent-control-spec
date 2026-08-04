@@ -139,6 +139,10 @@ struct PolicyHandle {
 /// module and data document, and compiles the entrypoint each
 /// intervention point queries. Do it once per policy version and keep
 /// the handle; `policy_evaluate` then costs no I/O and no compile.
+///
+/// Readying is bounded by the eval timeout. A policy too slow to ready
+/// inside it activates anyway and pays that cost on its first
+/// evaluation instead.
 #[pyfunction]
 fn policy_activate(py: Python<'_>, manifest_path: &str) -> PyResult<PolicyHandle> {
     let manifest_path = manifest_path.to_string();

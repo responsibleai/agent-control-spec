@@ -697,10 +697,6 @@ fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
 #[test]
 fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
     let dir = test_artifact_dir("rego-load-inside-deadline");
-    // Large enough that loading it dwarfs the deadline: with the load
-    // outside, elapsed tracks the file count; with it inside, elapsed is
-    // the deadline whatever the count. Measured on the fixed tree, 2500
-    // and 6000 files both return in 20.4ms against a 20ms deadline.
     for index in 0..6000 {
         fs::write(
             dir.join(format!("p{index}.rego")),
@@ -708,29 +704,40 @@ fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
         )
         .unwrap();
     }
-    let dispatcher = RegorusPolicyDispatcher::with_runner(
-        RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(20)),
-    );
+    let bundle = dir.display().to_string();
+    let evaluate_with = |timeout: Duration| {
+        // A fresh runner each time, so neither call sees the other's
+        // cached bundle.
+        let dispatcher = RegorusPolicyDispatcher::with_runner(
+            RegorusRegoRunner::new().with_eval_timeout(timeout),
+        );
+        let started = Instant::now();
+        let _ = dispatcher.evaluate(&rego_invocation(
+            "data.p0.v",
+            Some(bundle.clone()),
+            BTreeMap::new(),
+            json!({}),
+        ));
+        started.elapsed()
+    };
 
-    // One measurement, not a best-of-N: each timed-out call abandons a
-    // worker that goes on reading all 6000 files, so repeating the
-    // measurement makes later samples slower rather than cleaner.
-    let started = Instant::now();
-    let _ = dispatcher.evaluate(&rego_invocation(
-        "data.p0.v",
-        Some(dir.display().to_string()),
-        BTreeMap::new(),
-        json!({}),
-    ));
-    let elapsed = started.elapsed();
+    // The control: the same work with a deadline it cannot hit, so this
+    // is what loading and compiling 6000 modules costs on this machine
+    // right now, under whatever load the rest of the suite is applying.
+    let unbounded = evaluate_with(Duration::from_secs(30));
+    let bounded = evaluate_with(Duration::from_millis(20));
 
-    // Generous against CI hardware, which adds a fixed overhead on top of
-    // the deadline: this returned in 121ms on a macOS runner when the
-    // deadline was 50ms. Loading 6000 files takes several hundred
-    // milliseconds, so the two regimes stay far apart.
+    // Compared as a ratio rather than against a wall-clock constant.
+    // With the load inside the deadline, `bounded` returns at the
+    // deadline whatever the bundle costs; with it outside, `bounded`
+    // pays the same load as `unbounded` and the two converge. An
+    // absolute bound instead measured the CI runner: it read 396ms on a
+    // loaded 16-core box against a 300ms limit and failed the required
+    // job about one run in six.
     assert!(
-        elapsed < Duration::from_millis(300),
-        "bundle load escaped the deadline: {elapsed:?}"
+        bounded * 3 < unbounded,
+        "bundle load escaped the deadline: bounded {bounded:?} against an \
+         unbounded control of {unbounded:?}"
     );
 }
 

@@ -806,7 +806,7 @@ pub struct AcsActivatedPolicy {
 /// the handle; `acs_policy_evaluate` then costs no I/O and no compile.
 ///
 /// Compiling is bounded by the eval timeout. A policy too slow to
-/// compile in that window activates anyway, loaded but uncompiled, and
+/// compile in that window activates anyway, not necessarily fully readied, and
 /// pays compilation on its first decision instead.
 ///
 /// Returns NULL and sets `*err_out` on failure. Free with
