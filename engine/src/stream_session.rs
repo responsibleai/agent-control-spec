@@ -208,17 +208,25 @@ impl StreamTrack {
 
 /// A fail closed condition in the streaming accounting.
 ///
-/// Most variants put a session into its terminal state. Two do not:
+/// Most variants put a session into its terminal state. Three do not.
 /// [`StreamError::UnknownSafetyLevel`] and [`StreamError::UnknownSourceType`]
-/// come from parsing wire values before a session exists, so they have nothing
-/// to terminate.
+/// come from parsing wire values before a session exists, and
+/// [`StreamError::NoTracksMediated`] comes from rejecting a configuration, so
+/// none of the three has a session to terminate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamError {
     UnknownSafetyLevel(String),
     UnknownSourceType(String),
-    /// A track was configured with no tasks, so no task could ever clear a
-    /// span and its watermark could never advance.
+    /// Payload arrived on a track the session does not mediate.
+    ///
+    /// An empty task set means that track is not mediated, which is the
+    /// ordinary shape for a host guarding only the model stream. Nothing would
+    /// gate text on it, so text on it fails closed.
     NoTasks(StreamTrack),
+    /// The configuration mediated neither track, so the session gates nothing.
+    ///
+    /// Raised while building a session, which therefore never exists.
+    NoTracksMediated,
     /// An outcome named a task the track was not configured with.
     UnknownTask {
         track: StreamTrack,
@@ -288,8 +296,13 @@ impl fmt::Display for StreamError {
                 write!(f, "unknown streaming safety level {value}")
             }
             Self::UnknownSourceType(value) => write!(f, "unknown stream source type {value}"),
-            Self::NoTasks(track) => {
-                write!(f, "{} track configured with no tasks", track.as_str())
+            Self::NoTasks(track) => write!(
+                f,
+                "payload arrived on the unmediated {} track",
+                track.as_str()
+            ),
+            Self::NoTracksMediated => {
+                f.write_str("streaming session configured to mediate neither track")
             }
             Self::UnknownTask { track, task } => write!(
                 f,
@@ -337,10 +350,6 @@ pub struct RuneRange {
 }
 
 impl RuneRange {
-    pub fn len(self) -> u32 {
-        self.end.saturating_sub(self.start)
-    }
-
     pub fn is_empty(self) -> bool {
         self.end <= self.start
     }
@@ -481,9 +490,8 @@ impl StreamWatermark {
     /// Build a watermark over `tasks`, with every task starting at
     /// `start_offset`.
     ///
-    /// A test convenience for exercising the watermark on its own. A session
-    /// builds both of its watermarks through `for_track`, which names the track
-    /// so an empty task set reports which one was empty.
+    /// A test convenience for exercising the watermark on its own, so the
+    /// layer's behavior is pinned without going through a session.
     #[cfg(test)]
     fn new<I, S>(tasks: I, start_offset: u32) -> Result<Self, StreamError>
     where
@@ -790,7 +798,7 @@ impl StreamSession {
         // fails closed, since nothing would gate it. A session mediating
         // neither track would gate nothing at all, so that is refused.
         if config.request_tasks.is_empty() && config.response_tasks.is_empty() {
-            return Err(StreamError::NoTasks(StreamTrack::Response));
+            return Err(StreamError::NoTracksMediated);
         }
         let request = StreamWatermark::for_track(
             config.request_tasks.clone(),
@@ -824,7 +832,12 @@ impl StreamSession {
         self.ended.is_some()
     }
 
-    /// Whether any span cleared through a `Transformed` outcome.
+    /// Whether a `Transformed` outcome ended this session, meaning the host
+    /// emits a substitute rather than verbatim model output.
+    ///
+    /// A rewrite clears nothing, so this says nothing about what was released.
+    /// It is exactly [`StreamEndReason::Rewritten`], derived rather than
+    /// tracked so the two cannot disagree.
     pub fn transformed(&self) -> bool {
         matches!(self.ended, Some(StreamEndReason::Rewritten { .. }))
     }
@@ -1823,7 +1836,6 @@ mod tests {
         let sample = "héllo 🌍";
         assert_eq!(sample.chars().count(), 7);
         assert_eq!(sample.encode_utf16().count(), 8);
-        assert_eq!(sample.len(), 11);
         assert_eq!(s.observe_text(RES, sample), Ok(7));
     }
 
@@ -2032,7 +2044,7 @@ mod tests {
                 response_tasks: Vec::new(),
             })
             .map(|_| ()),
-            Err(StreamError::NoTasks(StreamTrack::Response))
+            Err(StreamError::NoTracksMediated)
         );
     }
 

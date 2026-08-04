@@ -15,7 +15,7 @@
   whole value: its runes are not the ones the session counted, so an offset over
   it names a position in a sequence that no longer exists, and no task evaluated
   it, so no clearance against the original authorizes releasing it. Settlement
-  reports `StreamEndReason::Rewritten` with the task and range. The host
+  reports `StreamEndReason::Rewritten` with the track, task, and range. The host
   evaluates the replacement on the ordinary section 18 path.
 - Payload arriving after the host closed the payload stream now fails the
   session rather than only being refused, since a host that ignored the refusal
@@ -27,6 +27,10 @@
   `response_start_rune_offset`, replacing the single `start_rune_offset`. The
   tracks are independent offset spaces and the ordinary retry re sends the
   prompt while resuming the response, which one offset could not express.
+- Payload on an unmediated track reports `NoTasks`, and a configuration
+  mediating neither track is refused with the new `NoTracksMediated`. The two
+  were previously one variant, which rendered the second case as though a
+  single named track were at fault.
 - A track declared with no tasks is not mediated rather than rejected, so a host
   guarding only the model stream no longer has to invent a request task that
   evaluates nothing. Payload on an unmediated track fails closed, and a session
