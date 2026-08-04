@@ -53,7 +53,19 @@ internal static class Program
         // A manifest names its bundle relative to itself, so an
         // absolute manifest path is enough and the working directory of
         // whatever process hosts this is left alone.
-        string Manifest = Path.Combine(exampleDir, "manifest.yaml");
+        //
+        // The bench variant, not manifest.yaml: every annotator type the
+        // specification defines calls an HTTP endpoint, so under the
+        // annotated manifest a binding-side evaluation fails closed at
+        // annotation before the policy engine is reached, and this would
+        // time the annotator error path instead of Rego evaluation. The
+        // Node and Python benches use the same variant, which is what
+        // makes the three sets of numbers comparable.
+        string Manifest = Path.Combine(exampleDir, "manifest.bench.yaml");
+        if (!File.Exists(Manifest))
+        {
+            Manifest = Path.Combine(exampleDir, "manifest.yaml");
+        }
 
         var workload = Workload.Load(Path.Combine(exampleDir, "snapshots"));
         if (workload.Count == 0)

@@ -22,6 +22,13 @@ to point it elsewhere; it must contain `manifest.yaml` and a
 The benchmark passes the manifest by absolute path. A manifest names its
 bundle relative to itself, so nothing depends on the working directory.
 
+It uses `manifest.bench.yaml` rather than `manifest.yaml`. Every annotator
+type the specification defines calls an HTTP endpoint, so under the
+annotated manifest an evaluation through a binding fails closed at
+annotation before the policy engine is reached: the numbers would be the
+cost of the annotator error path, roughly an order of magnitude below a
+real evaluation. The Node and Python benches use the same variant.
+
 ## What it reports
 
 | Section | Question it answers |

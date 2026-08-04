@@ -267,8 +267,20 @@ impl Workload {
         })
     }
 
+    /// The bench variant, not `manifest.yaml`. Every annotator type the
+    /// specification defines calls an HTTP endpoint, so under the
+    /// annotated manifest an evaluation fails closed at annotation
+    /// before the policy engine is reached, and this would time the
+    /// annotator error path rather than Rego evaluation: about an order
+    /// of magnitude apart. The SDK benchmarks use the same variant, so
+    /// the four sets of numbers are comparable.
     fn manifest(&self) -> Result<Manifest, RuntimeError> {
-        Manifest::from_path(self.dir.join("manifest.yaml"))
+        let bench = self.dir.join("manifest.bench.yaml");
+        Manifest::from_path(if bench.exists() {
+            bench
+        } else {
+            self.dir.join("manifest.yaml")
+        })
     }
 
     fn snapshot_for(&self, point: InterceptionPoint) -> Option<&JsonValue> {
