@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- A policy version can be activated once and evaluated many times.
+  `ActivatedPolicy::activate` reads the manifest, loads every Rego module
+  and data document, and compiles the entrypoint each intervention point
+  queries, so a decision afterwards costs no I/O and no compilation. The
+  handle is immutable, `Send + Sync`, and cheap to clone, so a host holds
+  one per policy version and shares it across threads under its own
+  versioning scheme rather than relying on the runtime to guess when a
+  policy changed.
+  - `PolicyDispatcher` gains a `warm` method with a default no-op, so any
+    dispatcher can prepare a policy ahead of the first decision and none
+    is required to.
+  - Over `examples/bank_agent`, activation costs about 1.2ms and each
+    later decision 10 to 20us at p50; on a 200-module bundle, readying at
+    activation rather than lazily cuts steady-state cost by about a fifth
+    because compilation is otherwise re-charged on every call.
+  - Reachable from every binding: `AcsPolicy.Activate` (.NET),
+    `policyActivate` (Node), `ActivatedPolicy` (Python), and
+    `acs_policy_activate` / `acs_policy_evaluate` / `acs_policy_free`
+    over the C ABI.
+  - `cargo run --release -p agent-control-spec --all-features --example
+    benchmark` reports activation cost, warm p50/p95/p99 per intervention
+    point, and the concurrency curve.
+
 - The bundled Rego dispatcher evaluates policy in process through
   [`regorus`](https://crates.io/crates/regorus) instead of shelling out to
   an `opa` binary on PATH. Nothing has to be installed on the host, and a

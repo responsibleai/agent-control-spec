@@ -12,6 +12,7 @@
 
 pub type JsonValue = serde_json::Value;
 
+pub mod activation;
 pub mod annotation;
 pub mod cedar;
 mod constants;
@@ -43,6 +44,7 @@ pub use agent_hooks::{
     Verdict, Warning,
 };
 
+pub use activation::ActivatedPolicy;
 pub use annotation::{
     AnnotationConfig, AnnotatorConfig, AnnotatorDispatcher, AnnotatorInvocation, AnnotatorType,
 };

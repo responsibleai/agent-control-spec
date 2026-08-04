@@ -317,6 +317,41 @@ impl RegorusRegoRunner {
         true
     }
 
+    /// Loads and compiles the policy this invocation names, then keeps it,
+    /// so that a later [`Self::evaluate`] neither reads the bundle nor
+    /// compiles it.
+    ///
+    /// Compilation matters as much as parsing here: `regorus` compiles on
+    /// the first `eval_query` of an engine, and the per-evaluation clone
+    /// inherits that state, so an engine cached cold pays compilation on
+    /// every single decision. Warming runs the real query once against an
+    /// empty input to move that cost to activation time.
+    ///
+    /// Only meaningful with the policy cache enabled; without it there is
+    /// nowhere to keep the result and this is a no-op.
+    pub fn warm(&self, invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+        if self.cache.is_none() {
+            return Ok(());
+        }
+        let key = self.cache_key(invocation)?;
+        let engine = self.prepared_engine(key.clone())?;
+        let mut warmed = (*engine).clone();
+        warmed.set_input_json("{}").map_err(|err| {
+            RuntimeError::PolicyInvocationFailed(format!("failed to set Rego warm-up input: {err}"))
+        })?;
+        // The verdict is irrelevant; an undefined result or a policy that
+        // needs real input still leaves the engine compiled, which is the
+        // point. Only a load failure is worth reporting, and
+        // `prepared_engine` above has already reported that.
+        let _ = warmed.eval_query(invocation.query.clone(), false);
+        if let Some(cache) = &self.cache {
+            if let Ok(mut cache) = cache.lock() {
+                cache.insert(key, Arc::new(warmed));
+            }
+        }
+        Ok(())
+    }
+
     pub fn evaluate(&self, invocation: &RegoPolicyInvocation) -> Result<JsonValue, RuntimeError> {
         let key = self.cache_key(invocation)?;
         let query = invocation.query.clone();
@@ -425,6 +460,14 @@ impl RegorusPolicyDispatcher {
 }
 
 impl PolicyDispatcher for RegorusPolicyDispatcher {
+    fn warm(&self, invocation: &PreparedPolicyInvocation) -> Result<(), RuntimeError> {
+        match invocation {
+            PreparedPolicyInvocation::Rego(invocation) => self.runner.warm(invocation),
+            // Another engine's policy is not this dispatcher's to prepare.
+            _ => Ok(()),
+        }
+    }
+
     fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
         match invocation {
             PreparedPolicyInvocation::Rego(invocation) => self.runner.evaluate(invocation),

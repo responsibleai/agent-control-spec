@@ -54,6 +54,24 @@ impl BindingPolicyDispatcher {
 }
 
 impl PolicyDispatcher for BindingPolicyDispatcher {
+    /// Forwards warm-up to the bundled evaluator for this invocation's
+    /// engine type, so that a policy activated over a binding is
+    /// compiled at activation rather than on the first decision. Without
+    /// this the trait default would silently make
+    /// [`crate::ActivatedPolicy`] eager in Rust and lazy in every
+    /// binding.
+    fn warm(&self, invocation: &PreparedPolicyInvocation) -> Result<(), RuntimeError> {
+        match invocation {
+            #[cfg(feature = "rego")]
+            PreparedPolicyInvocation::Rego(_) => self.rego.warm(invocation),
+            // The remaining engines have nothing to prepare: the `opa`
+            // runner shells out per decision, Cedar compiles per
+            // evaluation, a `test` policy is a literal verdict, and a
+            // custom adapter is not this dispatcher's to ready.
+            _ => Ok(()),
+        }
+    }
+
     fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
         match invocation {
             #[cfg(feature = "rego")]
