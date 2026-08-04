@@ -1832,7 +1832,7 @@ mod tests {
     #[test]
     fn observe_text_counts_runes_not_code_units() {
         let mut s = session(&["safety"], SafetyLevel::Blocking);
-        // 7 scalar values, 8 UTF-16 code units, 11 bytes.
+        // 7 scalar values, 8 UTF-16 code units.
         let sample = "héllo 🌍";
         assert_eq!(sample.chars().count(), 7);
         assert_eq!(sample.encode_utf16().count(), 8);

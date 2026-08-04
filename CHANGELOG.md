@@ -24,13 +24,12 @@
   now independent of committing it, so `safe_offset` cannot rise as a side
   effect of failing.
 - The resume offset is per track, `request_start_rune_offset` and
-  `response_start_rune_offset`, replacing the single `start_rune_offset`. The
-  tracks are independent offset spaces and the ordinary retry re sends the
-  prompt while resuming the response, which one offset could not express.
-- Payload on an unmediated track reports `NoTasks`, and a configuration
-  mediating neither track is refused with the new `NoTracksMediated`. The two
-  were previously one variant, which rendered the second case as though a
-  single named track were at fault.
+  `response_start_rune_offset`. The tracks are independent offset spaces and
+  the ordinary retry re sends the prompt while resuming the response, which a
+  single shared offset could not express.
+- Payload on an unmediated track reports `NoTasks`, naming that track. A
+  configuration mediating neither track is refused with `NoTracksMediated`,
+  which names no track because none is at fault.
 - A track declared with no tasks is not mediated rather than rejected, so a host
   guarding only the model stream no longer has to invent a request task that
   evaluates nothing. Payload on an unmediated track fails closed, and a session
