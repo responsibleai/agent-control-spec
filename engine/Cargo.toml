@@ -63,3 +63,11 @@ regorus = { version = "0.11", features = ["arc"], optional = true }
 agent-hooks-sdk = { version = "0.1.0-alpha.3", features = ["ctk"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 jsonschema = { version = "0.17", default-features = false }
+
+# The benchmark drives `ActivatedPolicy::activate_manifest`, which needs
+# the bundled dispatchers, so it is built only when they are on. Without
+# this, `cargo test -p agent-control-spec` fails to build the example
+# under the default feature set.
+[[example]]
+name = "benchmark"
+required-features = ["default-dispatchers"]

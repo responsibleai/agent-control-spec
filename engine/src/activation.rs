@@ -7,7 +7,10 @@
 //! cache the result under its own versioning scheme rather than relying
 //! on the runtime to guess.
 //!
-//! ```no_run
+//! The example activates through the bundled dispatchers, so it only
+//! compiles with `default-dispatchers` on and is skipped otherwise.
+#![cfg_attr(feature = "default-dispatchers", doc = "```no_run")]
+#![cfg_attr(not(feature = "default-dispatchers"), doc = "```ignore")]
 //! use agent_control_spec::{ActivatedPolicy, InterceptionPoint};
 //! use serde_json::json;
 //!
