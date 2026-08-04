@@ -192,7 +192,7 @@ console.log(
 console.log(`runtime    node ${process.version} on ${process.platform}-${process.arch}, ${os.cpus().length} CPUs`);
 
 table("construction + first call", [
-  ["cold activation (first in process)", `${ms(cold.ns).toFixed(2)} ms`],
+  ["cold activation (after the reachability probe)", `${ms(cold.ns).toFixed(2)} ms`],
   ["first evaluate after activation", `${us(firstEvaluate.ns).toFixed(1)} µs`],
 ]);
 

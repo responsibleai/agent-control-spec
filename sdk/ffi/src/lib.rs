@@ -856,9 +856,10 @@ pub unsafe extern "C" fn acs_policy_activate(
 /// `"input"` or `"pre_tool_call"`. `context_json` is the agent context
 /// object. Returns the verdict as JSON, freed with `acs_free_string`.
 ///
-/// A policy that does not bind `point` is not an error: the runtime
-/// returns its default verdict for an unbound point, exactly as the
-/// interceptor path does.
+/// A policy that does not bind `point` is a fail-closed deny carrying
+/// reason `runtime_error:intervention_point_unknown`, not a successful
+/// call and not a boundary error. Every failure in this runtime reaches
+/// a host as a verdict; none is benign.
 ///
 /// # Safety
 /// `handle` must be a live pointer from `acs_policy_activate`; `point`

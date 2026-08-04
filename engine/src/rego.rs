@@ -102,8 +102,16 @@ const TIMER_CHECK_INTERVAL: u32 = 32;
 /// gives up. Guards against symlink cycles in a host supplied bundle.
 const MAX_BUNDLE_DEPTH: usize = 32;
 
-/// How many evaluations may be abandoned past their deadline before the
-/// dispatcher refuses to start another.
+/// How many runs may be abandoned past their deadline, PER POOL, before
+/// the dispatcher refuses to start another.
+///
+/// A runner keeps two pools, one for evaluation and one for warming, so
+/// that readying a slow policy cannot spend the budget that keeps
+/// evaluation from failing closed. The consequence is that this bounds
+/// each pool rather than the runner: measured at 94 live abandoned
+/// threads on one runner when both pools are saturated at once, against
+/// the 32 this names. Size a host against twice this number plus its own
+/// concurrency, not against this number.
 ///
 /// An abandoned worker cannot be killed: `regorus` has no cancellation
 /// point inside a builtin call, so the thread runs until its evaluation
@@ -306,14 +314,21 @@ impl RegorusRegoRunner {
         }
     }
 
-    /// How many evaluations are still running past their deadline.
+    /// How many runs are still going past their deadline, across both
+    /// the evaluation and the warming pool.
     ///
     /// These threads cannot be stopped, so they are the runner's one
-    /// unbounded resource and worth watching: a value that sits near
+    /// unbounded resource and worth watching: a value approaching twice
     /// [`MAX_ABANDONED_WORKERS`] means policies are not terminating, and
-    /// at the ceiling the runner starts failing closed.
+    /// at either pool's ceiling that pool starts failing closed.
+    ///
+    /// Counts both pools deliberately. Reporting only evaluation would
+    /// leave a saturated warming pool invisible to a host watching this,
+    /// which is the state in which activation stops being able to
+    /// validate anything.
     pub fn abandoned_evaluations(&self) -> usize {
         self.workers.counters.abandoned.load(Ordering::Acquire)
+            + self.warm_workers.counters.abandoned.load(Ordering::Acquire)
     }
 
     /// Always available: unlike the `opa` CLI dispatcher there is no
@@ -386,11 +401,18 @@ impl RegorusRegoRunner {
         // deny traffic for every other policy sharing the runner.
         match self.warm_workers.run_with_deadline(timeout, work) {
             DeadlineOutcome::Completed(outcome) => outcome.map(|_| ()),
-            // Too slow to warm: the bundle may already be cached
-            // unwarmed, and evaluation will apply the deadline again.
+            // Started but did not finish. The policy may not even have
+            // loaded, so this leaves it unvalidated by design: evaluation
+            // applies the same deadline and fails closed on a policy that
+            // cannot be readied in time.
             DeadlineOutcome::TimedOut => Ok(()),
-            // No warming capacity is not a policy failure either.
-            DeadlineOutcome::Unavailable(_) => Ok(()),
+            // Nothing ran at all, so nothing was read, parsed, or
+            // checked. Reporting success here would be a claim that the
+            // policy is ready when it has not been looked at: the bundle
+            // is loaded INSIDE the deadline-bounded closure, so "could
+            // not start" and "loaded fine" are indistinguishable to a
+            // caller unless this is surfaced.
+            DeadlineOutcome::Unavailable(error) => Err(error),
         }
     }
 

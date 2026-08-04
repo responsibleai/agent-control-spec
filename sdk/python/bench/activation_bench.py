@@ -89,8 +89,6 @@ def main() -> None:
         for point in POINTS
     ]
 
-    # --- construction: cold activation, then the first evaluation -----
-    started = time.perf_counter_ns()
     # Refuses to report numbers for work that never reached the policy.
     # An evaluation that fails closed before Rego runs, most easily by
     # failing annotation, costs about a tenth of a real decision, and this
@@ -105,6 +103,11 @@ def main() -> None:
                 "policy; timing it would measure the error path."
             )
 
+    # --- construction: cold activation, then the first evaluation -----
+    # The clock starts here, after the guard: timing the guard's own
+    # activation and eight probe evaluations would inflate this by about
+    # 2.7x, and every figure derived from it with it.
+    started = time.perf_counter_ns()
     policy = ActivatedPolicy.activate(MANIFEST)
     cold_activation_ns = time.perf_counter_ns() - started
 
@@ -205,7 +208,7 @@ def main() -> None:
         "construction + first call",
         [
             (
-                "cold activation (first in process)",
+                "cold activation (after the reachability probe)",
                 f"{msec(cold_activation_ns):.2f} ms",
             ),
             ("first evaluate after activation", f"{us(first_evaluate_ns):.1f} µs"),

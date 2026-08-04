@@ -2,7 +2,8 @@
 
 use agent_control_spec::{
     ActivatedPolicy, AnnotatorDispatcher, AnnotatorInvocation, InterceptionPoint, JsonValue,
-    Manifest, PolicyDispatcher, PreparedPolicyInvocation, RuntimeError,
+    Manifest, PolicyDispatcher, PreparedPolicyInvocation, RegoPolicyInvocation, RegorusRegoRunner,
+    RuntimeError,
 };
 use serde_json::json;
 use std::{
@@ -348,6 +349,70 @@ fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
             Poll::Pending => std::thread::yield_now(),
         }
     }
+}
+
+/// A saturated warming pool must not turn activation into a rubber
+/// stamp.
+///
+/// The bundle is loaded inside the deadline-bounded closure, so when no
+/// warming worker can be obtained nothing is read, parsed, or checked.
+/// Reporting success there would claim a policy is ready without having
+/// looked at it, which is how a manifest naming a bundle that does not
+/// exist came to activate cleanly and fail only at the first live
+/// decision.
+#[test]
+fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
+    let dir = test_artifact_dir("activation-saturated-warm-pool");
+    fs::create_dir_all(dir.join("policy")).unwrap();
+    fs::write(
+        dir.join("policy").join("slow.rego"),
+        "package slow\n\nimport rego.v1\n\n         big := count([x | x := numbers.range(1, 40000000)[_]])\n\n         verdict := {\"decision\": \"allow\"} if big > 0\n",
+    )
+    .unwrap();
+
+    // One runner, shared, as a multi-tenant host would.
+    let runner = RegorusRegoRunner::new()
+        .with_policy_cache(true)
+        .with_eval_timeout(Duration::from_millis(20));
+    let slow = RegoPolicyInvocation {
+        query: "data.slow.verdict".to_string(),
+        bundle: Some(dir.join("policy").display().to_string()),
+        adapter_config: Default::default(),
+        input: json!({}),
+        canonical_input: "{}".to_string(),
+    };
+    // Saturate the warming pool: each of these abandons a worker.
+    for index in 0..(agent_control_spec::rego::MAX_ABANDONED_WORKERS + 8) {
+        let mut invocation = slow.clone();
+        // A distinct cache key per iteration, so each really warms.
+        invocation.adapter_config.insert(
+            "data_paths".to_string(),
+            json!([dir.join("policy").display().to_string()]),
+        );
+        invocation.query = format!("data.slow.verdict # {index}");
+        let _ = runner.warm(&invocation);
+        if runner.abandoned_evaluations() >= agent_control_spec::rego::MAX_ABANDONED_WORKERS {
+            break;
+        }
+    }
+
+    // Now ask it to ready a bundle that does not exist.
+    let missing = RegoPolicyInvocation {
+        query: "data.nope.verdict".to_string(),
+        bundle: Some(dir.join("does-not-exist").display().to_string()),
+        adapter_config: Default::default(),
+        input: json!({}),
+        canonical_input: "{}".to_string(),
+    };
+    let outcome = runner.warm(&missing);
+
+    // Either it looked and found the bundle missing, or it could not
+    // look and said so. What it must never do is report readiness.
+    assert!(
+        outcome.is_err(),
+        "warming reported success for a bundle it never read (abandoned={})",
+        runner.abandoned_evaluations()
+    );
 }
 
 #[test]
