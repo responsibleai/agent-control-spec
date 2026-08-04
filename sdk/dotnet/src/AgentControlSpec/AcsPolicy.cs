@@ -38,6 +38,11 @@ public static class AcsPolicy
     /// <see cref="ActivatedPolicy.Evaluate(InterceptionPoint, string)"/>
     /// then costs no I/O and no compile.
     /// <para>
+    /// Compiling is bounded by the eval timeout. A policy too slow to
+    /// compile in that window activates anyway, loaded but uncompiled,
+    /// and pays compilation on its first decision instead.
+    /// </para>
+    /// <para>
     /// A manifest names its bundle relative to itself, so the path given
     /// here is the only thing that has to be right; the host's working
     /// directory does not matter.

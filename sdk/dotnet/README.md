@@ -42,7 +42,9 @@ engine accepts. Read it rather than hardcoding the set.
 that pins a policy version and serves traffic against it wants the
 opposite split — pay to read and compile the bundle once, at a moment of
 its choosing, then evaluate a named intervention point with nothing left
-to set up:
+to set up. Compiling is bounded by the eval timeout: a policy too slow to
+compile in that window activates anyway, loaded but uncompiled, and pays
+compilation on its first evaluation instead:
 
 ```csharp
 using var policy = AcsPolicy.Activate("manifest.yaml");   // once per policy version

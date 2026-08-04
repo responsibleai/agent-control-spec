@@ -16,7 +16,7 @@ LD_LIBRARY_PATH=$PWD/../../target/release \
 
 The workload defaults to `examples/bank_agent`, found by walking up from
 the build output. Pass another example directory as the first argument
-to point it elsewhere; it must contain `manifest.yaml` and a
+to point it elsewhere; it must contain `manifest.bench.yaml` and a
 `snapshots/<intervention_point>.json` for each point the manifest binds.
 
 The benchmark passes the manifest by absolute path. A manifest names its
@@ -33,7 +33,7 @@ real evaluation. The Node and Python benches use the same variant.
 
 | Section | Question it answers |
 | --- | --- |
-| Cold start | What does the first of everything cost — `Activate()` on its own, then the first `Evaluate` per point? |
+| Cold start | What activation costs once the process is warm — `Activate()` on its own, then the first `Evaluate` per point? |
 | Warm latency | p50/p95/p99/max/mean per `Evaluate`, per intervention point and pooled. |
 | Throughput at concurrency 32 | Does one shared handle hold up under contention? |
 | Cold vs warm cache hit | What a host saves by keying activated handles on policy version — acquisition and first evaluation, separately. |

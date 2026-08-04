@@ -72,9 +72,17 @@ impl ActivatedPolicy {
     /// [`PolicyDispatcher::warm`], so the bundle is read and compiled
     /// here rather than on the first agent action.
     ///
-    /// Fails only if the manifest binds a policy that cannot be readied
-    /// at all, such as a bundle that does not exist. A policy that
-    /// merely needs real input to produce a verdict warms fine.
+    /// Fails when a bound policy cannot be readied, such as a bundle
+    /// that does not exist, and when readying cannot be attempted at
+    /// all. A policy that merely needs real input to produce a verdict
+    /// warms fine.
+    ///
+    /// Readying is bounded by the dispatcher's eval timeout. A policy
+    /// too slow to compile inside it is left loaded but uncompiled, and
+    /// activation still succeeds: it pays compilation on its first
+    /// decision instead, and fails closed there if it cannot finish.
+    /// So activation compiles the policy in the ordinary case, but a
+    /// successful activation is not a proof that it did.
     pub fn activate(runtime: Runtime) -> Result<Self, RuntimeError> {
         let points: Vec<InterceptionPoint> = runtime
             .manifest()

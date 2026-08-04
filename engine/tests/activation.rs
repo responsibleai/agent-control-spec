@@ -366,7 +366,12 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
     fs::create_dir_all(dir.join("policy")).unwrap();
     fs::write(
         dir.join("policy").join("slow.rego"),
-        "package slow\n\nimport rego.v1\n\n         big := count([x | x := numbers.range(1, 40000000)[_]])\n\n         verdict := {\"decision\": \"allow\"} if big > 0\n",
+        // 200k elements is ~4MB and still far past a 20ms deadline. The
+        // 40M range that makes one worker slow on its own is 960MB
+        // apiece, and this test deliberately abandons dozens: that is
+        // the pattern ec04178 removed after it aborted the Windows CI
+        // job, and it must not come back through a new test.
+        "package slow\n\nimport rego.v1\n\n         big := count([x | x := numbers.range(1, 200000)[_]])\n\n         verdict := {\"decision\": \"allow\"} if big > 0\n",
     )
     .unwrap();
 
@@ -374,27 +379,38 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
     let runner = RegorusRegoRunner::new()
         .with_policy_cache(true)
         .with_eval_timeout(Duration::from_millis(20));
-    let slow = RegoPolicyInvocation {
-        query: "data.slow.verdict".to_string(),
-        bundle: Some(dir.join("policy").display().to_string()),
-        adapter_config: Default::default(),
-        input: json!({}),
-        canonical_input: "{}".to_string(),
-    };
-    // Saturate the warming pool: each of these abandons a worker.
-    for index in 0..(agent_control_spec::rego::MAX_ABANDONED_WORKERS + 8) {
-        let mut invocation = slow.clone();
-        // A distinct cache key per iteration, so each really warms.
-        invocation.adapter_config.insert(
-            "data_paths".to_string(),
-            json!([dir.join("policy").display().to_string()]),
-        );
-        invocation.query = format!("data.slow.verdict # {index}");
-        let _ = runner.warm(&invocation);
-        if runner.abandoned_evaluations() >= agent_control_spec::rego::MAX_ABANDONED_WORKERS {
-            break;
-        }
+
+    // Saturate the warming pool through concurrency rather than through
+    // one enormous evaluation: enough warms have to be in flight at once
+    // to cross the ceiling, and each abandoned worker holds only ~4MB.
+    let bundle = dir.join("policy").display().to_string();
+    let barrier = Arc::new(std::sync::Barrier::new(48));
+    let handles: Vec<_> = (0..48)
+        .map(|index| {
+            let runner = runner.clone();
+            let barrier = Arc::clone(&barrier);
+            let bundle = bundle.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let _ = runner.warm(&RegoPolicyInvocation {
+                    // A distinct cache key per thread, so each really warms.
+                    query: format!("data.slow.verdict # {index}"),
+                    bundle: Some(bundle),
+                    adapter_config: Default::default(),
+                    input: json!({}),
+                    canonical_input: "{}".to_string(),
+                });
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
     }
+    assert!(
+        runner.abandoned_evaluations() > 0,
+        "the fixture must actually abandon warming workers, or this test \
+         cannot reach the state it exists to check"
+    );
 
     // Now ask it to ready a bundle that does not exist.
     let missing = RegoPolicyInvocation {
@@ -406,8 +422,6 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
     };
     let outcome = runner.warm(&missing);
 
-    // Either it looked and found the bundle missing, or it could not
-    // look and said so. What it must never do is report readiness.
     assert!(
         outcome.is_err(),
         "warming reported success for a bundle it never read (abandoned={})",

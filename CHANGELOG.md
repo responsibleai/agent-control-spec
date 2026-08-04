@@ -5,7 +5,9 @@
 - A policy version can be activated once and evaluated many times.
   `ActivatedPolicy::activate` reads the manifest, loads every Rego module
   and data document, and compiles the entrypoint each intervention point
-  queries, so a decision afterwards costs no I/O and no compilation. The
+  queries, so a decision afterwards costs no I/O and no compilation. Readying is bounded by the eval
+  timeout, so a policy too slow to compile inside it activates anyway,
+  loaded but uncompiled, and pays compilation on its first decision. The
   handle is immutable, `Send + Sync`, and cheap to clone, so a host holds
   one per policy version and shares it across threads under its own
   versioning scheme rather than relying on the runtime to guess when a
@@ -83,13 +85,16 @@
     global feature that makes `canonical_json` non-idempotent (`0.5` and
     `5e-1` would canonicalize differently and so hash differently).
   - A host can now be told that a decision was refused rather than
-    evaluated. An evaluation abandoned at its deadline leaves a thread
-    that cannot be killed, so once
+    evaluated. A run abandoned at its deadline leaves a thread that
+    cannot be killed, so once
     `agent_control_spec::rego::MAX_ABANDONED_WORKERS` of them are
-    outstanding the dispatcher stops starting new ones and fails closed
-    with `runtime_error:policy_invocation_failed` until the backlog
-    drains. `RegorusRegoRunner::abandoned_evaluations()` reports the
-    current count.
+    outstanding in a pool, that pool stops starting new work and fails
+    closed with `runtime_error:policy_invocation_failed` until the
+    backlog drains. A runner keeps two pools, one for evaluation and one
+    for readying a policy, so the limit bounds a pool rather than a
+    runner. `RegorusRegoRunner::abandoned_evaluations()` reports the sum
+    across both, which is the number to watch for a leak rather than the
+    number either gate compares against.
   - A policy's `print()` output is captured and discarded rather than
     reaching the host's stderr. The CLI dispatcher kept it inside the
     child process, so letting it through would have been a new way for

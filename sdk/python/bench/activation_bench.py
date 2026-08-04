@@ -216,9 +216,9 @@ def main() -> None:
     )
 
     table(
-        "cold activation vs warm cache hit",
+        "activation vs warm cache hit",
         [
-            ("cold activation", f"{msec(cold_activation_ns):.2f} ms"),
+            ("activation (page cache warm)", f"{msec(cold_activation_ns):.2f} ms"),
             (
                 (
                     f"repeat activation p50 of {REPEAT_ACTIVATIONS} "
@@ -235,7 +235,7 @@ def main() -> None:
                 f"{us(percentile(ordered, 50)):.1f} µs",
             ),
             (
-                "cold activation costs, in warm evaluations",
+                "activation costs, in warm evaluations",
                 f"{round(cold_activation_ns / percentile(ordered, 50)):,}",
             ),
         ],

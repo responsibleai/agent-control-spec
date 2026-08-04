@@ -67,9 +67,10 @@
 //!   loading the bundle, runs on a worker thread the dispatcher abandons
 //!   once the deadline passes, so a caller's deadline holds even when one
 //!   builtin call runs long. An abandoned thread cannot be killed, so a
-//!   runner stops starting new evaluations once [`MAX_ABANDONED_WORKERS`]
-//!   are outstanding, so the backlog converges instead of growing without
-//!   bound.
+//!   pool stops starting new work once [`MAX_ABANDONED_WORKERS`] of its
+//!   own runs are outstanding, so the backlog converges instead of
+//!   growing without bound. A runner keeps two such pools, one for
+//!   evaluation and one for warming.
 
 use crate::{
     policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue,
@@ -347,17 +348,24 @@ impl RegorusRegoRunner {
     /// every single decision. Warming runs the real query once against an
     /// empty input to move that cost to activation time.
     ///
-    /// Bounded by the same deadline and the same worker pool as
-    /// [`Self::evaluate`]. A policy whose entrypoint does input
-    /// independent work would otherwise run unbounded on the caller's
-    /// thread, which for a host is worse than a slow first decision: it
-    /// is an activation that never returns.
+    /// Bounded by the same deadline as [`Self::evaluate`], on its own
+    /// worker pool. A policy whose entrypoint does input independent
+    /// work would otherwise run unbounded on the caller's thread, which
+    /// for a host is worse than a slow first decision: it is an
+    /// activation that never returns. The pool is separate so that
+    /// readying a slow policy cannot spend the budget that keeps
+    /// evaluation from failing closed.
     ///
-    /// Exceeding the deadline is not an activation failure. Warming is an
-    /// optimization, so a policy too slow to warm is left cached but
-    /// uncompiled and evaluated normally later, where the deadline
-    /// applies again and a runaway policy fails closed. A bundle that
-    /// cannot be READ is a different matter and is reported.
+    /// Three outcomes, and the difference matters to a caller:
+    ///
+    /// * Readied, or found broken while being readied: reported.
+    /// * Started but too slow to finish: `Ok`, with the policy left
+    ///   loaded but uncompiled. It may not even have loaded, so this
+    ///   leaves it unvalidated; evaluation applies the same deadline
+    ///   and fails closed there.
+    /// * Could not start at all, because the warming pool is saturated:
+    ///   reported. Nothing was read, so reporting success would claim a
+    ///   policy is ready without having looked at it.
     ///
     /// Only meaningful with the policy cache enabled; without it there is
     /// nowhere to keep the result and this is a no-op.

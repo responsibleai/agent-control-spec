@@ -61,6 +61,10 @@ class ActivatedPolicy:
     the entrypoint each intervention point queries, so that every later
     :meth:`evaluate` costs no I/O and no compile.
 
+    Compiling is bounded by the eval timeout: a policy too slow to
+    compile in that window activates anyway, loaded but uncompiled, and
+    pays compilation on its first evaluation instead.
+
     Activate once per policy version and keep the instance. A policy edit
     on disk needs a new activation, which is the point: the host controls
     when a version changes. The handle is immutable and evaluation

@@ -118,15 +118,16 @@ internal static class Program
 
     // ---------------------------------------------------------------
     // 1. Cold start: activate(), then the first Evaluate on the fresh
-    //    handle. Both are the first of their kind in this process, so
-    //    they carry JIT and first-touch costs a host pays exactly once.
+    //    handle. The reachability probe has already activated once, so
+    //    the JIT and the page cache are warm and these are lower than a
+    //    host's true first call.
     // ---------------------------------------------------------------
     private static void ColdStart(string manifest, Workload workload)
     {
         var activateUs = Time(() => AcsPolicy.Activate(manifest), out var policy);
         using (policy)
         {
-            Console.WriteLine("Cold start (first of everything in this process)");
+            Console.WriteLine("Cold start (after the reachability probe)");
             Console.WriteLine();
             Console.WriteLine("  stage                                        ms");
             Console.WriteLine("  ------------------------------------  ---------");

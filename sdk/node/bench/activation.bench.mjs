@@ -196,8 +196,8 @@ table("construction + first call", [
   ["first evaluate after activation", `${us(firstEvaluate.ns).toFixed(1)} µs`],
 ]);
 
-table("cold activation vs warm cache hit", [
-  ["cold activation", `${ms(cold.ns).toFixed(2)} ms`],
+table("activation vs warm cache hit", [
+  ["activation (page cache warm)", `${ms(cold.ns).toFixed(2)} ms`],
   [
     `repeat activation p50 of ${REPEAT_ACTIVATIONS} (re-read and re-compiled; only the page cache is warm)`,
     `${ms(percentile(repeatActivations, 50)).toFixed(2)} ms`,
@@ -205,7 +205,7 @@ table("cold activation vs warm cache hit", [
   ["first evaluate after activation (warm cache hit)", `${us(firstEvaluate.ns).toFixed(1)} µs`],
   ["warm evaluate p50 (warm cache hit)", `${us(percentile(sorted, 50)).toFixed(1)} µs`],
   [
-    "cold activation costs, in warm evaluations",
+    "activation costs, in warm evaluations",
     `${Math.round(Number(cold.ns) / Number(percentile(sorted, 50))).toLocaleString("en-US")}`,
   ],
 ]);

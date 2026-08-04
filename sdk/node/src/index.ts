@@ -90,6 +90,10 @@ export class AcsInterceptor implements Interceptor {
  * the manifest, loading every Rego module and data document, and
  * compiling the entrypoint each intervention point queries; every later
  * {@link ActivatedPolicy.evaluate} costs no I/O and no compile.
+   *
+   * Compiling is bounded by the eval timeout: a policy too slow to
+   * compile in that window activates anyway, loaded but uncompiled, and
+   * pays compilation on its first evaluation instead.
  *
  * Activate once per policy version and keep the instance. A policy edit
  * on disk needs a new activation, which is the point: the host controls
