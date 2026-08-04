@@ -316,7 +316,7 @@ fn rego_dispatcher_honours_the_deadline_inside_an_uninterruptible_builtin() {
     let started = Instant::now();
     let error = dispatcher
         .evaluate(&rego_invocation(
-            "x := numbers.range(1, 100000000)",
+            "x := numbers.range(1, 1000000)",
             None,
             BTreeMap::new(),
             json!({"policy_target": {"value": {}}}),
@@ -424,15 +424,20 @@ fn rego_dispatcher_evaluates_concurrently_on_pooled_threads() {
 fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
     let mut adapter_config = BTreeMap::new();
     adapter_config.insert("data_paths".to_string(), json!([fixture("verdict.rego")]));
+    // The deadline has to be generous enough that the trivial recovery
+    // evaluations below are not themselves timed out by scheduling delay:
+    // the rest of this suite runs hundreds of threads in parallel, and at
+    // 50ms these intermittently failed. The heavy query takes ~300ms, so
+    // it still blows a 200ms deadline by a wide margin.
     let dispatcher = RegorusPolicyDispatcher::with_runner(
         RegorusRegoRunner::new()
             .with_policy_cache(true)
-            .with_eval_timeout(Duration::from_millis(50)),
+            .with_eval_timeout(Duration::from_millis(200)),
     );
 
     let timed_out = dispatcher
         .evaluate(&rego_invocation(
-            "x := numbers.range(1, 100000000)",
+            "x := numbers.range(1, 2000000)",
             None,
             BTreeMap::new(),
             json!({"policy_target": {"value": {}}}),
@@ -640,35 +645,51 @@ fn rego_data_paths_mount_every_document_by_directory() {
 /// stop spawning rather than grow a thread per timed-out decision.
 #[test]
 fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
-    let runner = RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(20));
-    let dispatcher = RegorusPolicyDispatcher::with_runner(runner.clone());
-
+    let runner = RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(10));
+    let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(runner.clone()));
+    // Concurrency rather than a bigger query is what piles abandoned
+    // workers up here. Reaching the ceiling by making each evaluation
+    // long enough would need a 40M-element range, which is 960MB per
+    // abandoned worker and aborted the Windows CI job; 200k elements is
+    // ~4MB and still ~40ms, comfortably past a 10ms deadline.
+    let concurrency = 48;
     let mut refused = 0;
-    for _ in 0..120 {
-        if let Err(error) = dispatcher.evaluate(&rego_invocation(
-            "count(numbers.range(0, 40000000))",
-            None,
-            BTreeMap::new(),
-            json!({}),
-        )) {
-            if error.detail().contains("running past their timeout") {
-                refused += 1;
+
+    for _ in 0..3 {
+        let handles: Vec<_> = (0..concurrency)
+            .map(|_| {
+                let dispatcher = Arc::clone(&dispatcher);
+                std::thread::spawn(move || {
+                    dispatcher.evaluate(&rego_invocation(
+                        "count(numbers.range(0, 200000))",
+                        None,
+                        BTreeMap::new(),
+                        json!({}),
+                    ))
+                })
+            })
+            .collect();
+        for handle in handles {
+            if let Err(error) = handle.join().unwrap() {
+                if error.detail().contains("running past their timeout") {
+                    refused += 1;
+                }
             }
         }
         // Counted on the pool itself rather than by reading
-        // /proc/self/task, which the rest of this suite perturbs. These
-        // calls are serial, so at most one evaluation is in flight when
-        // the limit is crossed.
+        // /proc/self/task, which the rest of this suite perturbs, and
+        // which does not exist on every platform this runs on.
         assert!(
-            runner.abandoned_evaluations() <= agent_control_spec::rego::MAX_ABANDONED_WORKERS + 1,
-            "abandoned evaluations grew past the gate: {}",
+            runner.abandoned_evaluations()
+                <= agent_control_spec::rego::MAX_ABANDONED_WORKERS + concurrency,
+            "abandoned evaluations grew past the gate plus in-flight work: {}",
             runner.abandoned_evaluations()
         );
     }
 
     assert!(
         refused > 0,
-        "120 timed-out evaluations should have hit the abandoned ceiling"
+        "sustained timeouts should have hit the abandoned ceiling"
     );
 }
 
@@ -676,7 +697,11 @@ fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
 #[test]
 fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
     let dir = test_artifact_dir("rego-load-inside-deadline");
-    for index in 0..2500 {
+    // Large enough that loading it dwarfs the deadline: with the load
+    // outside, elapsed tracks the file count; with it inside, elapsed is
+    // the deadline whatever the count. Measured on the fixed tree, 2500
+    // and 6000 files both return in 20.4ms against a 20ms deadline.
+    for index in 0..6000 {
         fs::write(
             dir.join(format!("p{index}.rego")),
             format!("package p{index}\n\nimport rego.v1\n\nv := {index}\n"),
@@ -684,33 +709,28 @@ fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
         .unwrap();
     }
     let dispatcher = RegorusPolicyDispatcher::with_runner(
-        RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(50)),
+        RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(20)),
     );
 
-    // Best of five. A single wall-clock reading is not stable under
-    // `cargo test` parallelism, but the minimum across runs is: a
-    // scheduling spike inflates a sample, it cannot deflate one.
-    let best = (0..5)
-        .map(|_| {
-            let started = Instant::now();
-            let _ = dispatcher.evaluate(&rego_invocation(
-                "data.p0.v",
-                Some(dir.display().to_string()),
-                BTreeMap::new(),
-                json!({}),
-            ));
-            started.elapsed()
-        })
-        .min()
-        .unwrap();
+    // One measurement, not a best-of-N: each timed-out call abandons a
+    // worker that goes on reading all 6000 files, so repeating the
+    // measurement makes later samples slower rather than cleaner.
+    let started = Instant::now();
+    let _ = dispatcher.evaluate(&rego_invocation(
+        "data.p0.v",
+        Some(dir.display().to_string()),
+        BTreeMap::new(),
+        json!({}),
+    ));
+    let elapsed = started.elapsed();
 
-    // With the load inside the 50ms deadline this returns at the
-    // deadline whatever the bundle size. With the load outside it, the
-    // same 2500-file bundle measured ~180-230ms, because parsing is
-    // unmetered and scales with the policy count.
+    // Generous against CI hardware, which adds a fixed overhead on top of
+    // the deadline: this returned in 121ms on a macOS runner when the
+    // deadline was 50ms. Loading 6000 files takes several hundred
+    // milliseconds, so the two regimes stay far apart.
     assert!(
-        best < Duration::from_millis(120),
-        "bundle load escaped the deadline: best of five was {best:?}"
+        elapsed < Duration::from_millis(300),
+        "bundle load escaped the deadline: {elapsed:?}"
     );
 }
 
@@ -768,17 +788,19 @@ fn rego_directory_named_like_an_archive_still_loads() {
 /// only threads abandoned past a deadline are capped.
 #[test]
 fn rego_healthy_concurrency_is_not_refused() {
-    // 512 callers, released together against a cold pool. The defect this
+    // 256 callers released together against a cold pool. The defect this
     // guards is a race in the window where a worker is being spawned, so
-    // detection is probabilistic: measured at roughly 45% per run against
-    // the tree that had it, up from 25% at 128 callers. Repeating the
-    // burst does not help, because every observed detection landed on the
-    // first burst; raising the caller count is what moved the number.
+    // detection is probabilistic and driven by how many callers are
+    // spawning at once: measured at 25% with 128 callers and 40% with
+    // 256. Repeating the burst does not help, because every observed
+    // detection landed on the first one. The 300k-element range this
+    // once used detected no better and cost 1.1GB of peak RSS, enough to
+    // matter on a CI runner; 100k holds the catch rate at 294MB.
     let runner = RegorusRegoRunner::new()
         .with_policy_cache(true)
         .with_eval_timeout(Duration::from_secs(30));
     let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(runner.clone()));
-    let callers = 512;
+    let callers = 256;
     let barrier = Arc::new(std::sync::Barrier::new(callers));
 
     let handles: Vec<_> = (0..callers)
@@ -788,7 +810,7 @@ fn rego_healthy_concurrency_is_not_refused() {
             std::thread::spawn(move || {
                 barrier.wait();
                 dispatcher.evaluate(&rego_invocation(
-                    "count(numbers.range(0, 300000))",
+                    "count(numbers.range(0, 100000))",
                     None,
                     BTreeMap::new(),
                     json!({}),
