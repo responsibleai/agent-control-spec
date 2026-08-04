@@ -7,10 +7,24 @@
 //! cache the result under its own versioning scheme rather than relying
 //! on the runtime to guess.
 //!
-//! The example activates through the bundled dispatchers, so it only
-//! compiles with `default-dispatchers` on and is skipped otherwise.
-#![cfg_attr(feature = "default-dispatchers", doc = "```no_run")]
-#![cfg_attr(not(feature = "default-dispatchers"), doc = "```ignore")]
+//! The example activates through the bundled dispatchers against a Rego
+//! policy, so it only compiles when both are available and is skipped
+//! otherwise. `--all-targets` does not build doctests, so this gate has
+//! to be written out rather than inherited from the item gates below.
+#![cfg_attr(
+    all(
+        feature = "default-dispatchers",
+        any(feature = "rego", feature = "opa")
+    ),
+    doc = "```no_run"
+)]
+#![cfg_attr(
+    not(all(
+        feature = "default-dispatchers",
+        any(feature = "rego", feature = "opa")
+    )),
+    doc = "```ignore"
+)]
 //! use agent_control_spec::{ActivatedPolicy, InterceptionPoint};
 //! use serde_json::json;
 //!
@@ -127,6 +141,19 @@ impl ActivatedPolicy {
     /// Whether this policy version governs `point`.
     pub fn governs(&self, point: InterceptionPoint) -> bool {
         self.points.contains(&point)
+    }
+
+    /// This policy version as an agent-hooks [`Interceptor`], for a host
+    /// that drives the runtime through an emitter rather than calling
+    /// [`Self::evaluate`] itself.
+    ///
+    /// Without this the two surfaces would be exclusive: a host on the
+    /// emitter path could not use an activated policy at all, which is
+    /// the path activation exists to make fast. The returned interceptor
+    /// shares this activation, so registering it costs no second load
+    /// and no second compile.
+    pub fn interceptor(&self) -> crate::AcsInterceptor {
+        crate::AcsInterceptor::from_activated(self.clone())
     }
 
     /// The runtime this policy version evaluates through, for a host

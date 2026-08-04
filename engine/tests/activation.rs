@@ -297,6 +297,59 @@ intervention_points:
     assert_eq!(verdict.decision.as_str(), "deny");
 }
 
+/// A host on the emitter path must be able to use an activated policy,
+/// or activation and the documented integration surface would be
+/// mutually exclusive.
+#[test]
+fn activation_is_usable_through_the_interceptor_surface() {
+    use agent_hooks::Interceptor;
+
+    let dir = bank_agent_dir();
+    let policy = ActivatedPolicy::activate_from_path(dir.join("manifest.bench.yaml")).unwrap();
+    let interceptor = policy.interceptor();
+    // An emitter names the point in the context; a recorded snapshot on
+    // its own does not carry it, which is why the direct API takes the
+    // point as an argument and this one reads it.
+    let mut context = snapshot("pre_tool_call");
+    context
+        .as_object_mut()
+        .unwrap()
+        .insert("interception_point".to_string(), json!("pre_tool_call"));
+
+    let direct = policy
+        .evaluate(InterceptionPoint::PreToolCall, context.clone())
+        .verdict;
+    let through_emitter = futures_lite_block_on(
+        interceptor.intercept(context.as_object().expect("snapshot is an object")),
+    );
+
+    assert_eq!(
+        serde_json::to_value(&direct).unwrap(),
+        serde_json::to_value(&through_emitter).unwrap(),
+        "the emitter path and the direct path must agree"
+    );
+    assert_eq!(interceptor.name().as_deref(), Some("acs"));
+}
+
+/// Minimal executor: this crate has no async runtime dependency and the
+/// interceptor trait is the only async surface here.
+fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
+    use std::task::{Context, Poll, Wake, Waker};
+    struct NoopWake;
+    impl Wake for NoopWake {
+        fn wake(self: Arc<Self>) {}
+    }
+    let waker = Waker::from(Arc::new(NoopWake));
+    let mut context = Context::from_waker(&waker);
+    let mut future = Box::pin(future);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
+
 #[test]
 fn activation_fails_when_the_manifest_cannot_be_read() {
     let error = ActivatedPolicy::activate_from_path("does-not-exist.yaml").unwrap_err();

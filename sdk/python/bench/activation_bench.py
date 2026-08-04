@@ -91,6 +91,20 @@ def main() -> None:
 
     # --- construction: cold activation, then the first evaluation -----
     started = time.perf_counter_ns()
+    # Refuses to report numbers for work that never reached the policy.
+    # An evaluation that fails closed before Rego runs, most easily by
+    # failing annotation, costs about a tenth of a real decision, and this
+    # benchmark family has already once timed exactly that while printing
+    # plausible figures.
+    probe = ActivatedPolicy.activate(MANIFEST)
+    for point, snapshot in zip(POINTS, snapshots):
+        reason = probe.evaluate(point, snapshot).reason
+        if reason is not None and reason.startswith("runtime_error"):
+            raise SystemExit(
+                f"{point} fails closed with {reason!r} before reaching the "
+                "policy; timing it would measure the error path."
+            )
+
     policy = ActivatedPolicy.activate(MANIFEST)
     cold_activation_ns = time.perf_counter_ns() - started
 

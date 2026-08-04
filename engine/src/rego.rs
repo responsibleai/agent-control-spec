@@ -164,6 +164,10 @@ pub struct RegorusRegoRunner {
     hard_deadline: bool,
     cache: Option<PolicyCache>,
     workers: Arc<WorkerPool>,
+    /// Warming runs here rather than on `workers`, so a slow policy
+    /// readied at activation cannot spend the budget that keeps
+    /// evaluation from failing closed.
+    warm_workers: Arc<WorkerPool>,
 }
 
 impl RegorusRegoRunner {
@@ -178,6 +182,7 @@ impl RegorusRegoRunner {
             hard_deadline: true,
             cache: None,
             workers: Arc::new(WorkerPool::default()),
+            warm_workers: Arc::new(WorkerPool::default()),
         }
     }
 
@@ -372,17 +377,20 @@ impl RegorusRegoRunner {
             Ok(JsonValue::Null)
         };
 
-        let outcome = if self.hard_deadline {
-            self.workers.run_with_deadline(timeout, work)
-        } else {
-            work()
-        };
-        match outcome {
-            Ok(_) => Ok(()),
+        if !self.hard_deadline {
+            return work().map(|_| ());
+        }
+        // A separate pool from evaluation. A warm that blows its deadline
+        // abandons a thread, and charging that against the budget
+        // evaluation fails closed on would let activating one slow policy
+        // deny traffic for every other policy sharing the runner.
+        match self.warm_workers.run_with_deadline(timeout, work) {
+            DeadlineOutcome::Completed(outcome) => outcome.map(|_| ()),
             // Too slow to warm: the bundle may already be cached
             // unwarmed, and evaluation will apply the deadline again.
-            Err(error) if error.detail().contains("timeout") => Ok(()),
-            Err(error) => Err(error),
+            DeadlineOutcome::TimedOut => Ok(()),
+            // No warming capacity is not a policy failure either.
+            DeadlineOutcome::Unavailable(_) => Ok(()),
         }
     }
 
@@ -430,10 +438,16 @@ impl RegorusRegoRunner {
             single_expression_value(&results)
         };
 
-        if self.hard_deadline {
-            self.workers.run_with_deadline(timeout, evaluate)
-        } else {
-            evaluate()
+        if !self.hard_deadline {
+            return evaluate();
+        }
+        match self.workers.run_with_deadline(timeout, evaluate) {
+            DeadlineOutcome::Completed(outcome) => outcome,
+            DeadlineOutcome::TimedOut => Err(RuntimeError::PolicyInvocationFailed(format!(
+                "Rego eval exceeded timeout of {} ms",
+                timeout.as_millis()
+            ))),
+            DeadlineOutcome::Unavailable(error) => Err(error),
         }
     }
 
@@ -640,6 +654,23 @@ impl Drop for LiveCount {
 type EvalJob = Box<dyn FnOnce() -> Result<JsonValue, RuntimeError> + Send>;
 type EvalOutcome = Result<JsonValue, RuntimeError>;
 
+/// Why a deadline-bounded run ended.
+///
+/// Carried out of band rather than inferred from an error message: a
+/// load failure quotes the bundle path and the offending Rego source, so
+/// matching on text would classify a policy in `timeout-rules/`, or one
+/// whose broken line mentions `timeout`, as a timeout and silently
+/// discard a real failure.
+#[derive(Debug)]
+enum DeadlineOutcome {
+    /// The work ran to completion, successfully or not.
+    Completed(EvalOutcome),
+    /// The deadline passed and the worker was abandoned.
+    TimedOut,
+    /// No worker could be obtained, so the work never started.
+    Unavailable(RuntimeError),
+}
+
 #[derive(Debug)]
 struct Worker {
     jobs: mpsc::Sender<EvalJob>,
@@ -686,16 +717,19 @@ impl Worker {
 }
 
 impl WorkerPool {
-    fn run_with_deadline<F>(&self, timeout: Duration, work: F) -> Result<JsonValue, RuntimeError>
+    fn run_with_deadline<F>(&self, timeout: Duration, work: F) -> DeadlineOutcome
     where
         F: FnOnce() -> Result<JsonValue, RuntimeError> + Send + 'static,
     {
         let worker = match self.take_idle() {
             Some(worker) => worker,
-            None => self.spawn_worker()?,
+            None => match self.spawn_worker() {
+                Ok(worker) => worker,
+                Err(error) => return DeadlineOutcome::Unavailable(error),
+            },
         };
         if worker.jobs.send(Box::new(work)).is_err() {
-            return Err(RuntimeError::PolicyInvocationFailed(
+            return DeadlineOutcome::Unavailable(RuntimeError::PolicyInvocationFailed(
                 "Rego evaluation thread ended before it accepted the query".to_string(),
             ));
         }
@@ -703,20 +737,19 @@ impl WorkerPool {
         match worker.outcomes.recv_timeout(timeout) {
             Ok(outcome) => {
                 self.release(worker);
-                outcome
+                DeadlineOutcome::Completed(outcome)
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 // The thread cannot be stopped, so charge it against the
                 // abandoned budget until it finishes on its own.
                 worker.state.abandon();
-                Err(RuntimeError::PolicyInvocationFailed(format!(
-                    "Rego eval exceeded timeout of {} ms",
-                    timeout.as_millis()
+                DeadlineOutcome::TimedOut
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                DeadlineOutcome::Completed(Err(RuntimeError::PolicyInvocationFailed(
+                    "Rego evaluation thread ended without producing a verdict".to_string(),
                 )))
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => Err(RuntimeError::PolicyInvocationFailed(
-                "Rego evaluation thread ended without producing a verdict".to_string(),
-            )),
         }
     }
 

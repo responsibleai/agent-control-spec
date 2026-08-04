@@ -81,6 +81,25 @@ function table(title, rows) {
 }
 
 // --- construction: cold activation, then the first evaluation --------
+// Refuses to report numbers for work that never reached the policy. An
+// evaluation that fails closed before Rego runs, most easily by failing
+// annotation, costs about a tenth of a real decision, and this benchmark
+// family has already once timed exactly that while printing plausible
+// figures.
+{
+  const probe = ActivatedPolicy.activate(MANIFEST);
+  for (let k = 0; k < POINTS.length; k += 1) {
+    const { reason } = probe.evaluate(POINTS[k], SNAPSHOTS[k]);
+    if (typeof reason === "string" && reason.startsWith("runtime_error")) {
+      console.error(
+        `${POINTS[k]} fails closed with '${reason}' before reaching the policy; ` +
+          "timing it would measure the error path.",
+      );
+      process.exit(1);
+    }
+  }
+}
+
 const cold = time(() => ActivatedPolicy.activate(MANIFEST));
 const policy = cold.value;
 const firstEvaluate = time(() => policy.evaluate(POINTS[1], SNAPSHOTS[1]));

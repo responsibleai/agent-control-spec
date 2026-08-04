@@ -15,14 +15,16 @@
     is required to.
   - Over `examples/bank_agent`, activation costs a few milliseconds and
     each later decision about 200 to 300us at p50, consistently across
-    Rust, .NET, Node, and Python, so activation is repaid within roughly
-    ten decisions. Absolute figures are hardware specific; run the
-    benchmarks rather than trusting these.
-  - Warming earns its keep in proportion to the policy set. The
-    benchmark takes a module count and builds a synthetic bundle of that
-    size, so the claim is reproducible from this tree: at 200 modules,
-    activation moves about 18ms of load and compile off the first
-    decision, which lazily is charged to it.
+    Rust, .NET, Node, and Python, so activation repays itself in tens of
+    decisions rather than thousands. Absolute figures are hardware
+    specific and the benchmarks print their own; run them rather than
+    trusting a number here.
+  - Warming earns its keep in proportion to the policy set, and the
+    benchmark takes a module count so that claim is reproducible from
+    this tree rather than asserted. At 200 modules the first decision
+    drops from 17.4ms to 9.1ms, because compilation is otherwise charged
+    to it, and again to every decision after it when the cache holds an
+    engine that was never compiled.
   - Reachable from every binding: `AcsPolicy.Activate` (.NET),
     `policyActivate` (Node), `ActivatedPolicy` (Python), and
     `acs_policy_activate` / `acs_policy_evaluate` / `acs_policy_free`
