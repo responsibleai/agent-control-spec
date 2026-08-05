@@ -434,11 +434,10 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
     // finished inside the deadline about one run in thirteen, which made
     // the `unwrap_err` below panic. 6M is ~900ms, and the one worker it
     // strands is the only allocation this test makes.
-    let dispatcher = RegorusPolicyDispatcher::with_runner(
-        RegorusRegoRunner::new()
-            .with_policy_cache(true)
-            .with_eval_timeout(Duration::from_millis(200)),
-    );
+    let runner = RegorusRegoRunner::new()
+        .with_policy_cache(true)
+        .with_eval_timeout(Duration::from_millis(200));
+    let dispatcher = RegorusPolicyDispatcher::with_runner(runner.clone());
 
     let timed_out = dispatcher
         .evaluate(&rego_invocation(
@@ -449,6 +448,22 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
         ))
         .unwrap_err();
     assert!(timed_out.detail().contains("Rego eval exceeded timeout"));
+
+    // Let the stranded worker finish before measuring recovery. It
+    // cannot be killed, so until it ends it is burning a core, and on a
+    // two-core CI runner that starved the trivial evaluations below
+    // until they blew the very deadline this test sets. The property
+    // under test is that the pool is not poisoned by a timeout, not that
+    // a decision is fast while a runaway one is still running.
+    let drained = Instant::now() + Duration::from_secs(60);
+    while runner.abandoned_evaluations() > 0 && Instant::now() < drained {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(
+        runner.abandoned_evaluations(),
+        0,
+        "the abandoned worker never finished, so the pool never drained"
+    );
 
     for _ in 0..3 {
         let verdict = dispatcher

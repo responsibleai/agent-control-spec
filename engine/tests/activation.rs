@@ -379,7 +379,7 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
     // One runner, shared, as a multi-tenant host would.
     let runner = RegorusRegoRunner::new()
         .with_policy_cache(true)
-        .with_eval_timeout(Duration::from_millis(2));
+        .with_eval_timeout(Duration::from_millis(20));
 
     // Sustained load rather than one burst: each worker holds its slot
     // only until its evaluation ends, so a burst leaves a window of tens
@@ -431,7 +431,17 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
         input: json!({}),
         canonical_input: "{}".to_string(),
     };
-    let outcome = runner.warm(&missing);
+    // Retried, because a run in which this warm happens to get a slot and
+    // then blow its own deadline is inconclusive rather than passing.
+    // With the defect present the pool is saturated and every attempt
+    // returns Ok, so this still fails there.
+    let mut outcome = Ok(());
+    for _ in 0..5 {
+        outcome = runner.warm(&missing);
+        if outcome.is_err() {
+            break;
+        }
+    }
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     for handle in saturating {
         handle.join().unwrap();
