@@ -397,32 +397,63 @@ verdict contains x if {
 /// The hard deadline. `regorus` cannot interrupt a single long-running
 /// builtin call, so the dispatcher abandons the evaluation thread and
 /// returns to the caller on time regardless.
+///
+/// The deadline is derived from how long this machine actually takes to
+/// run the builtin, not fixed. A fixed one states a machine speed the
+/// test cannot know: at 50ms against a million-element range this passed
+/// everywhere for weeks and then failed on a macOS runner that finished
+/// the range in under 50ms, where there was no timeout left to observe
+/// and the assertion failed for the one reason that is not a defect.
 #[test]
 fn rego_dispatcher_honours_the_deadline_inside_an_uninterruptible_builtin() {
-    let dispatcher = RegorusPolicyDispatcher::with_runner(
-        RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(50)),
-    );
+    const QUERY: &str = "x := numbers.range(1, 4000000)";
+
+    // The control: the same builtin with a deadline it cannot hit, which
+    // is what this machine costs to run it.
+    let unbounded_started = Instant::now();
+    RegorusPolicyDispatcher::with_runner(
+        RegorusRegoRunner::new().with_eval_timeout(Duration::from_secs(60)),
+    )
+    .evaluate(&rego_invocation(
+        QUERY,
+        None,
+        BTreeMap::new(),
+        json!({"policy_target": {"value": {}}}),
+    ))
+    .expect("the control must complete, or it is not measuring the builtin");
+    let uninterrupted = unbounded_started.elapsed();
+
+    // An eighth of that, so the builtin is still running when the
+    // deadline expires however fast the machine is. Floored, because a
+    // deadline shorter than the dispatcher's own overhead would measure
+    // the dispatcher rather than the policy.
+    let deadline = (uninterrupted / 8).max(Duration::from_millis(20));
+    let dispatcher =
+        RegorusPolicyDispatcher::with_runner(RegorusRegoRunner::new().with_eval_timeout(deadline));
 
     let started = Instant::now();
     let error = dispatcher
         .evaluate(&rego_invocation(
-            "x := numbers.range(1, 1000000)",
+            QUERY,
             None,
             BTreeMap::new(),
             json!({"policy_target": {"value": {}}}),
         ))
         .unwrap_err();
+    let bounded = started.elapsed();
 
-    assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "returned after {:?}",
-        started.elapsed()
-    );
     assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
     assert!(
         error.detail().contains("Rego eval exceeded timeout"),
         "{}",
         error.detail()
+    );
+    // The point of the hard deadline: the caller is released while the
+    // builtin is still running, so it returns in a fraction of what the
+    // builtin costs rather than waiting it out.
+    assert!(
+        bounded * 2 < uninterrupted,
+        "returned after {bounded:?} against an uninterrupted {uninterrupted:?}"
     );
 }
 
@@ -521,8 +552,12 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
     // the deadline by a wide margin in the other direction: at 2M
     // elements it takes ~300ms against 200ms, only 1.5x, and an idle box
     // finished inside the deadline about one run in thirteen, which made
-    // the `unwrap_err` below panic. 6M is ~900ms, and the one worker it
-    // strands is the only allocation this test makes.
+    // the `unwrap_err` below panic. 6M runs ~325ms alone and ~900ms under
+    // this suite's parallel load, so the margin is 1.6x in the worst
+    // case, and the one worker it strands is the only allocation this
+    // test makes. A machine much faster than that would need a larger
+    // range here, the way the uninterruptible-builtin test derives its
+    // deadline from a measured control.
     let runner = RegorusRegoRunner::new()
         .with_policy_cache(true)
         .with_eval_timeout(Duration::from_millis(200));
