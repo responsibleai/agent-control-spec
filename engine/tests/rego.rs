@@ -545,27 +545,46 @@ fn rego_dispatcher_evaluates_concurrently_on_pooled_threads() {
 fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
     let mut adapter_config = BTreeMap::new();
     adapter_config.insert("data_paths".to_string(), json!([fixture("verdict.rego")]));
-    // The deadline has to be generous enough that the trivial recovery
-    // evaluations below are not themselves timed out by scheduling delay:
-    // the rest of this suite runs hundreds of threads in parallel, and at
-    // 50ms these intermittently failed. The heavy query must also clear
-    // the deadline by a wide margin in the other direction: at 2M
-    // elements it takes ~300ms against 200ms, only 1.5x, and an idle box
-    // finished inside the deadline about one run in thirteen, which made
-    // the `unwrap_err` below panic. 6M runs ~325ms alone and ~900ms under
-    // this suite's parallel load, so the margin is 1.6x in the worst
-    // case, and the one worker it strands is the only allocation this
-    // test makes. A machine much faster than that would need a larger
-    // range here, the way the uninterruptible-builtin test derives its
-    // deadline from a measured control.
+    const HEAVY: &str = "x := numbers.range(1, 6000000)";
+
+    // Two deadlines over one pool, because the two halves of this test
+    // want opposite things from a deadline and a single value cannot
+    // serve both. The heavy query needs one it will overrun; the trivial
+    // recoveries need one that scheduling delay cannot blow, and this
+    // suite runs hundreds of threads in parallel. Held together by a
+    // single value they fought: at 200ms the heavy query overran by only
+    // 1.6x and a Windows runner finished it inside the deadline, so the
+    // `unwrap_err` below panicked.
+    //
+    // `with_eval_timeout` copies the runner but keeps its worker pool,
+    // so both dispatchers below still share one pool and the property
+    // under test, that a timeout does not poison it, is unchanged.
     let runner = RegorusRegoRunner::new()
         .with_policy_cache(true)
-        .with_eval_timeout(Duration::from_millis(200));
+        .with_eval_timeout(Duration::from_secs(5));
     let dispatcher = RegorusPolicyDispatcher::with_runner(runner.clone());
 
-    let timed_out = dispatcher
+    // What the heavy query costs on this machine, measured rather than
+    // assumed, so the deadline below overruns however fast it is.
+    let control_started = Instant::now();
+    dispatcher
         .evaluate(&rego_invocation(
-            "x := numbers.range(1, 6000000)",
+            HEAVY,
+            None,
+            BTreeMap::new(),
+            json!({"policy_target": {"value": {}}}),
+        ))
+        .expect("the control must complete, or it is not measuring the query");
+    let uninterrupted = control_started.elapsed();
+
+    let heavy = RegorusPolicyDispatcher::with_runner(
+        runner
+            .clone()
+            .with_eval_timeout((uninterrupted / 8).max(Duration::from_millis(20))),
+    );
+    let timed_out = heavy
+        .evaluate(&rego_invocation(
+            HEAVY,
             None,
             BTreeMap::new(),
             json!({"policy_target": {"value": {}}}),
@@ -575,10 +594,10 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
 
     // Let the stranded worker finish before measuring recovery. It
     // cannot be killed, so until it ends it is burning a core, and on a
-    // two-core CI runner that starved the trivial evaluations below
-    // until they blew the very deadline this test sets. The property
-    // under test is that the pool is not poisoned by a timeout, not that
-    // a decision is fast while a runaway one is still running.
+    // two-core CI runner that starved the trivial evaluations below.
+    // The property under test is that the pool is not poisoned by a
+    // timeout, not that a decision is fast while a runaway one is still
+    // running.
     let drained = Instant::now() + Duration::from_secs(60);
     while runner.abandoned_evaluations() > 0 && Instant::now() < drained {
         std::thread::sleep(Duration::from_millis(10));
