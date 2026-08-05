@@ -15,14 +15,16 @@
   - `PolicyDispatcher` gains a `warm` method with a default no-op, so any
     dispatcher can prepare a policy ahead of the first decision and none
     is required to.
-  - Over `examples/bank_agent`, activation costs a few milliseconds and
-    each later decision 60 to 200us at p50: roughly 60 to 120us from
-    Rust, 85 to 145us from .NET, 159us from Node, and 201us from Python,
-    the spread being what each binding adds around the same engine call.
-    So activation repays itself somewhere between 30 and 300 decisions,
-    depending on how expensive the binding makes a decision look.
-    Absolute figures are hardware specific and the benchmarks print their
-    own; run them rather than trusting a number here.
+  - Over `examples/bank_agent`, activation costs milliseconds and a
+    later decision hundreds of microseconds, so activation repays itself
+    in tens of decisions rather than thousands. The four benchmarks
+    measured the `input` point at 166us from Rust, 200us from .NET,
+    249us from Node, and 284us from Python, run back to back so they
+    compare: the spread is what each binding adds around one engine
+    call, not four different engines. Read the ratios rather than the
+    microseconds. The same machine returned figures a third lower
+    earlier in the day, so an absolute number here says as much about
+    the machine as about the code; the benchmarks print their own.
   - Warming earns its keep in proportion to the policy set, and the
     benchmark takes a module count so that claim is reproducible from
     this tree rather than asserted. At 200 modules the first decision
@@ -65,11 +67,11 @@
     evaluating without it: it passes policy to a subprocess as paths, so
     it would otherwise return a verdict for a policy the host did not
     supply.
-  - Building a bundle costs 0.4us at one module and 14.7us at 200, so it
-    is not worth caching separately from the activation it feeds.
-    Activation is where the cost is, at 1.6ms to 3.7ms over the same
-    range, and a decision on a held handle stays free of I/O and
-    compilation at 38us to 72us.
+  - Building a bundle validates and hashes it; nothing is compiled until
+    activation. It cost 0.4us at one module and 14.7us at 200 against
+    1.6ms to 3.7ms to activate over the same range, four orders of
+    magnitude apart, so a host gains nothing by caching a bundle
+    separately from the activation it feeds. Cache the activated policy.
   - Reachable from every binding: `AcsPolicy.ActivateFromMemory` (.NET),
     `ActivatedPolicy.activateFromMemory` (Node),
     `ActivatedPolicy.from_memory` (Python), and
@@ -79,12 +81,16 @@
     literally has to add it.
 
 - A manifest query naming a rule, which is the ordinary case, is read as
-  a rule rather than parsed as a query text on every decision. Over
-  `examples/bank_agent` that parse was 84% of a warm evaluation, 284us
-  against 46us. Queries that are not plain rule paths, including the
-  expression forms the specification permits, still go through the
-  general path, and a rule left undefined by its input still fails closed
-  with the same reason as before.
+  a rule rather than parsed as query text on every decision. In the
+  engine call alone the parse dominated, 284us against 46us; end to end
+  a warm decision over `examples/bank_agent` fell about a fifth to a
+  quarter, from 221us to 166us at p50 on the `input` point, medians of
+  five runs interleaved with the previous commit to hold the machine
+  steady. The rest of a decision is annotation, input building, and
+  dispatch, which this does not touch. Queries that are not plain rule
+  paths, including the expression forms the specification permits, still
+  go through the general path, and a rule left undefined by its input
+  still fails closed with the reason it always had.
 
 - The bundled Rego dispatcher evaluates policy in process through
   [`regorus`](https://crates.io/crates/regorus) instead of shelling out to
