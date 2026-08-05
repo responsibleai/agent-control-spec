@@ -1169,7 +1169,10 @@ intervention_points:
             .to_string_lossy()
             .into_owned();
         unsafe { acs_free_string(err) };
-        assert!(message.contains("relative bundle or data path"), "{message}");
+        assert!(
+            message.contains("relative bundle or data path"),
+            "{message}"
+        );
     }
 
     /// Malformed JSON is a boundary error, not a policy that quietly
