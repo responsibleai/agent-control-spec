@@ -36,6 +36,26 @@ export declare function interceptorNew(manifestPath: string): ExternalObject<Han
 export declare function policyActivate(manifestPath: string): ExternalObject<PolicyHandle>
 
 /**
+ * Activate a manifest and its Rego, both supplied as values rather
+ * than read from disk.
+ *
+ * `manifest_yaml` is the manifest text. `bundles_json` is a JSON
+ * object mapping a policy id declared in that manifest to
+ * `{"modules": {name: source}, "data": [{"mount": [..], "document":
+ * {..}}]}`, replacing whatever `bundle` path the manifest names. A
+ * service holding manifests and Rego in a database activates from them
+ * directly rather than staging a temporary directory per activation.
+ *
+ * Throws when the manifest does not parse, when a key of `bundles_json`
+ * names a policy the manifest does not declare as Rego, and when a Rego
+ * policy is left naming a relative `bundle` path: that path would
+ * resolve against the process working directory, since a manifest
+ * parsed from a string has no directory of its own. An absolute path is
+ * left as written.
+ */
+export declare function policyActivateFromMemory(manifestYaml: string, bundlesJson: string): ExternalObject<PolicyHandle>
+
+/**
  * Evaluate one intervention point against an activated policy and
  * return the verdict as wire JSON.
  *

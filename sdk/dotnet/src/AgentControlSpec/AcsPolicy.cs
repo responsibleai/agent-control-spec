@@ -60,6 +60,95 @@ public static class AcsPolicy
         ArgumentNullException.ThrowIfNull(manifestPath);
         return ActivatedPolicy.FromHandle(Native.PolicyActivate(manifestPath));
     }
+
+    /// <summary>
+    /// Activates a manifest and its Rego, both held in memory rather
+    /// than read from disk.
+    /// </summary>
+    /// <remarks>
+    /// For a host that keeps policy in a database: activating from
+    /// values skips staging a temporary directory per activation.
+    /// Otherwise identical to <see cref="Activate(string)"/>, including
+    /// that this is the expensive call and
+    /// <see cref="ActivatedPolicy.Evaluate(InterceptionPoint, string)"/>
+    /// stays free of I/O and compilation. Hold the returned policy for
+    /// the life of the policy version rather than activating per
+    /// request.
+    /// <para>
+    /// A Rego policy left naming a relative <c>bundle</c> path is
+    /// rejected. A manifest parsed from text has no directory of its
+    /// own, so such a path would resolve against the process working
+    /// directory and load a policy nobody chose. Write it absolute to
+    /// keep it.
+    /// </para>
+    /// </remarks>
+    /// <param name="manifestYaml">The manifest itself, as YAML.</param>
+    /// <param name="bundles">
+    /// Policy id to the modules and data documents that policy
+    /// evaluates, replacing whatever <c>bundle</c> path the manifest
+    /// names. Null or empty activates the manifest as written.
+    /// </param>
+    /// <exception cref="AgentControlSpecNativeException">
+    /// The manifest could not be parsed or readied, or a bundle names a
+    /// policy the manifest does not declare as Rego. Carries the same
+    /// readying qualification as <see cref="Activate(string)"/>.
+    /// </exception>
+    public static ActivatedPolicy ActivateFromMemory(
+        string manifestYaml,
+        IReadOnlyDictionary<string, RegoBundle>? bundles = null)
+    {
+        ArgumentNullException.ThrowIfNull(manifestYaml);
+        var bundlesJson = bundles is null || bundles.Count == 0
+            ? null
+            : JsonSerializer.Serialize(bundles, RegoBundle.SerializerOptions);
+        return ActivatedPolicy.FromHandle(
+            Native.PolicyActivateFromMemory(manifestYaml, bundlesJson));
+    }
+}
+
+/// <summary>A Rego policy set the host holds in memory.</summary>
+/// <remarks>
+/// Cheap to build: it carries the module text and nothing compiled, so
+/// the cost of a policy version is paid in
+/// <see cref="AcsPolicy.ActivateFromMemory"/>, not here. Hold the
+/// activated policy, not this.
+/// </remarks>
+public sealed class RegoBundle
+{
+    internal static readonly JsonSerializerOptions SerializerOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
+        DefaultIgnoreCondition =
+            System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    /// <summary>Rego module source by module name.</summary>
+    /// <remarks>
+    /// The name is what a load failure quotes, so name modules the way
+    /// the host stores them rather than inventing paths.
+    /// </remarks>
+    public IDictionary<string, string> Modules { get; init; } =
+        new Dictionary<string, string>();
+
+    /// <summary>Data documents and where each mounts under <c>data</c>.</summary>
+    public IList<RegoDataDocument> Data { get; init; } = new List<RegoDataDocument>();
+}
+
+/// <summary>One data document and its mount point.</summary>
+/// <remarks>
+/// On disk the mount point comes from the file's directory relative to
+/// the bundle root. Nothing implies it in memory, so it is stated.
+/// </remarks>
+public sealed class RegoDataDocument
+{
+    /// <summary>
+    /// Path under <c>data</c>, outermost segment first. Empty mounts at
+    /// the data root.
+    /// </summary>
+    public IList<string> Mount { get; init; } = new List<string>();
+
+    /// <summary>The document.</summary>
+    public JsonNode? Document { get; init; }
 }
 
 /// <summary>An immutable, ready-to-evaluate policy version.</summary>

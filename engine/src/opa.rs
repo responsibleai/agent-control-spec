@@ -123,6 +123,7 @@ impl OpaRegoRunner {
     }
 
     pub fn evaluate(&self, invocation: &RegoPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+        reject_in_memory_bundle(invocation)?;
         let output = self.run_opa_eval(invocation)?;
         if !output.status.success() {
             return Err(RuntimeError::PolicyInvocationFailed(format!(
@@ -241,6 +242,24 @@ fn join_reader(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Ve
     handle
         .join()
         .map_err(|_| io::Error::other("OPA output reader thread panicked"))?
+}
+
+/// Refuses an in-memory bundle rather than evaluating without it.
+///
+/// `opa eval` takes policy as paths, so this dispatcher has nothing to
+/// pass the modules to. Ignoring them would evaluate whatever the
+/// manifest's `bundle` still pointed at, or nothing at all, and either
+/// way would return a verdict for a policy the host did not supply.
+fn reject_in_memory_bundle(invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+    if invocation.inline_bundle.is_some() {
+        return Err(RuntimeError::PolicyInvocationFailed(
+            "this policy supplies Rego modules in memory, which the `opa` CLI dispatcher cannot \
+             evaluate because it passes policy to a subprocess as paths. Use the in-process Rego \
+             dispatcher, or stage the modules to a directory and point `bundle` at it"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn opa_command_path_arg(path: impl AsRef<Path>) -> OsString {

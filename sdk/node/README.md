@@ -45,6 +45,30 @@ version changes. Evaluation stays fail-closed, including for a point the
 version does not bind; only boundary problems (an unknown point name, a
 non-object context) throw.
 
+### Activating from memory
+
+A service that keeps manifests and Rego in a database has no directory to
+point a manifest at. `ActivatedPolicy.activateFromMemory` takes both as
+values, so nothing is staged to a temporary directory per activation:
+
+```ts
+const policy = ActivatedPolicy.activateFromMemory(manifestYaml, {
+  gate: {
+    modules: { "gate.rego": moduleSource },
+    data: [{ mount: ["limits"], document: { daily: 42 } }],
+  },
+});
+```
+
+Each key names a Rego policy the manifest declares, and the bundle
+replaces whatever `bundle` path that policy names. A data document
+mounts at `data.<mount[0]>.<mount[1]>...`; an omitted or empty `mount`
+puts it at the data root. Activation is refused when a Rego policy is
+left naming a relative `bundle` path, since a manifest parsed from a
+string has no directory to resolve it against. Absolute paths are left
+alone, so a manifest can mix policy from the database with policy from a
+known location on disk.
+
 Manifests can also be checked on their own, without building a runtime
 or resolving a policy bundle. Useful when generating or migrating manifests:
 

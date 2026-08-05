@@ -10,11 +10,13 @@
 
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
 use agent_control_spec::{
-    ActivatedPolicy, InterceptionPoint, Manifest, Runtime, RuntimeError, SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
+    SUPPORTED_VERSIONS,
 };
 use napi::bindgen_prelude::{External, Utf16String};
 use napi_derive::napi;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub struct Handle {
@@ -112,6 +114,41 @@ pub fn policy_activate(manifest_path: Utf16String) -> napi::Result<External<Poli
     let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
     let policy = ActivatedPolicy::activate_with(
         manifest,
+        default_annotator_dispatcher(),
+        Arc::new(BindingPolicyDispatcher::new()),
+    )
+    .map_err(|e| err(format!("{e}")))?;
+    Ok(External::new(PolicyHandle { policy }))
+}
+
+/// Activate a manifest and its Rego, both supplied as values rather
+/// than read from disk.
+///
+/// `manifest_yaml` is the manifest text. `bundles_json` is a JSON
+/// object mapping a policy id declared in that manifest to
+/// `{"modules": {name: source}, "data": [{"mount": [..], "document":
+/// {..}}]}`, replacing whatever `bundle` path the manifest names. A
+/// service holding manifests and Rego in a database activates from them
+/// directly rather than staging a temporary directory per activation.
+///
+/// Throws when the manifest does not parse, when a key of `bundles_json`
+/// names a policy the manifest does not declare as Rego, and when a Rego
+/// policy is left naming a relative `bundle` path: that path would
+/// resolve against the process working directory, since a manifest
+/// parsed from a string has no directory of its own. An absolute path is
+/// left as written.
+#[napi]
+pub fn policy_activate_from_memory(
+    manifest_yaml: Utf16String,
+    bundles_json: Utf16String,
+) -> napi::Result<External<PolicyHandle>> {
+    let manifest_yaml = decode("manifest_yaml", &manifest_yaml)?;
+    let bundles_json = decode("bundles_json", &bundles_json)?;
+    let bundles: BTreeMap<String, InMemoryRegoBundle> = serde_json::from_str(&bundles_json)
+        .map_err(|e| err(format!("bundles_json does not parse: {e}")))?;
+    let policy = ActivatedPolicy::activate_from_memory_with(
+        &manifest_yaml,
+        bundles,
         default_annotator_dispatcher(),
         Arc::new(BindingPolicyDispatcher::new()),
     )

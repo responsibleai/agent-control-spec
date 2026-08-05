@@ -402,6 +402,7 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
                         // entry a sibling just cached.
                         query: format!("data.slow.verdict # {thread}.{round}"),
                         bundle: Some(bundle.clone()),
+                        inline_bundle: None,
                         adapter_config: Default::default(),
                         input: json!({}),
                         canonical_input: "{}".to_string(),
@@ -427,6 +428,7 @@ fn activation_does_not_claim_success_when_it_could_not_look_at_the_policy() {
     let missing = RegoPolicyInvocation {
         query: "data.nope.verdict".to_string(),
         bundle: Some(dir.join("does-not-exist").display().to_string()),
+        inline_bundle: None,
         adapter_config: Default::default(),
         input: json!({}),
         canonical_input: "{}".to_string(),

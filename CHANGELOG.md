@@ -16,17 +16,20 @@
     dispatcher can prepare a policy ahead of the first decision and none
     is required to.
   - Over `examples/bank_agent`, activation costs a few milliseconds and
-    each later decision about 200 to 300us at p50, consistently across
-    Rust, .NET, Node, and Python, so activation repays itself in tens of
-    decisions rather than thousands. Absolute figures are hardware
-    specific and the benchmarks print their own; run them rather than
-    trusting a number here.
+    each later decision 60 to 200us at p50: roughly 60 to 120us from
+    Rust, 85 to 145us from .NET, 159us from Node, and 201us from Python,
+    the spread being what each binding adds around the same engine call.
+    So activation repays itself somewhere between 30 and 300 decisions,
+    depending on how expensive the binding makes a decision look.
+    Absolute figures are hardware specific and the benchmarks print their
+    own; run them rather than trusting a number here.
   - Warming earns its keep in proportion to the policy set, and the
     benchmark takes a module count so that claim is reproducible from
     this tree rather than asserted. At 200 modules the first decision
-    drops from 17.4ms to 9.1ms, because compilation is otherwise charged
-    to it, and again to every decision after it when the cache holds an
-    engine that was never compiled.
+    drops from about 17.6ms to about 6.9ms, medians of seven runs, because
+    compilation is otherwise charged to it. Read those two numbers off a
+    settled machine: the first runs after a build measure the page cache
+    as much as the policy, and moved between 6.7ms and 17.1ms here.
   - Reachable from every binding: `AcsPolicy.Activate` (.NET),
     `policyActivate` (Node), `ActivatedPolicy` (Python), and
     `acs_policy_activate` / `acs_policy_evaluate` / `acs_policy_free`
@@ -34,6 +37,54 @@
   - `cargo run --release -p agent-control-spec --all-features --example
     benchmark` reports activation cost, warm p50/p95/p99 per intervention
     point, and the concurrency curve.
+
+- A policy version can be activated from a manifest and Rego held in
+  memory, not only from a path. A service that keeps both in a database
+  had to stage them to a temporary directory before every activation;
+  `ActivatedPolicy::activate_from_memory` takes the manifest as text and
+  a map from policy id to the modules and data documents that policy
+  evaluates. The path-based entry points are unchanged.
+  - The engine reads policy source as a string either way, so this is
+    the existing load path with the read removed rather than a second
+    way to load a policy. A test pins that the same policy activated
+    from disk and from memory reaches the same verdict.
+  - A data document carries its mount point explicitly. On disk that
+    comes from the file's directory relative to the bundle root, and
+    nothing implies it in memory.
+  - The prepared-engine cache is keyed on a bundle path, which an
+    in-memory bundle does not have, so such a bundle is keyed on a
+    SHA-256 over its contents instead. Without it, two Rego policies in
+    one manifest would share one cache entry, and the second would be
+    served the first one's engine and fail closed on its own query.
+  - A Rego policy left naming a relative `bundle` path is refused. A
+    manifest parsed from text has no directory of its own, so the path
+    would resolve against the process working directory and load a
+    policy nobody chose. An absolute path is left as written, so one
+    manifest can mix policy from a database with policy on disk.
+  - The `opa` CLI dispatcher refuses an in-memory bundle rather than
+    evaluating without it: it passes policy to a subprocess as paths, so
+    it would otherwise return a verdict for a policy the host did not
+    supply.
+  - Building a bundle costs 0.4us at one module and 14.7us at 200, so it
+    is not worth caching separately from the activation it feeds.
+    Activation is where the cost is, at 1.6ms to 3.7ms over the same
+    range, and a decision on a held handle stays free of I/O and
+    compilation at 38us to 72us.
+  - Reachable from every binding: `AcsPolicy.ActivateFromMemory` (.NET),
+    `ActivatedPolicy.activateFromMemory` (Node),
+    `ActivatedPolicy.from_memory` (Python), and
+    `acs_policy_activate_from_memory` over the C ABI.
+  - `RegoPolicyInvocation` and `RegoPolicyConfig` gain an `inline_bundle`
+    field. Both have public fields, so code constructing either
+    literally has to add it.
+
+- A manifest query naming a rule, which is the ordinary case, is read as
+  a rule rather than parsed as a query text on every decision. Over
+  `examples/bank_agent` that parse was 84% of a warm evaluation, 284us
+  against 46us. Queries that are not plain rule paths, including the
+  expression forms the specification permits, still go through the
+  general path, and a rule left undefined by its input still fails closed
+  with the same reason as before.
 
 - The bundled Rego dispatcher evaluates policy in process through
   [`regorus`](https://crates.io/crates/regorus) instead of shelling out to

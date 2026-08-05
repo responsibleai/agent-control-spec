@@ -62,6 +62,35 @@ if (policy.Governs(InterceptionPoint.PostToolCall))
     policy.Evaluate(InterceptionPoint.PostToolCall, contextJson);
 ```
 
+A host that keeps manifests and Rego in a database has no path to give,
+and staging both to a temporary directory before every activation is
+work it should not have to do. `ActivateFromMemory` takes the manifest
+as text and the modules as values:
+
+```csharp
+var bundles = new Dictionary<string, RegoBundle>
+{
+    ["gate"] = new RegoBundle
+    {
+        Modules = new Dictionary<string, string> { ["gate.rego"] = regoSource },
+        Data = [new RegoDataDocument { Mount = ["limits"], Document = limits }],
+    },
+};
+
+using var policy = AcsPolicy.ActivateFromMemory(manifestYaml, bundles);
+```
+
+`Mount` says where a data document lands under `data`; on disk that
+comes from the file's directory, and nothing implies it in memory. A
+`RegoBundle` carries source text and nothing compiled, so it costs
+microseconds to build and is not worth caching on its own. Cache the
+activated policy.
+
+A Rego policy left naming a relative `bundle` or data path is refused: a
+manifest parsed from text has no directory of its own, so the path would
+resolve against the working directory and load a policy nobody chose.
+Write it absolute to keep it.
+
 Disposal is deterministic, safe to repeat, and safe against evaluations
 already in flight. Evaluating an unbound point is not an exception; like
 every other failure it is a fail-closed deny, here with reason

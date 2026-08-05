@@ -73,8 +73,9 @@
 //!   evaluation and one for warming.
 
 use crate::{
-    policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue,
-    PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
+    policy::{rego_adapter_data_paths, InMemoryRegoBundle},
+    runtime::PolicyDispatcher,
+    JsonValue, PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
 };
 use std::{
     collections::BTreeMap,
@@ -158,9 +159,42 @@ type PolicyCache = Arc<Mutex<BTreeMap<CacheKey, Arc<regorus::Engine>>>>;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct CacheKey {
     bundle: Option<String>,
+    /// Ordered and compared by digest alone, so two clones of one bundle
+    /// are one cache entry and two different bundles never collide on
+    /// the absence of a path.
+    inline_bundle: Option<DigestKeyed>,
     data_paths: Vec<PathBuf>,
     strict_builtin_errors: bool,
     rego_v0: bool,
+}
+
+/// An in-memory bundle that participates in a [`CacheKey`] through its
+/// content digest.
+///
+/// Comparing the modules themselves would work but would hash and order
+/// every cache lookup against the full policy source. Comparing the
+/// digest is the same decision at a fixed cost.
+#[derive(Debug, Clone)]
+struct DigestKeyed(Arc<InMemoryRegoBundle>);
+
+impl PartialEq for DigestKeyed {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.digest() == other.0.digest()
+    }
+}
+
+impl Eq for DigestKeyed {}
+
+impl PartialOrd for DigestKeyed {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for DigestKeyed {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.digest().cmp(other.0.digest())
+    }
 }
 
 /// Loads Rego policies and evaluates queries in process.
@@ -462,6 +496,25 @@ impl RegorusRegoRunner {
                     "failed to set Rego policy input: {err}"
                 ))
             })?;
+            // A manifest query is normally a rule path, and evaluating it
+            // as one skips re-parsing the query text on every decision.
+            // Measured on `examples/bank_agent`, that parse is 84% of a
+            // warm evaluation: 284us against 46us. Anything that is not
+            // a plain rule path, such as the expression forms the
+            // specification also permits, still goes through
+            // `eval_query`.
+            if is_rule_path(&query) {
+                // `eval_rule` accepts only an actual rule: a data
+                // document path or a path that does not resolve is an
+                // error there but a normal, and possibly undefined,
+                // result through `eval_query`. So `eval_query` stays
+                // authoritative and this is taken only when it succeeds,
+                // rather than deciding between them by inspecting an
+                // error message.
+                if let Ok(value) = engine.eval_rule(query.clone()) {
+                    return rule_value(value);
+                }
+            }
             let results = engine
                 .eval_query(query, false)
                 .map_err(|err| eval_error(&err))?;
@@ -486,6 +539,10 @@ impl RegorusRegoRunner {
         data_paths.extend(rego_adapter_data_paths(&invocation.adapter_config)?);
         Ok(CacheKey {
             bundle: invocation.bundle.clone(),
+            inline_bundle: invocation
+                .inline_bundle
+                .as_ref()
+                .map(|bundle| DigestKeyed(Arc::clone(bundle))),
             data_paths,
             strict_builtin_errors: self.strict_builtin_errors,
             rego_v0: self.rego_v0,
@@ -819,6 +876,9 @@ fn build_engine(key: &CacheKey) -> Result<regorus::Engine, RuntimeError> {
     // user content; the CLI dispatcher kept it inside the child process,
     // so surfacing it in host logs would be a new disclosure path.
     engine.set_gather_prints(true);
+    if let Some(bundle) = &key.inline_bundle {
+        load_in_memory_bundle(&mut engine, &bundle.0)?;
+    }
     if let Some(bundle) = &key.bundle {
         load_path(&mut engine, Path::new(bundle), "bundle", DataScope::Bundle)?;
     }
@@ -994,6 +1054,43 @@ fn mount_data(value: regorus::Value, mount: &[String]) -> Result<regorus::Value,
     })
 }
 
+/// Loads a bundle the host holds in memory.
+///
+/// The on-disk path reads each file and hands the text to the same two
+/// engine calls, so this is that path with the read removed rather than
+/// a second way to load a policy. Modules load in name order, which is
+/// the order the digest hashes them in.
+fn load_in_memory_bundle(
+    engine: &mut regorus::Engine,
+    bundle: &InMemoryRegoBundle,
+) -> Result<(), RuntimeError> {
+    for (name, source) in bundle.modules() {
+        engine
+            .add_policy(name.clone(), source.clone())
+            .map(|_| ())
+            .map_err(|err| {
+                RuntimeError::PolicyInvocationFailed(format!(
+                    "failed to load in-memory Rego policy '{name}': {err}"
+                ))
+            })?;
+    }
+    for (index, entry) in bundle.data().iter().enumerate() {
+        let display = if entry.mount.is_empty() {
+            format!("in-memory data document {index} at the data root")
+        } else {
+            format!(
+                "in-memory data document {index} at data.{}",
+                entry.mount.join(".")
+            )
+        };
+        let value = regorus::Value::from_json_str(&entry.document.to_string()).map_err(|err| {
+            RuntimeError::PolicyInvocationFailed(format!("failed to parse {display}: {err}"))
+        })?;
+        add_data(engine, mount_data(value, &entry.mount)?, &display)?;
+    }
+    Ok(())
+}
+
 fn load_file(
     engine: &mut regorus::Engine,
     path: &Path,
@@ -1087,6 +1184,48 @@ fn eval_error(err: &impl std::fmt::Display) -> RuntimeError {
     RuntimeError::PolicyInvocationFailed(format!("Rego eval failed: {detail}"))
 }
 
+/// Whether `query` is a plain rule path such as
+/// `data.agent_control_specification.input.verdict`, as opposed to an
+/// expression like `count(numbers.range(1, 5))`.
+///
+/// Deliberately conservative: anything with whitespace, an operator, a
+/// call, or a subscript falls back to the general path, because reading
+/// a rule and evaluating an expression are not interchangeable and
+/// guessing wrong would change a verdict.
+fn is_rule_path(query: &str) -> bool {
+    let Some(rest) = query.strip_prefix("data.") else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest.split('.').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        })
+}
+
+/// Projects a rule's value the way [`single_expression_value`] projects a
+/// query's, so the two paths cannot disagree about a verdict.
+///
+/// `eval_rule` reports an undefined rule as [`regorus::Value::Undefined`]
+/// where `eval_query` reports it as an empty result set. Both mean the
+/// policy reached no verdict, and both must fail closed identically:
+/// letting `Undefined` through would hand the runtime the string
+/// `"<undefined>"` as a verdict.
+fn rule_value(value: regorus::Value) -> Result<JsonValue, RuntimeError> {
+    if matches!(value, regorus::Value::Undefined) {
+        return Err(RuntimeError::PolicyInvocationFailed(
+            "Rego query returned no result".to_string(),
+        ));
+    }
+    serde_json::to_value(&value).map_err(|err| {
+        RuntimeError::PolicyInvocationFailed(format!(
+            "failed to convert Rego query result to JSON: {err}"
+        ))
+    })
+}
+
 /// Projects a query result onto the single verdict value the runtime
 /// expects, mirroring how the `opa` CLI dispatcher reads
 /// `result[0].expressions[0].value`.
@@ -1124,6 +1263,37 @@ fn single_expression_value(results: &regorus::QueryResults) -> Result<JsonValue,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rule_paths_are_told_apart_from_expressions() {
+        assert!(is_rule_path(
+            "data.agent_control_specification.input.verdict"
+        ));
+        assert!(is_rule_path("data.x"));
+        assert!(is_rule_path("data.a_b.c9"));
+        // Not rule paths: the specification permits these as queries and
+        // they must keep going through eval_query.
+        assert!(!is_rule_path("count(numbers.range(1, 5))"));
+        assert!(!is_rule_path("x := data.a.b"));
+        assert!(!is_rule_path("data.a.b == 1"));
+        assert!(!is_rule_path("data.a[b].c"));
+        assert!(!is_rule_path("data.a.b "));
+        assert!(!is_rule_path("data."));
+        assert!(!is_rule_path("data"));
+        assert!(!is_rule_path("input.x"));
+        assert!(!is_rule_path(""));
+    }
+
+    #[test]
+    fn an_undefined_rule_fails_closed_like_an_empty_query_result() {
+        let error = rule_value(regorus::Value::Undefined).unwrap_err();
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert!(
+            error.detail().contains("returned no result"),
+            "{}",
+            error.detail()
+        );
+    }
 
     #[test]
     fn packaged_bundle_archives_are_recognized() {

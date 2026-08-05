@@ -241,6 +241,95 @@ fn rego_dispatcher_fails_closed_on_an_undefined_query() {
     );
 }
 
+/// A rule path is evaluated through `eval_rule` rather than
+/// `eval_query`. The two report an absent verdict differently, so this
+/// pins that a rule which exists but is undefined for this input still
+/// fails closed instead of yielding regorus' `"<undefined>"` marker as a
+/// verdict.
+#[test]
+fn rego_dispatcher_fails_closed_when_a_rule_is_undefined_for_this_input() {
+    let dir = test_artifact_dir("rego-rule-undefined");
+    fs::write(
+        dir.join("conditional.rego"),
+        r#"package conditional
+
+verdict := {"allow": true} if input.policy_target.value.ok
+"#,
+    )
+    .unwrap();
+
+    let error = RegorusPolicyDispatcher::new()
+        .evaluate(&rego_invocation(
+            "data.conditional.verdict",
+            Some(dir.display().to_string()),
+            BTreeMap::new(),
+            json!({"policy_target": {"value": {"ok": false}}}),
+        ))
+        .unwrap_err();
+
+    assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+    assert!(
+        error.detail().contains("Rego query returned no result"),
+        "{}",
+        error.detail()
+    );
+}
+
+/// The same rule read as a rule path and as an expression must produce
+/// the same verdict, since only the query text distinguishes the two
+/// evaluation paths.
+#[test]
+fn a_rule_path_and_an_equivalent_expression_agree_on_the_verdict() {
+    let dir = test_artifact_dir("rego-rule-path-agreement");
+    fs::write(
+        dir.join("shapes.rego"),
+        r#"package shapes
+
+verdict := {"allow": true, "items": [1, 2], "nested": {"n": input.policy_target.value.n}}
+"#,
+    )
+    .unwrap();
+
+    let evaluate = |query: &str| {
+        RegorusPolicyDispatcher::new()
+            .evaluate(&rego_invocation(
+                query,
+                Some(dir.display().to_string()),
+                BTreeMap::new(),
+                json!({"policy_target": {"value": {"n": 7}}}),
+            ))
+            .unwrap()
+    };
+
+    let by_rule_path = evaluate("data.shapes.verdict");
+    let by_expression = evaluate("object.union(data.shapes.verdict, {})");
+
+    assert_eq!(by_rule_path, by_expression);
+    assert_eq!(by_rule_path["nested"]["n"], json!(7));
+}
+
+/// A data document path looks exactly like a rule path but `eval_rule`
+/// rejects it, so this pins that such a query still resolves.
+#[test]
+fn a_data_document_path_still_resolves_though_it_looks_like_a_rule() {
+    let dir = test_artifact_dir("rego-data-doc-path");
+    fs::write(dir.join("data.json"), r#"{"verdict": {"allow": true}}"#).unwrap();
+
+    let verdict = RegorusPolicyDispatcher::new()
+        .evaluate(&rego_invocation(
+            "data.verdict",
+            None,
+            BTreeMap::from([(
+                "data_paths".to_string(),
+                json!([dir.join("data.json").display().to_string()]),
+            )]),
+            json!({"policy_target": {"value": {}}}),
+        ))
+        .unwrap();
+
+    assert_eq!(verdict, json!({"allow": true}));
+}
+
 #[test]
 fn rego_dispatcher_rejects_malformed_adapter_data_paths() {
     let mut adapter_config = BTreeMap::new();
@@ -986,6 +1075,7 @@ fn rego_invocation(
     PreparedPolicyInvocation::Rego(RegoPolicyInvocation {
         query: query.to_string(),
         bundle,
+        inline_bundle: None,
         adapter_config,
         canonical_input: canonical_json(&input).unwrap(),
         input,

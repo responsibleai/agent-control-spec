@@ -19,9 +19,11 @@
 
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
 use agent_control_spec::{
-    ActivatedPolicy, InterceptionPoint, Manifest, Runtime, RuntimeError, SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
+    SUPPORTED_VERSIONS,
 };
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
@@ -504,6 +506,306 @@ pub unsafe extern "C" fn acs_free_string(s: *mut c_char) {
     }
 }
 
+// ---------------------------------------------------------------------
+// Activated policy: one policy version, readied once, evaluated many
+// times.
+//
+// `acs_interceptor_*` answers "evaluate this agent context against a
+// manifest", and readies the policy lazily on the first call. A host
+// that pins a policy version and serves traffic against it wants the
+// opposite split: pay for reading and compiling the bundle once, at a
+// moment of its choosing, then evaluate a named intervention point with
+// nothing left to set up. These entry points are that split.
+// ---------------------------------------------------------------------
+
+/// Opaque handle to one activated policy version.
+pub struct AcsActivatedPolicy {
+    policy: ActivatedPolicy,
+}
+
+/// Activate the manifest at `manifest_path`, readying every policy it
+/// binds.
+///
+/// This is the expensive call: it reads the manifest, loads every Rego
+/// module and data document, and compiles the entrypoint each
+/// intervention point queries. Do it once per policy version and keep
+/// the handle; `acs_policy_evaluate` then costs no I/O and no compile.
+///
+/// Compiling is bounded by the eval timeout. A policy too slow to
+/// compile in that window activates anyway, not necessarily fully readied, and
+/// pays compilation on its first decision instead.
+///
+/// Returns NULL and sets `*err_out` on failure. Free with
+/// `acs_policy_free`.
+///
+/// # Safety
+/// `manifest_path` must point to `manifest_path_len` readable bytes.
+/// `err_out` must be null or point to a writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn acs_policy_activate(
+    manifest_path: *const u8,
+    manifest_path_len: usize,
+    err_out: *mut *mut c_char,
+) -> *mut AcsActivatedPolicy {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let path = read_path(manifest_path, manifest_path_len, err_out)?;
+        let manifest = match Manifest::from_path(path) {
+            Ok(m) => m,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return None;
+            }
+        };
+        let policy = match ActivatedPolicy::activate_with(
+            manifest,
+            default_annotator_dispatcher(),
+            Arc::new(BindingPolicyDispatcher::new()),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return None;
+            }
+        };
+        Some(Box::into_raw(Box::new(AcsActivatedPolicy { policy })))
+    }));
+    match result {
+        Ok(Some(handle)) => handle,
+        Ok(None) => std::ptr::null_mut(),
+        Err(_) => {
+            set_err(err_out, "internal panic in acs_policy_activate".to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Activate a manifest and its Rego, both supplied as text rather than
+/// read from disk.
+///
+/// `manifest_yaml` is the manifest itself. `bundles_json` maps a policy
+/// id declared in it to the modules and data documents that policy
+/// evaluates:
+///
+/// ```json
+/// {
+///   "gate": {
+///     "modules": {"gate.rego": "package gate\n\nverdict := ..."},
+///     "data": [{"mount": ["limits"], "document": {"daily": 42}}]
+///   }
+/// }
+/// ```
+///
+/// `mount` is where the document lands under `data`, outermost segment
+/// first; empty puts it at the data root. On disk that comes from the
+/// file's directory, and nothing implies it here.
+///
+/// For a host that keeps policy in a database: activating from these
+/// skips staging a temporary directory per activation. `bundles_json`
+/// may be NULL or empty, which activates the manifest as written.
+///
+/// A rego policy left naming a relative `bundle` path is an error, not a
+/// disk read: a manifest parsed from text has no directory of its own,
+/// so the path would resolve against the process working directory and
+/// load a policy nobody chose. Write it absolute to keep it.
+///
+/// Otherwise identical to `acs_policy_activate`, including that
+/// compiling is bounded by the eval timeout.
+///
+/// Returns NULL and sets `*err_out` on failure. Free with
+/// `acs_policy_free`.
+///
+/// # Safety
+/// `manifest_yaml` must be a valid NUL-terminated string. `bundles_json`
+/// must be NULL or a valid NUL-terminated string. `err_out` must be null
+/// or point to a writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn acs_policy_activate_from_memory(
+    manifest_yaml: *const c_char,
+    bundles_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut AcsActivatedPolicy {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let manifest_yaml = read_utf8(manifest_yaml, "manifest_yaml", err_out)?;
+        let bundles = match read_in_memory_bundles(bundles_json, err_out) {
+            Some(bundles) => bundles,
+            None => return None,
+        };
+        let policy = match ActivatedPolicy::activate_from_memory_with(
+            manifest_yaml,
+            bundles,
+            default_annotator_dispatcher(),
+            Arc::new(BindingPolicyDispatcher::new()),
+        ) {
+            Ok(p) => p,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return None;
+            }
+        };
+        Some(Box::into_raw(Box::new(AcsActivatedPolicy { policy })))
+    }));
+    match result {
+        Ok(Some(handle)) => handle,
+        Ok(None) => std::ptr::null_mut(),
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_policy_activate_from_memory".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Reads the `bundles_json` argument, treating NULL and empty as "no
+/// bundles supplied" so a host with nothing to override need not build a
+/// JSON document to say so.
+///
+/// Returns `None` only after setting `*err_out`, so a caller can tell an
+/// empty map from a rejected one.
+unsafe fn read_in_memory_bundles(
+    bundles_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> Option<BTreeMap<String, InMemoryRegoBundle>> {
+    if bundles_json.is_null() {
+        return Some(BTreeMap::new());
+    }
+    let raw = read_utf8(bundles_json, "bundles_json", err_out)?;
+    if raw.trim().is_empty() {
+        return Some(BTreeMap::new());
+    }
+    match serde_json::from_str(raw) {
+        Ok(bundles) => Some(bundles),
+        Err(e) => {
+            set_err(err_out, format!("bundles_json is not valid: {e}"));
+            None
+        }
+    }
+}
+
+/// Evaluate one intervention point against an activated policy.
+///
+/// `point` is an agent-hooks intervention point name, such as
+/// `"input"` or `"pre_tool_call"`. `context_json` is the agent context
+/// object. Returns the verdict as JSON, freed with `acs_free_string`.
+///
+/// A policy that does not bind `point` is a fail-closed deny carrying
+/// reason `runtime_error:intervention_point_unknown`, not a successful
+/// call and not a boundary error. Every failure in this runtime reaches
+/// a host as a verdict; none is benign.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_policy_activate`; `point`
+/// and `context_json` valid NUL-terminated strings.
+#[no_mangle]
+pub unsafe extern "C" fn acs_policy_evaluate(
+    handle: *const AcsActivatedPolicy,
+    point: *const c_char,
+    context_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return std::ptr::null_mut();
+        }
+        let Some(point_raw) = read_utf8(point, "point", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let Ok(point) = point_raw.parse::<InterceptionPoint>() else {
+            set_err(err_out, format!("unknown intervention point '{point_raw}'"));
+            return std::ptr::null_mut();
+        };
+        let Some(raw) = read_utf8(context_json, "context_json", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let snapshot: Value = match serde_json::from_str(raw) {
+            Ok(v @ Value::Object(_)) => v,
+            Ok(_) => {
+                set_err(err_out, "context_json must be a JSON object".to_string());
+                return std::ptr::null_mut();
+            }
+            Err(e) => {
+                set_err(err_out, format!("context_json does not parse: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let verdict = (*handle).policy.evaluate(point, snapshot).verdict;
+        match serde_json::to_string(&verdict) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("verdict serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(err_out, "internal panic in acs_policy_evaluate".to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// The intervention points this policy version binds, as a JSON array of
+/// names. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_policy_activate`.
+#[no_mangle]
+pub unsafe extern "C" fn acs_policy_intervention_points(
+    handle: *const AcsActivatedPolicy,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return std::ptr::null_mut();
+        }
+        let names: Vec<String> = (*handle)
+            .policy
+            .intervention_points()
+            .iter()
+            .map(|point| point.to_string())
+            .collect();
+        match serde_json::to_string(&names) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_policy_intervention_points".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Release an activated policy.
+///
+/// # Safety
+/// `handle` must come from `acs_policy_activate` and must not be used
+/// afterwards. Passing null is allowed and does nothing.
+#[no_mangle]
+pub unsafe extern "C" fn acs_policy_free(handle: *mut AcsActivatedPolicy) {
+    if handle.is_null() {
+        return;
+    }
+    drop(Box::from_raw(handle));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -778,199 +1080,117 @@ intervention_points:
         assert!(out.is_null() && !err.is_null());
         unsafe { acs_free_string(err) };
     }
-}
 
-// ---------------------------------------------------------------------
-// Activated policy: one policy version, readied once, evaluated many
-// times.
-//
-// `acs_interceptor_*` answers "evaluate this agent context against a
-// manifest", and readies the policy lazily on the first call. A host
-// that pins a policy version and serves traffic against it wants the
-// opposite split: pay for reading and compiling the bundle once, at a
-// moment of its choosing, then evaluate a named intervention point with
-// nothing left to set up. These entry points are that split.
-// ---------------------------------------------------------------------
+    /// The manifest and its Rego cross this boundary as text, so a host
+    /// keeping both in a database needs no temporary directory.
+    #[test]
+    fn policy_activates_from_memory() {
+        let manifest = CString::new(
+            r#"
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: ffi-in-memory
+policies:
+  gate:
+    type: rego
+    query: data.gate.verdict
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    policy:
+      id: gate
+"#,
+        )
+        .unwrap();
+        let bundles = CString::new(
+            r#"{"gate": {"modules": {"gate.rego": "package gate\n\nverdict := {\"decision\": \"allow\", \"reason\": \"from-memory\"}\n"}}}"#,
+        )
+        .unwrap();
 
-/// Opaque handle to one activated policy version.
-pub struct AcsActivatedPolicy {
-    policy: ActivatedPolicy,
-}
-
-/// Activate the manifest at `manifest_path`, readying every policy it
-/// binds.
-///
-/// This is the expensive call: it reads the manifest, loads every Rego
-/// module and data document, and compiles the entrypoint each
-/// intervention point queries. Do it once per policy version and keep
-/// the handle; `acs_policy_evaluate` then costs no I/O and no compile.
-///
-/// Compiling is bounded by the eval timeout. A policy too slow to
-/// compile in that window activates anyway, not necessarily fully readied, and
-/// pays compilation on its first decision instead.
-///
-/// Returns NULL and sets `*err_out` on failure. Free with
-/// `acs_policy_free`.
-///
-/// # Safety
-/// `manifest_path` must point to `manifest_path_len` readable bytes.
-/// `err_out` must be null or point to a writable pointer.
-#[no_mangle]
-pub unsafe extern "C" fn acs_policy_activate(
-    manifest_path: *const u8,
-    manifest_path_len: usize,
-    err_out: *mut *mut c_char,
-) -> *mut AcsActivatedPolicy {
-    clear_err(err_out);
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let path = read_path(manifest_path, manifest_path_len, err_out)?;
-        let manifest = match Manifest::from_path(path) {
-            Ok(m) => m,
-            Err(e) => {
-                set_err(err_out, format!("{e}"));
-                return None;
-            }
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_policy_activate_from_memory(manifest.as_ptr(), bundles.as_ptr(), &mut err)
         };
-        let policy = match ActivatedPolicy::activate_with(
-            manifest,
-            default_annotator_dispatcher(),
-            Arc::new(BindingPolicyDispatcher::new()),
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                set_err(err_out, format!("{e}"));
-                return None;
-            }
-        };
-        Some(Box::into_raw(Box::new(AcsActivatedPolicy { policy })))
-    }));
-    match result {
-        Ok(Some(handle)) => handle,
-        Ok(None) => std::ptr::null_mut(),
-        Err(_) => {
-            set_err(err_out, "internal panic in acs_policy_activate".to_string());
-            std::ptr::null_mut()
-        }
+        assert!(
+            err.is_null(),
+            "{}",
+            unsafe { CStr::from_ptr(err) }.to_string_lossy()
+        );
+        assert!(!handle.is_null());
+
+        let point = CString::new("input").unwrap();
+        let context = CString::new(r#"{"input": {"text": "hello"}}"#).unwrap();
+        let out =
+            unsafe { acs_policy_evaluate(handle, point.as_ptr(), context.as_ptr(), &mut err) };
+        assert!(err.is_null());
+        let verdict: Value =
+            serde_json::from_str(unsafe { CStr::from_ptr(out) }.to_str().unwrap()).unwrap();
+        unsafe { acs_free_string(out) };
+        unsafe { acs_policy_free(handle) };
+
+        assert_eq!(verdict["decision"], "allow");
+        assert_eq!(verdict["reason"], "from-memory");
     }
-}
 
-/// Evaluate one intervention point against an activated policy.
-///
-/// `point` is an agent-hooks intervention point name, such as
-/// `"input"` or `"pre_tool_call"`. `context_json` is the agent context
-/// object. Returns the verdict as JSON, freed with `acs_free_string`.
-///
-/// A policy that does not bind `point` is a fail-closed deny carrying
-/// reason `runtime_error:intervention_point_unknown`, not a successful
-/// call and not a boundary error. Every failure in this runtime reaches
-/// a host as a verdict; none is benign.
-///
-/// # Safety
-/// `handle` must be a live pointer from `acs_policy_activate`; `point`
-/// and `context_json` valid NUL-terminated strings.
-#[no_mangle]
-pub unsafe extern "C" fn acs_policy_evaluate(
-    handle: *const AcsActivatedPolicy,
-    point: *const c_char,
-    context_json: *const c_char,
-    err_out: *mut *mut c_char,
-) -> *mut c_char {
-    clear_err(err_out);
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return std::ptr::null_mut();
-        }
-        let Some(point_raw) = read_utf8(point, "point", err_out) else {
-            return std::ptr::null_mut();
-        };
-        let Ok(point) = point_raw.parse::<InterceptionPoint>() else {
-            set_err(err_out, format!("unknown intervention point '{point_raw}'"));
-            return std::ptr::null_mut();
-        };
-        let Some(raw) = read_utf8(context_json, "context_json", err_out) else {
-            return std::ptr::null_mut();
-        };
-        let snapshot: Value = match serde_json::from_str(raw) {
-            Ok(v @ Value::Object(_)) => v,
-            Ok(_) => {
-                set_err(err_out, "context_json must be a JSON object".to_string());
-                return std::ptr::null_mut();
-            }
-            Err(e) => {
-                set_err(err_out, format!("context_json does not parse: {e}"));
-                return std::ptr::null_mut();
-            }
-        };
-        let verdict = (*handle).policy.evaluate(point, snapshot).verdict;
-        match serde_json::to_string(&verdict) {
-            Ok(json) => to_c_string(json, err_out),
-            Err(e) => {
-                set_err(err_out, format!("verdict serialization failed: {e}"));
-                std::ptr::null_mut()
-            }
-        }
-    }));
-    match result {
-        Ok(ptr) => ptr,
-        Err(_) => {
-            set_err(err_out, "internal panic in acs_policy_evaluate".to_string());
-            std::ptr::null_mut()
-        }
-    }
-}
+    /// A relative bundle path has no manifest directory to resolve
+    /// against here, so it must be refused rather than read from
+    /// wherever the process happens to be running.
+    #[test]
+    fn activating_from_memory_refuses_a_relative_bundle_path() {
+        let manifest = CString::new(
+            r#"
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: ffi-in-memory-relative
+policies:
+  gate:
+    type: rego
+    bundle: ./policy
+    query: data.gate.verdict
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    policy:
+      id: gate
+"#,
+        )
+        .unwrap();
 
-/// The intervention points this policy version binds, as a JSON array of
-/// names. Freed with `acs_free_string`.
-///
-/// # Safety
-/// `handle` must be a live pointer from `acs_policy_activate`.
-#[no_mangle]
-pub unsafe extern "C" fn acs_policy_intervention_points(
-    handle: *const AcsActivatedPolicy,
-    err_out: *mut *mut c_char,
-) -> *mut c_char {
-    clear_err(err_out);
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return std::ptr::null_mut();
-        }
-        let names: Vec<String> = (*handle)
-            .policy
-            .intervention_points()
-            .iter()
-            .map(|point| point.to_string())
-            .collect();
-        match serde_json::to_string(&names) {
-            Ok(json) => to_c_string(json, err_out),
-            Err(e) => {
-                set_err(err_out, format!("serialization failed: {e}"));
-                std::ptr::null_mut()
-            }
-        }
-    }));
-    match result {
-        Ok(ptr) => ptr,
-        Err(_) => {
-            set_err(
-                err_out,
-                "internal panic in acs_policy_intervention_points".to_string(),
-            );
-            std::ptr::null_mut()
-        }
-    }
-}
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_policy_activate_from_memory(manifest.as_ptr(), std::ptr::null(), &mut err)
+        };
 
-/// Release an activated policy.
-///
-/// # Safety
-/// `handle` must come from `acs_policy_activate` and must not be used
-/// afterwards. Passing null is allowed and does nothing.
-#[no_mangle]
-pub unsafe extern "C" fn acs_policy_free(handle: *mut AcsActivatedPolicy) {
-    if handle.is_null() {
-        return;
+        assert!(handle.is_null());
+        assert!(!err.is_null());
+        let message = unsafe { CStr::from_ptr(err) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { acs_free_string(err) };
+        assert!(message.contains("relative bundle or data path"), "{message}");
     }
-    drop(Box::from_raw(handle));
+
+    /// Malformed JSON is a boundary error, not a policy that quietly
+    /// activates without the modules the host meant to supply.
+    #[test]
+    fn activating_from_memory_rejects_malformed_bundles_json() {
+        let manifest =
+            CString::new("agent_control_specification_version: \"0.4.0-alpha.1\"\n").unwrap();
+        let bundles = CString::new("{not json").unwrap();
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_policy_activate_from_memory(manifest.as_ptr(), bundles.as_ptr(), &mut err)
+        };
+
+        assert!(handle.is_null());
+        assert!(!err.is_null());
+        let message = unsafe { CStr::from_ptr(err) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { acs_free_string(err) };
+        assert!(message.contains("bundles_json is not valid"), "{message}");
+    }
 }

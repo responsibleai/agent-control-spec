@@ -117,6 +117,53 @@ impl ActivatedPolicy {
         Self::activate_manifest(manifest)
     }
 
+    /// Activates a manifest and its Rego, both supplied as values
+    /// rather than read from disk.
+    ///
+    /// `manifest_yaml` is the manifest text. `bundles` maps a policy id
+    /// declared in it to the modules and data documents that policy
+    /// evaluates, replacing whatever `bundle` path the manifest names.
+    /// A service holding both in a database activates from them
+    /// directly, instead of staging a temporary directory per
+    /// activation.
+    ///
+    /// Fails when the manifest does not parse, when a key of `bundles`
+    /// names a policy the manifest does not declare as Rego, and when a
+    /// Rego policy is left naming a relative `bundle` path. That last
+    /// one would otherwise resolve against the process working
+    /// directory, since a manifest parsed from a string has no directory
+    /// of its own, and would read a policy nobody chose. An absolute
+    /// path is left as written, so a manifest can mix policy from the
+    /// database with policy from a known location on disk.
+    ///
+    /// Readying carries the same qualification as
+    /// [`Self::activate_from_path`]: it is bounded by the eval timeout.
+    #[cfg(all(
+        feature = "default-dispatchers",
+        any(feature = "rego", feature = "opa")
+    ))]
+    pub fn activate_from_memory(
+        manifest_yaml: &str,
+        bundles: std::collections::BTreeMap<String, crate::policy::InMemoryRegoBundle>,
+    ) -> Result<Self, RuntimeError> {
+        Self::activate_manifest(manifest_from_memory(manifest_yaml, bundles)?)
+    }
+
+    /// [`Self::activate_from_memory`] against host-supplied dispatchers,
+    /// as [`Self::activate_with`] is to [`Self::activate_from_path`].
+    pub fn activate_from_memory_with(
+        manifest_yaml: &str,
+        bundles: std::collections::BTreeMap<String, crate::policy::InMemoryRegoBundle>,
+        annotations: Arc<dyn AnnotatorDispatcher>,
+        policy: Arc<dyn PolicyDispatcher>,
+    ) -> Result<Self, RuntimeError> {
+        Self::activate_with(
+            manifest_from_memory(manifest_yaml, bundles)?,
+            annotations,
+            policy,
+        )
+    }
+
     /// Activates an already-parsed `manifest` against the bundled
     /// dispatchers.
     #[cfg(all(
@@ -188,6 +235,45 @@ impl std::fmt::Debug for ActivatedPolicy {
             .field("intervention_points", &self.points)
             .finish_non_exhaustive()
     }
+}
+
+/// Parses a manifest from text and attaches the modules the host holds
+/// for it.
+///
+/// Refuses to leave a rego policy naming a relative `bundle` path. A
+/// manifest parsed from a string has no directory of its own, so such a
+/// path resolves against the process working directory and would load a
+/// policy nobody chose. An absolute path is a location the host wrote
+/// deliberately and is left as it is, so one manifest can mix policy
+/// held in memory with policy at a known location on disk.
+fn manifest_from_memory(
+    manifest_yaml: &str,
+    bundles: std::collections::BTreeMap<String, crate::policy::InMemoryRegoBundle>,
+) -> Result<Manifest, RuntimeError> {
+    let mut manifest = Manifest::parse_yaml_str(manifest_yaml)?;
+    for (policy_id, bundle) in bundles {
+        manifest.set_rego_bundle_in_memory(&policy_id, bundle)?;
+    }
+    let unresolved = manifest.unresolved_relative_rego_paths();
+    if !unresolved.is_empty() {
+        return Err(RuntimeError::ManifestInvalid(format!(
+            "activating from memory, but rego {} {} still point at a relative bundle or data \
+             path, which has no manifest directory to resolve against. Supply modules for {}, or \
+             write the path as absolute",
+            if unresolved.len() == 1 {
+                "policy"
+            } else {
+                "policies"
+            },
+            unresolved
+                .iter()
+                .map(|id| format!("'{id}'"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            if unresolved.len() == 1 { "it" } else { "them" },
+        )));
+    }
+    Ok(manifest)
 }
 
 /// Readies the policy bound to one intervention point.

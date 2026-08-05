@@ -52,6 +52,10 @@ internal static partial class Native
         ReadOnlySpan<byte> manifestPath, nuint manifestPathLen, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_policy_activate_from_memory(
+        string manifestYaml, string? bundlesJson, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     private static partial IntPtr acs_policy_evaluate(
         IntPtr handle, string point, string contextJson, out IntPtr errOut);
 
@@ -240,6 +244,30 @@ internal static partial class Native
         }
         if (handle.IsInvalid)
             throw new AgentControlSpecNativeException("acs_policy_activate returned no handle");
+        return handle;
+    }
+
+    internal static ActivatedPolicyHandle PolicyActivateFromMemory(
+        string manifestYaml, string? bundlesJson)
+    {
+        var raw = acs_policy_activate_from_memory(manifestYaml, bundlesJson, out var err);
+        // Ownership first, as above: an error raised on the way out must
+        // not strand a handle the engine did return.
+        var handle = new ActivatedPolicyHandle(raw);
+        try
+        {
+            ThrowIfError(err);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+        if (handle.IsInvalid)
+        {
+            throw new AgentControlSpecNativeException(
+                "acs_policy_activate_from_memory returned no handle");
+        }
         return handle;
     }
 

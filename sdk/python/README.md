@@ -51,6 +51,23 @@ fail-closed, including for a point the version does not bind; only
 boundary problems (an unknown point name, a context that will not
 serialize) raise.
 
+A service that keeps manifests and Rego in a database has no directory
+to point a manifest at. `from_memory` takes both as values, so nothing
+is staged to a temporary directory per activation:
+
+```python
+policy = ActivatedPolicy.from_memory(
+    manifest_yaml,
+    {"gate": {"modules": {"gate.rego": rego_source}}},
+)
+```
+
+A bundle may also carry data documents, as
+`{"mount": ["limits"], "document": {...}}` entries under `"data"`. A Rego
+policy left naming a relative `bundle` path is rejected: manifest text
+has no directory of its own, so the path would resolve against the
+process working directory. Absolute paths are left as written.
+
 Manifests can also be checked on their own, without building a runtime
 or resolving a policy bundle. Useful when generating or migrating manifests:
 

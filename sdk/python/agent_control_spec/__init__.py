@@ -25,6 +25,7 @@ __all__ = [
     "AcsInterceptor",
     "ActivatedPolicy",
     "ManifestInvalidError",
+    "RegoBundle",
     "__version__",
     "supported_manifest_versions",
     "validate_manifest",
@@ -32,6 +33,11 @@ __all__ = [
 ]
 
 __version__ = "0.4.0a1"
+
+#: One Rego policy's sources, held in memory rather than on disk:
+#: ``{"modules": {name: source}, "data": [{"mount": [...], "document":
+#: {...}}]}``. Both keys default to empty and nothing else is accepted.
+RegoBundle = Mapping[str, Any]
 
 
 class AcsInterceptor:
@@ -72,6 +78,8 @@ class ActivatedPolicy:
 
     A manifest names its bundle relative to itself, so an absolute
     manifest path is enough and the working directory does not matter.
+    :meth:`from_memory` is the other source: manifest text and Rego
+    sources held by the host, with no file to read.
     """
 
     __slots__ = ("_handle",)
@@ -98,6 +106,33 @@ class ActivatedPolicy:
         Same as the constructor, named for the lifecycle it belongs to.
         """
         return cls(manifest_path)
+
+    @classmethod
+    def from_memory(
+        cls, manifest_yaml: str, bundles: Mapping[str, RegoBundle]
+    ) -> ActivatedPolicy:
+        """Activate a manifest and its Rego supplied as values.
+
+        ``manifest_yaml`` is the manifest text. ``bundles`` maps a policy
+        id declared in it to that policy's sources, replacing whatever
+        ``bundle`` path the manifest names. A service that keeps
+        manifests and Rego in a database activates from them directly,
+        rather than staging a temporary directory per activation.
+
+        Raises :class:`ManifestInvalidError` when the manifest is
+        rejected, when a key of ``bundles`` names a policy the manifest
+        does not declare as Rego, and when a Rego policy is left naming a
+        *relative* bundle path: a manifest parsed from a string has no
+        directory of its own, so that path would resolve against the
+        process working directory. Absolute paths are left as written, so
+        one manifest can mix policy from a database with policy from a
+        known location on disk.
+        """
+        policy = cls.__new__(cls)
+        policy._handle = _native.policy_activate_from_memory(
+            manifest_yaml, json.dumps(bundles, allow_nan=False)
+        )
+        return policy
 
     def evaluate(self, point: str, context: Mapping[str, Any]) -> Verdict:
         """Evaluate one intervention point. This is the hot path.

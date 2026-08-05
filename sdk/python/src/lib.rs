@@ -10,7 +10,8 @@
 
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
 use agent_control_spec::{
-    ActivatedPolicy, InterceptionPoint, Manifest, Runtime, RuntimeError, SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
+    SUPPORTED_VERSIONS,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
@@ -163,6 +164,39 @@ fn policy_activate(py: Python<'_>, manifest_path: &str) -> PyResult<PolicyHandle
     Ok(PolicyHandle { policy })
 }
 
+/// Activate a manifest and its Rego, both supplied as values rather
+/// than read from disk.
+///
+/// `manifest_yaml` is the manifest text. `bundles_json` is a JSON
+/// object mapping a policy id declared in it to that policy's modules
+/// and data documents, replacing whatever `bundle` path the manifest
+/// names. A host holding both in a database activates from them
+/// directly, instead of staging a temporary directory per activation.
+///
+/// A Rego policy left naming a relative `bundle` path is rejected: a
+/// manifest parsed from a string has no directory of its own, so the
+/// path would resolve against the process working directory.
+#[pyfunction]
+fn policy_activate_from_memory(
+    py: Python<'_>,
+    manifest_yaml: &str,
+    bundles_json: &str,
+) -> PyResult<PolicyHandle> {
+    let bundles: std::collections::BTreeMap<String, InMemoryRegoBundle> =
+        serde_json::from_str(bundles_json)
+            .map_err(|e| PyValueError::new_err(format!("bundles do not parse: {e}")))?;
+    let manifest_yaml = manifest_yaml.to_string();
+    // Same reason as `policy_activate`: loading and compiling touches no
+    // Python object and must not stall other threads.
+    let policy = py.detach(move || {
+        ActivatedPolicy::activate_from_memory(&manifest_yaml, bundles).map_err(|e| match e {
+            RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
+            other => PyRuntimeError::new_err(format!("{other}")),
+        })
+    })?;
+    Ok(PolicyHandle { policy })
+}
+
 /// Evaluate one intervention point against an activated policy and
 /// return the verdict as wire JSON.
 ///
@@ -218,6 +252,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(intercept, m)?)?;
     m.add_class::<PolicyHandle>()?;
     m.add_function(wrap_pyfunction!(policy_activate, m)?)?;
+    m.add_function(wrap_pyfunction!(policy_activate_from_memory, m)?)?;
     m.add_function(wrap_pyfunction!(policy_evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(policy_intervention_points, m)?)?;
     m.add("ManifestInvalid", m.py().get_type::<ManifestInvalid>())?;

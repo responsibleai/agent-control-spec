@@ -127,6 +127,12 @@ pub struct RegoPolicyConfig {
     pub query: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bundle: Option<String>,
+    /// Modules supplied by the host, replacing `bundle`. Not part of the
+    /// manifest schema and so neither read from YAML nor written back to
+    /// it: a host attaches this after parsing, through
+    /// [`crate::Manifest::set_rego_bundle_in_memory`].
+    #[serde(skip)]
+    pub inline_bundle: Option<std::sync::Arc<InMemoryRegoBundle>>,
     #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub adapter_config: BTreeMap<String, JsonValue>,
 }
@@ -196,11 +202,189 @@ impl PreparedPolicyInvocation {
     }
 }
 
+/// A Rego policy set the host holds in memory rather than on disk.
+///
+/// A service that keeps manifests and Rego in a database would otherwise
+/// have to stage both to a temporary directory before every activation.
+/// The engine reads policy source as a string in either case, so this
+/// skips the write and the read rather than replacing them.
+///
+/// Construct with [`InMemoryRegoBundle::new`]. The fields are private
+/// because the digest that identifies this bundle in the policy cache is
+/// computed once, at construction, from their contents: a bundle that
+/// could be mutated afterwards would keep a digest that no longer
+/// describes it, and would then be served a cached engine built from the
+/// old modules.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InMemoryRegoBundle {
+    modules: BTreeMap<String, String>,
+    data: Vec<MountedRegoData>,
+    digest: String,
+}
+
+/// One data document and where it mounts under `data`.
+///
+/// On disk the mount point comes from the file's directory relative to
+/// the bundle root. Nothing implies it in memory, so it is stated.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MountedRegoData {
+    /// Path under `data`, outermost segment first. Empty mounts at the
+    /// data root, which is what `opa eval --data <file>` does with a
+    /// single file.
+    #[serde(default)]
+    pub mount: Vec<String>,
+    pub document: JsonValue,
+}
+
+impl InMemoryRegoBundle {
+    /// Builds a bundle from Rego modules keyed by name, and data
+    /// documents with their mount points.
+    ///
+    /// The module name is what a load failure quotes, so name modules
+    /// the way the host stores them rather than inventing paths.
+    ///
+    /// Fails when a document cannot be canonicalized for the digest,
+    /// which for JSON built by `serde_json` means a non-string map key
+    /// or a non-finite number.
+    pub fn new(
+        modules: BTreeMap<String, String>,
+        data: Vec<MountedRegoData>,
+    ) -> Result<Self, RuntimeError> {
+        let digest = content_digest(&modules, &data)?;
+        Ok(Self {
+            modules,
+            data,
+            digest,
+        })
+    }
+
+    /// Rego modules by name.
+    pub fn modules(&self) -> &BTreeMap<String, String> {
+        &self.modules
+    }
+
+    /// Data documents with their mount points, in the order they load.
+    pub fn data(&self) -> &[MountedRegoData] {
+        &self.data
+    }
+
+    /// A hex SHA-256 over this bundle's contents.
+    ///
+    /// Two bundles holding the same modules and the same data documents
+    /// in the same order share a digest and may share a prepared engine.
+    /// Any difference in a module name, a module body, a mount point, or
+    /// a document produces a different one.
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
+/// Hashes the bundle's contents so the policy cache can tell two
+/// in-memory bundles apart, neither of which has a path to be keyed on.
+///
+/// Every variable-length part is written length-prefixed, so no pair of
+/// distinct bundles can produce the same byte stream by moving a
+/// boundary: without the prefixes a module named `ab` with body `c`
+/// would hash like one named `a` with body `bc`.
+fn content_digest(
+    modules: &BTreeMap<String, String>,
+    data: &[MountedRegoData],
+) -> Result<String, RuntimeError> {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    let field = |hasher: &mut Sha256, bytes: &[u8]| {
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+    };
+
+    hasher.update((modules.len() as u64).to_be_bytes());
+    for (name, source) in modules {
+        field(&mut hasher, name.as_bytes());
+        field(&mut hasher, source.as_bytes());
+    }
+
+    hasher.update((data.len() as u64).to_be_bytes());
+    for entry in data {
+        hasher.update((entry.mount.len() as u64).to_be_bytes());
+        for segment in &entry.mount {
+            field(&mut hasher, segment.as_bytes());
+        }
+        // Canonical form, so two documents that differ only in key order
+        // or numeric spelling are one cache entry rather than two.
+        let canonical = canonical_json(&entry.document).map_err(|err| {
+            RuntimeError::ManifestInvalid(format!(
+                "in-memory Rego data document cannot be canonicalized: {err}"
+            ))
+        })?;
+        field(&mut hasher, canonical.as_bytes());
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Serializes as the digest alone.
+///
+/// An invocation is serialized for audit and telemetry, and a bundle
+/// carries policy source, which can carry secrets. The digest identifies
+/// what was evaluated without reproducing it into a log.
+impl Serialize for InMemoryRegoBundle {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut state = serializer.serialize_struct("InMemoryRegoBundle", 1)?;
+        state.serialize_field("sha256", &self.digest)?;
+        state.end()
+    }
+}
+
+/// Deserializes from `{ "modules": {...}, "data": [...] }`, recomputing
+/// the digest, so a bundle crossing a binding boundary cannot arrive
+/// with one that does not describe it.
+impl<'de> Deserialize<'de> for InMemoryRegoBundle {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            #[serde(default)]
+            modules: BTreeMap<String, String>,
+            #[serde(default)]
+            data: Vec<MountedRegoData>,
+        }
+        let wire = Wire::deserialize(deserializer)?;
+        Self::new(wire.modules, wire.data).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Serializes through the bundle rather than the `Arc` around it.
+///
+/// Deriving this would need serde's `rc` feature, which is a decision
+/// about every reference-counted type in the crate rather than about
+/// this one field.
+fn serialize_inline_bundle<S: serde::Serializer>(
+    bundle: &Option<std::sync::Arc<InMemoryRegoBundle>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match bundle {
+        Some(bundle) => serializer.serialize_some(bundle.as_ref()),
+        None => serializer.serialize_none(),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RegoPolicyInvocation {
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bundle: Option<String>,
+    /// Policy source supplied by the host instead of read from
+    /// `bundle`. Behind an `Arc` because an invocation is cloned onto a
+    /// worker thread for every decision, and module text is not
+    /// something to copy on the hot path.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_inline_bundle"
+    )]
+    pub inline_bundle: Option<std::sync::Arc<InMemoryRegoBundle>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub adapter_config: BTreeMap<String, JsonValue>,
     pub input: JsonValue,
@@ -345,6 +529,7 @@ pub fn prepare_policy_invocation(
                     )
                 })?,
             bundle: config.bundle.clone(),
+            inline_bundle: config.inline_bundle.clone(),
             adapter_config: merge_adapter_config(&config.adapter_config, &binding.adapter_config),
             input: final_policy_input.clone(),
             canonical_input: canonical_policy_input(final_policy_input)?,
@@ -489,6 +674,7 @@ mod path_resolution_tests {
         PolicyConfig::Rego(RegoPolicyConfig {
             query: Some("data.x.verdict".to_string()),
             bundle: bundle.map(str::to_string),
+            inline_bundle: None,
             adapter_config: adapter
                 .as_object()
                 .unwrap()

@@ -28,6 +28,7 @@ const native = require("../binding.js") as {
   interceptorNew(manifestPath: string): unknown;
   intercept(handle: unknown, contextJson: string): string;
   policyActivate(manifestPath: string): unknown;
+  policyActivateFromMemory(manifestYaml: string, bundlesJson: string): unknown;
   policyEvaluate(handle: unknown, point: string, contextJson: string): string;
   policyInterventionPoints(handle: unknown): string[];
   validateManifestFile(path: string): string | null;
@@ -82,6 +83,32 @@ export class AcsInterceptor implements Interceptor {
 }
 
 /**
+ * One data document and where it mounts under `data`.
+ *
+ * On disk the mount point comes from the file's directory relative to
+ * the bundle root. Nothing implies it in memory, so it is stated.
+ */
+export interface RegoDataDocument {
+  /**
+   * Path under `data`, outermost segment first. Omitted or empty mounts
+   * at the data root.
+   */
+  mount?: readonly string[];
+  document: unknown;
+}
+
+/** A Rego policy set the host holds in memory rather than on disk. */
+export interface RegoBundle {
+  /**
+   * Module source keyed by name. The name is what a load failure
+   * quotes, so name modules the way the host stores them rather than
+   * inventing paths.
+   */
+  modules: Readonly<Record<string, string>>;
+  data?: readonly RegoDataDocument[];
+}
+
+/**
  * One policy version, readied once and evaluated many times.
  *
  * {@link AcsInterceptor} answers "evaluate this agent context against a
@@ -125,6 +152,37 @@ export class ActivatedPolicy {
    */
   static activate(manifestPath: string): ActivatedPolicy {
     return new ActivatedPolicy(native.policyActivate(manifestPath));
+  }
+
+  /**
+   * Activate a manifest and its Rego, both supplied as values rather
+   * than read from disk.
+   *
+   * `bundles` maps a policy id declared in `manifestYaml` to the modules
+   * and data documents that policy evaluates, replacing whatever
+   * `bundle` path the manifest names. A service that keeps manifests and
+   * Rego in a database activates from them directly, instead of staging
+   * a temporary directory per activation.
+   *
+   * Throws when the manifest is rejected, when a key of `bundles` names
+   * a policy the manifest does not declare as Rego, and when a Rego
+   * policy is left naming a relative `bundle` path. A manifest parsed
+   * from a string has no directory of its own, so a relative path would
+   * resolve against the working directory and read policy nobody chose.
+   * An absolute path is left as written, so a manifest can mix policy
+   * from the database with policy from a known location on disk.
+   *
+   * The activated policy is otherwise the same as one from
+   * {@link ActivatedPolicy.activate}: evaluate it the same way, and
+   * re-activate to change version.
+   */
+  static activateFromMemory(
+    manifestYaml: string,
+    bundles: Readonly<Record<string, RegoBundle>>,
+  ): ActivatedPolicy {
+    return new ActivatedPolicy(
+      native.policyActivateFromMemory(manifestYaml, JSON.stringify(bundles)),
+    );
   }
 
   /**
