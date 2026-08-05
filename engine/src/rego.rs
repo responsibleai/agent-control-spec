@@ -35,11 +35,28 @@
 //!   or inert: `crypto.*`, `io.jwt.*`, `json.patch`, `regex.globs_match`,
 //!   GraphQL, and AWS signing. Calling an absent builtin is an
 //!   evaluation error, so the verdict fails closed and the divergence is
-//!   loud. `http.send` is the exception and the dangerous one: it is
-//!   registered but always undefined, so a deny rule gated on it silently
-//!   does not fire. Policies for this runtime are meant to be pure and
-//!   offline, so `http.send` should not appear in one; check a ported
-//!   bundle before relying on this dispatcher.
+//!   loud. `http.send` was the exception and the dangerous one: it is
+//!   registered but always undefined, so a deny rule gated on it would
+//!   silently not fire. This dispatcher shadows it with an extension
+//!   that errors, so calling it fails closed and says why, like every
+//!   other builtin this runtime does not provide. Policies here are
+//!   meant to be pure and offline, and one that reaches for the network
+//!   now finds out at the first decision rather than at an incident.
+//! * Loading policy runs in the host process, where the `opa` CLI
+//!   dispatcher confined it to a child. A module is parsed by a
+//!   recursive descent parser with no depth limit, so a deeply nested
+//!   literal, thousands of levels, overflows the stack, and a stack
+//!   overflow aborts the process: no verdict, no fail-closed path, and
+//!   nothing the deadline can do because the abort is immediate. Parse
+//!   cost is likewise bounded only by the deadline, and a module that
+//!   parses for minutes strands a worker for that long.
+//!
+//!   This matters most to a host calling
+//!   [`crate::ActivatedPolicy::activate_from_memory`], which exists to
+//!   take policy from a database and may therefore be taking it from a
+//!   tenant. Policy is trusted input to this runtime. A host that treats
+//!   it as untrusted should bound its size and nesting before loading
+//!   it, and load it somewhere an abort is survivable.
 //! * Numeric precision differs, and this one can flip a verdict.
 //!   `regorus` holds integers exactly while they fit in `i64`/`u64` and
 //!   falls back to `f64` beyond that; every non-integer is `f64`. OPA
@@ -87,7 +104,7 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Eval timeout override, in milliseconds. Shared with the legacy `opa`
@@ -132,6 +149,33 @@ const MAX_BUNDLE_DEPTH: usize = 32;
 /// Only abandoned evaluations count against it. Work a caller is still
 /// waiting on is bounded by the host's concurrency already, and counting
 /// that would turn ordinary parallel load into fail-closed denials.
+///
+/// # What this does not bound
+///
+/// Threads, and nothing else. An abandoned evaluation keeps running
+/// after its verdict was returned, and it keeps allocating: measured on
+/// this crate, `count(numbers.range(0, 40000000))` under a 50ms deadline
+/// answered the caller in 50.5ms and then grew process RSS from 7MB to
+/// 930MB in the background. Multiply that by a saturated backlog and the
+/// figure is tens of gigabytes, and an allocation failure aborts the
+/// process rather than failing one decision closed: a policy timeout
+/// becomes a host outage.
+///
+/// So a host that accepts policy it does not control cannot rely on this
+/// alone. What actually bounds the damage is a memory limit on the
+/// process, from a container or a cgroup, and keeping such policy in a
+/// process the host can afford to lose.
+///
+/// `regorus` does offer `allocator-memory-limits` and
+/// `set_global_memory_limit`, and this crate deliberately does not
+/// enable them. The feature installs mimalloc as the process's global
+/// allocator, which is a choice belonging to whoever builds the binary
+/// and not to a library in its dependency graph, and the limit it sets
+/// is one process-wide static covering every allocation in the process.
+/// That cannot tell a runaway policy from the host's own work, so
+/// crossing it fails whatever allocates next. A host that owns its
+/// binary and wants this can depend on `regorus` directly and set it;
+/// this crate will not set it on the host's behalf.
 pub const MAX_ABANDONED_WORKERS: usize = 32;
 
 /// How many idle evaluation threads a runner keeps parked between calls.
@@ -361,6 +405,12 @@ impl RegorusRegoRunner {
     /// leave a saturated warming pool invisible to a host watching this,
     /// which is the state in which activation stops being able to
     /// validate anything.
+    ///
+    /// This is a count of threads, not of what they hold. Each one goes
+    /// on allocating after its verdict was returned, so a small number
+    /// here can still mean gigabytes in flight; see
+    /// [`MAX_ABANDONED_WORKERS`] for what that costs and what actually
+    /// bounds it.
     pub fn abandoned_evaluations(&self) -> usize {
         self.workers.counters.abandoned.load(Ordering::Acquire)
             + self.warm_workers.counters.abandoned.load(Ordering::Acquire)
@@ -512,8 +562,23 @@ impl RegorusRegoRunner {
                 // authoritative and this is taken only when it succeeds,
                 // rather than deciding between them by inspecting an
                 // error message.
-                if let Ok(value) = engine.eval_rule(query.clone()) {
-                    return rule_value(value);
+                let attempted = Instant::now();
+                match engine.eval_rule(query.clone()) {
+                    Ok(value) => return rule_value(value),
+                    // `regorus` restarts its cooperative timer on each
+                    // eval, so falling back after the budget is already
+                    // gone would hand the same policy a second full one.
+                    // The hard deadline still answers the caller on
+                    // time, but the worker would do the work twice, and
+                    // with the hard deadline off the call itself would
+                    // run to twice the configured timeout. Decided on
+                    // elapsed time rather than on what the error says,
+                    // because load failures quote bundle paths and Rego
+                    // source and cannot be told apart by their text.
+                    Err(err) if !may_retry_after(attempted.elapsed(), timeout) => {
+                        return Err(eval_error(&err))
+                    }
+                    Err(_) => {}
                 }
             }
             let results = engine
@@ -877,6 +942,7 @@ fn build_engine(key: &CacheKey) -> Result<regorus::Engine, RuntimeError> {
     // user content; the CLI dispatcher kept it inside the child process,
     // so surfacing it in host logs would be a new disclosure path.
     engine.set_gather_prints(true);
+    shadow_http_send(&mut engine)?;
     if let Some(bundle) = &key.inline_bundle {
         load_in_memory_bundle(&mut engine, &bundle.0)?;
     }
@@ -887,6 +953,39 @@ fn build_engine(key: &CacheKey) -> Result<regorus::Engine, RuntimeError> {
         load_path(&mut engine, data_path, "data path", DataScope::DataPath)?;
     }
     Ok(engine)
+}
+
+/// Replaces the `http.send` builtin with one that errors.
+///
+/// `regorus` registers `http.send` but leaves it always undefined, which
+/// is the one divergence in this module that fails OPEN: a rule reading
+/// `http.send(...).status_code` is simply undefined, so a deny gated on
+/// it does not fire and the policy allows. Every other builtin this
+/// runtime lacks raises an evaluation error and the verdict fails
+/// closed. Shadowing makes this one behave like the rest.
+///
+/// Policies for this runtime are meant to be pure and offline, so no
+/// correct policy loses anything here; one that does reach for the
+/// network gets a located error naming the call.
+fn shadow_http_send(engine: &mut regorus::Engine) -> Result<(), RuntimeError> {
+    engine
+        .add_extension(
+            "http.send".to_string(),
+            1,
+            Box::new(|_params| {
+                Err(std::io::Error::other(
+                    "http.send is not available: the in-process Rego dispatcher evaluates policy \
+                     offline, and regorus leaves this builtin permanently undefined, which would \
+                     silently skip any rule gated on it",
+                )
+                .into())
+            }),
+        )
+        .map_err(|err| {
+            RuntimeError::PolicyInvocationFailed(format!(
+                "failed to disable the http.send builtin: {err}"
+            ))
+        })
 }
 
 /// Which OPA loading rule applies to a root, because `opa eval` treats a
@@ -1185,6 +1284,25 @@ fn eval_error(err: &impl std::fmt::Display) -> RuntimeError {
     RuntimeError::PolicyInvocationFailed(format!("Rego eval failed: {detail}"))
 }
 
+/// Whether a failed rule evaluation may be retried through
+/// `eval_query`, given how much of the budget it already spent.
+///
+/// `regorus` restarts its cooperative timer on each eval, so a retry
+/// hands the same policy a second full budget. The hard deadline still
+/// answers the caller on time, but the worker does the work twice, and
+/// with [`RegorusRegoRunner::with_hard_deadline`] off nothing bounds the
+/// call at all: measured over a policy that burns its budget, a decision
+/// took 631ms against a 300ms timeout when it retried and 316ms when it
+/// did not.
+///
+/// A separate function so the rule is testable without a clock. The
+/// end-to-end version of this test could not be: it measures a 300ms
+/// difference against this suite's own parallel load, which moved
+/// samples by more than that and in the wrong order.
+fn may_retry_after(elapsed: Duration, timeout: Duration) -> bool {
+    elapsed < timeout
+}
+
 /// Whether `query` is a plain rule path such as
 /// `data.agent_control_specification.input.verdict`, as opposed to an
 /// expression like `count(numbers.range(1, 5))`.
@@ -1264,6 +1382,20 @@ fn single_expression_value(results: &regorus::QueryResults) -> Result<JsonValue,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rule that spent its whole budget must not be retried, because
+    /// `regorus` would give the retry a second full one.
+    #[test]
+    fn a_spent_budget_forbids_the_query_fallback() {
+        let timeout = Duration::from_millis(300);
+
+        assert!(may_retry_after(Duration::from_millis(0), timeout));
+        assert!(may_retry_after(Duration::from_millis(299), timeout));
+        // At the budget and beyond, the policy already had its time.
+        assert!(!may_retry_after(timeout, timeout));
+        assert!(!may_retry_after(Duration::from_millis(301), timeout));
+        assert!(!may_retry_after(Duration::from_secs(60), timeout));
+    }
 
     #[test]
     fn rule_paths_are_told_apart_from_expressions() {

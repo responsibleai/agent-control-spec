@@ -330,6 +330,43 @@ fn a_data_document_path_still_resolves_though_it_looks_like_a_rule() {
     assert_eq!(verdict, json!({"allow": true}));
 }
 
+/// `regorus` registers `http.send` but leaves it permanently undefined,
+/// which is the one divergence here that fails OPEN: a deny gated on it
+/// would not fire and the policy would allow. The dispatcher shadows it
+/// so it fails closed like every other builtin this runtime lacks.
+#[test]
+fn a_policy_reaching_for_the_network_fails_closed_rather_than_open() {
+    let dir = test_artifact_dir("rego-http-send");
+    fs::write(
+        dir.join("net.rego"),
+        r#"package net
+
+deny if http.send({"method": "get", "url": "http://example.invalid"}).status_code == 200
+
+verdict := {"decision": "deny"} if deny
+
+verdict := {"decision": "allow"} if not deny
+"#,
+    )
+    .unwrap();
+
+    let error = RegorusPolicyDispatcher::new()
+        .evaluate(&rego_invocation(
+            "data.net.verdict",
+            Some(dir.display().to_string()),
+            BTreeMap::new(),
+            json!({"policy_target": {"value": {}}}),
+        ))
+        .unwrap_err();
+
+    assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+    assert!(
+        error.detail().contains("http.send is not available"),
+        "{}",
+        error.detail()
+    );
+}
+
 #[test]
 fn rego_dispatcher_rejects_malformed_adapter_data_paths() {
     let mut adapter_config = BTreeMap::new();
