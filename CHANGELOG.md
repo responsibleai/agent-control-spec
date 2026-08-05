@@ -80,6 +80,15 @@
     field. Both have public fields, so code constructing either
     literally has to add it.
 
+- A policy calling `http.send` now fails closed. `regorus` registers the
+  builtin but leaves it permanently undefined, so a deny rule gated on it
+  did not fire and the policy allowed: the one divergence in this
+  dispatcher that failed open. It is shadowed by an extension that
+  errors, so it behaves like every other builtin this runtime does not
+  provide. Policies here are meant to be pure and offline, so no correct
+  policy changes; one that reaches for the network now says so at the
+  first decision.
+
 - A manifest query naming a rule, which is the ordinary case, is read as
   a rule rather than parsed as query text on every decision. In the
   engine call alone the parse dominated, 284us against 46us; end to end
