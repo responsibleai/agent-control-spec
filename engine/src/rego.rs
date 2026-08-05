@@ -498,11 +498,12 @@ impl RegorusRegoRunner {
             })?;
             // A manifest query is normally a rule path, and evaluating it
             // as one skips re-parsing the query text on every decision.
-            // Measured on `examples/bank_agent`, that parse is 84% of a
-            // warm evaluation: 284us against 46us. Anything that is not
-            // a plain rule path, such as the expression forms the
-            // specification also permits, still goes through
-            // `eval_query`.
+            // Over `examples/bank_agent` the parse dominated this call,
+            // 284us against 46us, and took about a fifth off a whole
+            // warm decision once annotation and dispatch are counted.
+            // Anything that is not a plain rule path, such as the
+            // expression forms the specification also permits, still
+            // goes through `eval_query`.
             if is_rule_path(&query) {
                 // `eval_rule` accepts only an actual rule: a data
                 // document path or a path that does not resolve is an
