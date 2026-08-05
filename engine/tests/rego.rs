@@ -6,6 +6,7 @@ use agent_control_spec::{
     RegorusPolicyDispatcher, RegorusRegoRunner, Runtime, RuntimeError, TestPolicyInvocation,
 };
 use serde_json::json;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     collections::BTreeMap,
     env, fs,
@@ -427,8 +428,12 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
     // The deadline has to be generous enough that the trivial recovery
     // evaluations below are not themselves timed out by scheduling delay:
     // the rest of this suite runs hundreds of threads in parallel, and at
-    // 50ms these intermittently failed. The heavy query takes ~300ms, so
-    // it still blows a 200ms deadline by a wide margin.
+    // 50ms these intermittently failed. The heavy query must also clear
+    // the deadline by a wide margin in the other direction: at 2M
+    // elements it takes ~300ms against 200ms, only 1.5x, and an idle box
+    // finished inside the deadline about one run in thirteen, which made
+    // the `unwrap_err` below panic. 6M is ~900ms, and the one worker it
+    // strands is the only allocation this test makes.
     let dispatcher = RegorusPolicyDispatcher::with_runner(
         RegorusRegoRunner::new()
             .with_policy_cache(true)
@@ -437,7 +442,7 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
 
     let timed_out = dispatcher
         .evaluate(&rego_invocation(
-            "x := numbers.range(1, 2000000)",
+            "x := numbers.range(1, 6000000)",
             None,
             BTreeMap::new(),
             json!({"policy_target": {"value": {}}}),
@@ -647,49 +652,64 @@ fn rego_data_paths_mount_every_document_by_directory() {
 fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
     let runner = RegorusRegoRunner::new().with_eval_timeout(Duration::from_millis(10));
     let dispatcher = Arc::new(RegorusPolicyDispatcher::with_runner(runner.clone()));
-    // Concurrency rather than a bigger query is what piles abandoned
-    // workers up here. Reaching the ceiling by making each evaluation
-    // long enough would need a 40M-element range, which is 960MB per
-    // abandoned worker and aborted the Windows CI job; 200k elements is
-    // ~4MB and still ~40ms, comfortably past a 10ms deadline.
-    let concurrency = 48;
-    let mut refused = 0;
+    let ceiling = agent_control_spec::rego::MAX_ABANDONED_WORKERS;
 
-    for _ in 0..3 {
-        let handles: Vec<_> = (0..concurrency)
-            .map(|_| {
-                let dispatcher = Arc::clone(&dispatcher);
-                std::thread::spawn(move || {
-                    dispatcher.evaluate(&rego_invocation(
+    // Sustained load, not a burst. A worker holds its slot only until its
+    // evaluation ends, so a fixed number of rounds sometimes drains
+    // faster than it fills and never reaches the ceiling: that inference
+    // failed about one run in thirteen. 200k elements is ~4MB and ~40ms,
+    // comfortably past a 10ms deadline, and small enough that the
+    // workers this strands cannot exhaust a CI runner.
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refused = Arc::new(AtomicUsize::new(0));
+    let workers: Vec<_> = (0..24)
+        .map(|_| {
+            let dispatcher = Arc::clone(&dispatcher);
+            let stop = Arc::clone(&stop);
+            let refused = Arc::clone(&refused);
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    if let Err(error) = dispatcher.evaluate(&rego_invocation(
                         "count(numbers.range(0, 200000))",
                         None,
                         BTreeMap::new(),
                         json!({}),
-                    ))
-                })
-            })
-            .collect();
-        for handle in handles {
-            if let Err(error) = handle.join().unwrap() {
-                if error.detail().contains("running past their timeout") {
-                    refused += 1;
+                    )) {
+                        if error.detail().contains("running past their timeout") {
+                            refused.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                 }
-            }
+            })
+        })
+        .collect();
+
+    // Wait for the state under test rather than assuming a burst reached
+    // it, and record the bound as observed along the way.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut peak = 0;
+    while Instant::now() < deadline {
+        peak = peak.max(runner.abandoned_evaluations());
+        if refused.load(Ordering::Relaxed) > 0 {
+            break;
         }
-        // Counted on the pool itself rather than by reading
-        // /proc/self/task, which the rest of this suite perturbs, and
-        // which does not exist on every platform this runs on.
-        assert!(
-            runner.abandoned_evaluations()
-                <= agent_control_spec::rego::MAX_ABANDONED_WORKERS + concurrency,
-            "abandoned evaluations grew past the gate plus in-flight work: {}",
-            runner.abandoned_evaluations()
-        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    stop.store(true, Ordering::Relaxed);
+    for worker in workers {
+        worker.join().unwrap();
     }
 
     assert!(
-        refused > 0,
-        "sustained timeouts should have hit the abandoned ceiling"
+        refused.load(Ordering::Relaxed) > 0,
+        "sustained timeouts should have hit the abandoned ceiling; peak was {peak}"
+    );
+    // Bounded by the gate plus whatever was already in flight when it
+    // tripped, which is what the gate promises: convergence, not a hard
+    // ceiling on live threads.
+    assert!(
+        peak <= ceiling + 24,
+        "abandoned evaluations grew past the gate plus in-flight work: {peak}"
     );
 }
 
@@ -727,15 +747,24 @@ fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
     let unbounded = evaluate_with(Duration::from_secs(30));
     let bounded = evaluate_with(Duration::from_millis(20));
 
-    // Compared as a ratio rather than against a wall-clock constant.
-    // With the load inside the deadline, `bounded` returns at the
-    // deadline whatever the bundle costs; with it outside, `bounded`
-    // pays the same load as `unbounded` and the two converge. An
-    // absolute bound instead measured the CI runner: it read 396ms on a
-    // loaded 16-core box against a 300ms limit and failed the required
-    // job about one run in six.
+    // Compared as a ratio rather than against a wall-clock constant,
+    // because an absolute bound measures the runner: 300ms read 396ms on
+    // a loaded 16-core box and failed the required job about one run in
+    // six.
+    //
+    // The threshold is set from measurement on both sides, and the two
+    // populations do not overlap. With the load inside the deadline the
+    // ratio was 38 to 54 across 16-core and 2-core runs; with the load
+    // hoisted back out of the deadline, which is the regression this
+    // guards, it was 1.8 to 4.3. Note what does NOT cancel: the engine
+    // clone stays inside the deadline in both regimes, so the defect
+    // ratio floors near 2.5 rather than at 1. A threshold of 3 sat 18%
+    // above that floor and missed the regression 4 times in 40,
+    // correlated with the box being busy, which is when CI runs. 10
+    // leaves roughly 4x headroom on the pass side and 2.3x on the detect
+    // side.
     assert!(
-        bounded * 3 < unbounded,
+        bounded * 10 < unbounded,
         "bundle load escaped the deadline: bounded {bounded:?} against an \
          unbounded control of {unbounded:?}"
     );

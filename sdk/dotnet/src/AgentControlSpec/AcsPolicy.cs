@@ -51,7 +51,9 @@ public static class AcsPolicy
     /// <param name="manifestPath">Path to the manifest.</param>
     /// <exception cref="AgentControlSpecNativeException">
     /// The manifest could not be read, parsed, or readied. The message is
-    /// the engine's own.
+    /// the engine's own. A broken policy is reported only when readying
+    /// finished: a bundle whose load does not complete inside the deadline
+    /// surfaces at the first evaluation instead.
     /// </exception>
     public static ActivatedPolicy Activate(string manifestPath)
     {

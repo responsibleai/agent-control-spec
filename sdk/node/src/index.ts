@@ -114,7 +114,9 @@ export class ActivatedPolicy {
    * embedded verdict.
    *
    * Throws when the manifest cannot be read, is rejected, or binds a
-   * policy that cannot be readied at all (a missing bundle, say). A
+   * policy that readying finds broken (a missing bundle, say), and only
+   * when readying finished: a bundle whose load does not complete
+   * inside the deadline surfaces at the first evaluation instead. A
    * policy that merely needs real input to produce a verdict activates
    * fine.
    *

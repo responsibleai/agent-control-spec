@@ -84,7 +84,9 @@ class ActivatedPolicy:
 
         Raises :class:`ValueError` when the manifest cannot be read or is
         rejected, and :class:`RuntimeError` when it binds a policy that
-        cannot be readied at all, such as a missing bundle. A policy that
+        readying finds broken, such as a missing bundle, and only when
+        readying finished: a bundle whose load does not complete inside
+        the deadline surfaces at the first decision instead. A policy that
         merely needs real input to produce a verdict activates fine.
         """
         self._handle = _native.policy_activate(manifest_path)
