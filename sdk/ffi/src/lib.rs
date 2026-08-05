@@ -604,7 +604,7 @@ pub unsafe extern "C" fn acs_policy_activate(
 /// skips staging a temporary directory per activation. `bundles_json`
 /// may be NULL or empty, which activates the manifest as written.
 ///
-/// A rego policy left naming a relative `bundle` path is an error, not a
+/// A rego policy left naming a relative `bundle` or data path is an error, not a
 /// disk read: a manifest parsed from text has no directory of its own,
 /// so the path would resolve against the process working directory and
 /// load a policy nobody chose. Write it absolute to keep it.
@@ -1133,7 +1133,7 @@ intervention_points:
         assert_eq!(verdict["reason"], "from-memory");
     }
 
-    /// A relative bundle path has no manifest directory to resolve
+    /// A relative bundle or data path has no manifest directory to resolve
     /// against here, so it must be refused rather than read from
     /// wherever the process happens to be running.
     #[test]

@@ -64,7 +64,7 @@ policy = ActivatedPolicy.from_memory(
 
 A bundle may also carry data documents, as
 `{"mount": ["limits"], "document": {...}}` entries under `"data"`. A Rego
-policy left naming a relative `bundle` path is rejected: manifest text
+policy left naming a relative `bundle` or data path is rejected: manifest text
 has no directory of its own, so the path would resolve against the
 process working directory. Absolute paths are left as written.
 

@@ -64,7 +64,7 @@ Each key names a Rego policy the manifest declares, and the bundle
 replaces whatever `bundle` path that policy names. A data document
 mounts at `data.<mount[0]>.<mount[1]>...`; an omitted or empty `mount`
 puts it at the data root. Activation is refused when a Rego policy is
-left naming a relative `bundle` path, since a manifest parsed from a
+left naming a relative `bundle` or data path, since a manifest parsed from a
 string has no directory to resolve it against. Absolute paths are left
 alone, so a manifest can mix policy from the database with policy from a
 known location on disk.

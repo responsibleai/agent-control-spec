@@ -173,7 +173,7 @@ fn policy_activate(py: Python<'_>, manifest_path: &str) -> PyResult<PolicyHandle
 /// names. A host holding both in a database activates from them
 /// directly, instead of staging a temporary directory per activation.
 ///
-/// A Rego policy left naming a relative `bundle` path is rejected: a
+/// A Rego policy left naming a relative `bundle` or data path is rejected: a
 /// manifest parsed from a string has no directory of its own, so the
 /// path would resolve against the process working directory.
 #[pyfunction]

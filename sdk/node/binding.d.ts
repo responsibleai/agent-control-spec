@@ -48,7 +48,7 @@ export declare function policyActivate(manifestPath: string): ExternalObject<Pol
  *
  * Throws when the manifest does not parse, when a key of `bundles_json`
  * names a policy the manifest does not declare as Rego, and when a Rego
- * policy is left naming a relative `bundle` path: that path would
+ * policy is left naming a relative `bundle` or data path: that path would
  * resolve against the process working directory, since a manifest
  * parsed from a string has no directory of its own. An absolute path is
  * left as written.

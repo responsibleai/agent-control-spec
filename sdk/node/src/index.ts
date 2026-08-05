@@ -166,7 +166,7 @@ export class ActivatedPolicy {
    *
    * Throws when the manifest is rejected, when a key of `bundles` names
    * a policy the manifest does not declare as Rego, and when a Rego
-   * policy is left naming a relative `bundle` path. A manifest parsed
+   * policy is left naming a relative `bundle` or data path. A manifest parsed
    * from a string has no directory of its own, so a relative path would
    * resolve against the working directory and read policy nobody chose.
    * An absolute path is left as written, so a manifest can mix policy
