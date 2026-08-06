@@ -3,6 +3,7 @@ name = "agent-control-spec"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version = "1.85"
 description = "Agent Control Specification: a stateless policy decision runtime implementing the agent-hooks interceptor contract"
 readme = "../README.md"
