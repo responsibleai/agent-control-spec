@@ -215,7 +215,7 @@ This model follows established attribute and sink enforcement practice. ABAC and
 
 A `policies` entry is a named, reusable policy definition. The schema defines four types.
 
-A `rego` policy targets Open Policy Agent. Its `query` and `bundle` members are optional in the schema. The runtime offers an optional bundled dispatcher that runs the `opa` executable when it is present, and the host MAY supply its own dispatcher instead.
+A `rego` policy targets the Rego policy language of Open Policy Agent. Its `query` and `bundle` members are optional in the schema. The runtime offers an optional bundled dispatcher that evaluates Rego in process, and a second optional bundled dispatcher that runs the `opa` executable when it is present. The host MAY supply its own dispatcher instead.
 
 A `cedar` policy targets the Cedar policy language. Its configuration, request mapping, and verdict mapping are defined in section 12.4. The runtime offers an optional bundled `cedar` dispatcher, and the host MAY supply its own dispatcher instead. `rego` and `cedar` are the two types with a bundled runtime execution path.
 
@@ -231,7 +231,7 @@ An intervention point binds one policy through `policy.id`. The binding MAY add 
 
 ### 12.3 Dispatcher boundary
 
-The runtime prepares a typed invocation that carries the policy configuration and the final policy input, then passes it to the host policy dispatcher. The dispatcher owns policy execution and returns a verdict shaped JSON value. The runtime does not read a policy bundle or execute a policy language itself, apart from the optional bundled `opa` and `cedar` dispatchers. A dispatcher error MUST fail closed with `runtime_error:policy_invocation_failed`.
+The runtime prepares a typed invocation that carries the policy configuration and the final policy input, then passes it to the host policy dispatcher. The dispatcher owns policy execution and returns a verdict shaped JSON value. The runtime does not read a policy bundle or execute a policy language itself, apart from the optional bundled `rego` and `cedar` dispatchers. A dispatcher error MUST fail closed with `runtime_error:policy_invocation_failed`.
 
 ### 12.4 Cedar policy
 

@@ -1,8 +1,8 @@
-#![cfg(feature = "opa")]
+#![cfg(feature = "rego")]
 
 use agent_control_spec::{
     canonical_json, AnnotatorDispatcher, AnnotatorInvocation, EvaluationResult, InterceptionPoint,
-    JsonValue, Manifest, OpaPolicyDispatcher, OpaRegoRunner, Runtime, RuntimeError,
+    JsonValue, Manifest, RegorusPolicyDispatcher, RegorusRegoRunner, Runtime, RuntimeError,
 };
 use serde_json::json;
 use std::{
@@ -141,10 +141,8 @@ impl AnnotatorDispatcher for FixtureAnnotator {
 }
 
 #[test]
-fn bank_agent_committed_assets_evaluate_end_to_end_with_opa() {
-    let Some(runner) = require_opa_or_skip() else {
-        return;
-    };
+fn bank_agent_committed_assets_evaluate_end_to_end_with_rego() {
+    let runner = RegorusRegoRunner::new();
     let bank_dir = bank_agent_dir();
     let _working_dir = WorkingDir::push(&bank_dir);
     let manifest = Manifest::from_path(bank_dir.join("manifest.yaml")).unwrap();
@@ -156,7 +154,7 @@ fn bank_agent_committed_assets_evaluate_end_to_end_with_opa() {
         let runtime = Runtime::new(
             manifest.clone(),
             Arc::new(FixtureAnnotator::new(expected_policy_input.clone())),
-            Arc::new(OpaPolicyDispatcher::with_runner(runner.clone())),
+            Arc::new(RegorusPolicyDispatcher::with_runner(runner.clone())),
         )
         .unwrap();
 
@@ -269,18 +267,6 @@ fn assert_result(
             let expected_text = original_text.replace("CHK-00112233", REDACTED_ACCOUNT_ID);
             assert_eq!(transform.value, json!(expected_text));
         }
-    }
-}
-
-fn require_opa_or_skip() -> Option<OpaRegoRunner> {
-    let runner = OpaRegoRunner::new();
-    if runner.is_available() {
-        Some(runner)
-    } else if env::var("AGENT_CONTROL_REQUIRE_OPA").as_deref() == Ok("1") {
-        panic!("AGENT_CONTROL_REQUIRE_OPA=1 but the 'opa' executable is not available on PATH");
-    } else {
-        eprintln!("skipping OPA-dependent test; set AGENT_CONTROL_REQUIRE_OPA=1 to fail when OPA is missing");
-        None
     }
 }
 

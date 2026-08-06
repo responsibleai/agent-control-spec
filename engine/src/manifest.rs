@@ -194,6 +194,97 @@ impl Manifest {
         }
     }
 
+    /// Replaces the `bundle` path of one Rego policy with modules the
+    /// host holds in memory.
+    ///
+    /// The manifest names its bundle by a path relative to the manifest
+    /// file, which a host loading both from a database has nowhere to
+    /// resolve against. Attaching the modules here clears that path, so
+    /// exactly one source of policy remains and no decision can silently
+    /// fall back to disk.
+    ///
+    /// Data documents declared through `data` or `data_paths` are left
+    /// alone: those are separate paths the host wrote deliberately, and
+    /// a host that wants them in memory puts them in the bundle instead.
+    ///
+    /// Fails when `policy_id` is not declared, or is declared as
+    /// something other than a Rego policy.
+    pub fn set_rego_bundle_in_memory(
+        &mut self,
+        policy_id: &str,
+        bundle: crate::policy::InMemoryRegoBundle,
+    ) -> Result<(), RuntimeError> {
+        let Some(config) = self.policies.get_mut(policy_id) else {
+            return Err(RuntimeError::ManifestInvalid(format!(
+                "cannot supply in-memory Rego modules for policy '{policy_id}': the manifest \
+                 declares no such policy"
+            )));
+        };
+        let crate::policy::PolicyConfig::Rego(rego) = config else {
+            return Err(RuntimeError::ManifestInvalid(format!(
+                "cannot supply in-memory Rego modules for policy '{policy_id}': it is not a rego \
+                 policy"
+            )));
+        };
+        rego.bundle = None;
+        rego.inline_bundle = Some(std::sync::Arc::new(bundle));
+        Ok(())
+    }
+
+    /// Every Rego policy still pointing at something by a relative
+    /// path, whether that is its `bundle` or a data document.
+    ///
+    /// Such a path resolves against the process working directory once
+    /// the manifest did not come from a file, which is a disk read the
+    /// host almost certainly did not intend. A data path is the same
+    /// hazard as a bundle path here, so both are reported.
+    ///
+    /// Reported rather than resolved so an in-memory activation can
+    /// refuse, and reported as policy ids so the message can name what
+    /// the host has to fix.
+    pub(crate) fn unresolved_relative_rego_paths(&self) -> Vec<String> {
+        let relative = |value: Option<&str>| {
+            value.is_some_and(|path| !path.is_empty() && Path::new(path).is_relative())
+        };
+        let relative_data = |adapter: &BTreeMap<String, JsonValue>| {
+            crate::policy::rego_adapter_data_paths(adapter)
+                .map(|paths| paths.iter().any(|path| path.is_relative()))
+                // A malformed data path is not this check's error to
+                // raise: preparing the invocation reports it precisely,
+                // and swallowing it here would turn it into the wrong
+                // message.
+                .unwrap_or(false)
+        };
+
+        let mut ids: Vec<String> = self
+            .policies
+            .iter()
+            .filter_map(|(id, config)| match config {
+                crate::policy::PolicyConfig::Rego(rego) => (relative(rego.bundle.as_deref())
+                    || relative_data(&rego.adapter_config))
+                .then(|| id.clone()),
+                _ => None,
+            })
+            .collect();
+
+        // A binding can carry data paths of its own, and they reach the
+        // same loader.
+        for point in self.intervention_points.values() {
+            let binding = &point.policy;
+            let is_rego = matches!(
+                self.policies.get(&binding.id),
+                Some(crate::policy::PolicyConfig::Rego(_))
+            );
+            if is_rego && relative_data(&binding.adapter_config) && !ids.contains(&binding.id) {
+                ids.push(binding.id.clone());
+            }
+        }
+
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     pub fn from_path_with_limits(
         path: impl AsRef<Path>,
         limits: Limits,

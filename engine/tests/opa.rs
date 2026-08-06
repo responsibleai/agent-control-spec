@@ -335,6 +335,7 @@ fn rego_invocation(
     PreparedPolicyInvocation::Rego(RegoPolicyInvocation {
         query: query.to_string(),
         bundle,
+        inline_bundle: None,
         adapter_config,
         canonical_input: canonical_json(&input).unwrap(),
         input,
@@ -378,4 +379,38 @@ fn yaml_double_quoted(path: &Path) -> String {
         .to_string()
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
+}
+
+/// `opa eval` receives policy as paths, so this dispatcher has nowhere
+/// to put modules held in memory. Evaluating anyway would decide from
+/// whatever the manifest's `bundle` still pointed at, which is a verdict
+/// for a policy the host did not supply.
+#[test]
+fn opa_cli_dispatcher_refuses_an_in_memory_bundle() {
+    let bundle = agent_control_spec::InMemoryRegoBundle::new(
+        BTreeMap::from([(
+            "gate.rego".to_string(),
+            "package gate\n\nverdict := {\"decision\": \"allow\"}\n".to_string(),
+        )]),
+        Vec::new(),
+    )
+    .unwrap();
+
+    let error = OpaRegoRunner::new()
+        .evaluate(&RegoPolicyInvocation {
+            query: "data.gate.verdict".to_string(),
+            bundle: None,
+            inline_bundle: Some(Arc::new(bundle)),
+            adapter_config: BTreeMap::new(),
+            input: json!({}),
+            canonical_input: "{}".to_string(),
+        })
+        .unwrap_err();
+
+    assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+    assert!(
+        error.detail().contains("in memory") && error.detail().contains("in-process"),
+        "{}",
+        error.detail()
+    );
 }

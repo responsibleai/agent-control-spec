@@ -9,14 +9,28 @@
 // context JSON).
 
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
-use agent_control_spec::{Manifest, Runtime, RuntimeError, SUPPORTED_VERSIONS};
+use agent_control_spec::{
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
+    SUPPORTED_VERSIONS,
+};
 use napi::bindgen_prelude::{External, Utf16String};
 use napi_derive::napi;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub struct Handle {
     runtime: Runtime,
+}
+
+/// Handle to one activated policy version.
+///
+/// Separate from [`Handle`] on purpose: an interceptor handle answers
+/// "evaluate this agent context against a manifest" and readies the
+/// policy lazily, while this one has already paid for reading and
+/// compiling the bundle.
+pub struct PolicyHandle {
+    policy: ActivatedPolicy,
 }
 
 fn err(message: String) -> napi::Error {
@@ -41,7 +55,7 @@ fn decode(what: &str, value: &Utf16String) -> napi::Result<String> {
 }
 
 /// Build a runtime handle from a manifest path using the zero-config
-/// dispatchers (bundled annotators; Rego through OPA, Cedar through the
+/// dispatchers (bundled annotators; Rego in process, Cedar through the
 /// built-in evaluator, `test` policies through their embedded verdict).
 #[napi]
 pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Handle>> {
@@ -70,12 +84,127 @@ pub fn intercept(handle: &External<Handle>, context_json: Utf16String) -> napi::
     serde_json::to_string(&verdict).map_err(|e| err(format!("verdict serialization failed: {e}")))
 }
 
+// ---------------------------------------------------------------------
+// Activated policy: one policy version, readied once, evaluated many
+// times.
+//
+// `interceptorNew`/`intercept` answer "evaluate this agent context
+// against a manifest", and ready the policy lazily on the first call. A
+// host that pins a policy version and serves traffic against it wants
+// the opposite split: pay for reading and compiling the bundle once, at
+// a moment of its choosing, then evaluate a named intervention point
+// with nothing left to set up. These entry points are that split, and
+// mirror `acs_policy_*` in the C ABI.
+// ---------------------------------------------------------------------
+
+/// Activate the manifest at `manifest_path`, readying every policy it
+/// binds, against the zero-config dispatchers.
+///
+/// This is the expensive call: it reads the manifest, loads every Rego
+/// module and data document, and compiles the entrypoint each
+/// intervention point queries. Do it once per policy version and keep
+/// the handle; `policyEvaluate` then costs no I/O and no compile.
+///
+/// Readying is bounded by the eval timeout. A policy too slow to ready
+/// inside it activates anyway and pays that cost on its first
+/// evaluation instead.
+#[napi]
+pub fn policy_activate(manifest_path: Utf16String) -> napi::Result<External<PolicyHandle>> {
+    let manifest_path = decode("manifest_path", &manifest_path)?;
+    let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
+    let policy = ActivatedPolicy::activate_with(
+        manifest,
+        default_annotator_dispatcher(),
+        Arc::new(BindingPolicyDispatcher::new()),
+    )
+    .map_err(|e| err(format!("{e}")))?;
+    Ok(External::new(PolicyHandle { policy }))
+}
+
+/// Activate a manifest and its Rego, both supplied as values rather
+/// than read from disk.
+///
+/// `manifest_yaml` is the manifest text. `bundles_json` is a JSON
+/// object mapping a policy id declared in that manifest to
+/// `{"modules": {name: source}, "data": [{"mount": [..], "document":
+/// {..}}]}`, replacing whatever `bundle` path the manifest names. A
+/// service holding manifests and Rego in a database activates from them
+/// directly rather than staging a temporary directory per activation.
+///
+/// Throws when the manifest does not parse, when a key of `bundles_json`
+/// names a policy the manifest does not declare as Rego, and when a Rego
+/// policy is left naming a relative `bundle` or data path: that path would
+/// resolve against the process working directory, since a manifest
+/// parsed from a string has no directory of its own. An absolute path is
+/// left as written.
+#[napi]
+pub fn policy_activate_from_memory(
+    manifest_yaml: Utf16String,
+    bundles_json: Utf16String,
+) -> napi::Result<External<PolicyHandle>> {
+    let manifest_yaml = decode("manifest_yaml", &manifest_yaml)?;
+    let bundles_json = decode("bundles_json", &bundles_json)?;
+    let bundles: BTreeMap<String, InMemoryRegoBundle> = serde_json::from_str(&bundles_json)
+        .map_err(|e| err(format!("bundles_json does not parse: {e}")))?;
+    let policy = ActivatedPolicy::activate_from_memory_with(
+        &manifest_yaml,
+        bundles,
+        default_annotator_dispatcher(),
+        Arc::new(BindingPolicyDispatcher::new()),
+    )
+    .map_err(|e| err(format!("{e}")))?;
+    Ok(External::new(PolicyHandle { policy }))
+}
+
+/// Evaluate one intervention point against an activated policy and
+/// return the verdict as wire JSON.
+///
+/// `point` is an agent-hooks intervention point name, such as `input`
+/// or `pre_tool_call`. `context_json` is the agent context object
+/// (AGENT-HOOKS-0.1 §4).
+///
+/// A policy that does not bind `point` is not thrown at: it fails
+/// closed with a `runtime_error:*` deny, exactly as every other
+/// evaluation failure does. An unknown point name is a boundary problem
+/// and throws.
+#[napi]
+pub fn policy_evaluate(
+    handle: &External<PolicyHandle>,
+    point: Utf16String,
+    context_json: Utf16String,
+) -> napi::Result<String> {
+    let point_raw = decode("point", &point)?;
+    let point: InterceptionPoint = point_raw
+        .parse()
+        .map_err(|_| err(format!("unknown intervention point '{point_raw}'")))?;
+    let context_json = decode("context_json", &context_json)?;
+    let snapshot: Value = serde_json::from_str(&context_json)
+        .map_err(|e| err(format!("context_json does not parse: {e}")))?;
+    if !snapshot.is_object() {
+        return Err(err("context_json must be a JSON object".to_string()));
+    }
+    let verdict = handle.policy.evaluate(point, snapshot).verdict;
+    serde_json::to_string(&verdict).map_err(|e| err(format!("verdict serialization failed: {e}")))
+}
+
+/// The intervention points this policy version binds, in manifest
+/// order, as agent-hooks wire names.
+#[napi]
+pub fn policy_intervention_points(handle: &External<PolicyHandle>) -> Vec<String> {
+    handle
+        .policy
+        .intervention_points()
+        .iter()
+        .map(|point| point.to_string())
+        .collect()
+}
+
 /// Validate manifest source against the grammar, without building a
 /// runtime.
 ///
 /// Authoring and migration tools need this answer before a policy is
 /// runnable, and building a runtime would additionally require the
-/// bundled dispatchers and, for Rego, an `opa` binary on PATH.
+/// bundled dispatchers and, for Rego, a loadable policy bundle.
 ///
 /// A rejected manifest comes back as `Some(message)` rather than being
 /// thrown, so a thrown error from this function always means the call

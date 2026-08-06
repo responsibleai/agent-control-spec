@@ -19,6 +19,22 @@ use std::{
 
 pub trait PolicyDispatcher: Send + Sync {
     fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError>;
+
+    /// Do whatever work for `invocation` can be done before a decision is
+    /// needed: parse the bundle, compile the policy, cache the result.
+    ///
+    /// Called once per intervention point by
+    /// [`crate::ActivatedPolicy::activate`], so that the cost of readying
+    /// a policy version is paid at activation rather than charged to the
+    /// first agent action, and never charged again.
+    ///
+    /// A dispatcher that has nothing to prepare keeps the default no-op.
+    /// Warming is an optimization, so a failure here is reported to the
+    /// caller of `activate` but never changes a later verdict: an
+    /// unwarmed policy still evaluates, just more slowly.
+    fn warm(&self, _invocation: &PreparedPolicyInvocation) -> Result<(), RuntimeError> {
+        Ok(())
+    }
 }
 
 #[derive(Clone)]
@@ -132,6 +148,17 @@ impl Runtime {
             perf_telemetry,
             limits,
         })
+    }
+
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    /// The policy dispatcher this runtime evaluates through. Exposed so
+    /// activation can ready each bound policy ahead of the first
+    /// decision.
+    pub fn policy_dispatcher(&self) -> &Arc<dyn PolicyDispatcher> {
+        &self.policy
     }
 
     pub fn perf_telemetry(&self) -> PerfTelemetry {

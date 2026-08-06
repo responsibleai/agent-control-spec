@@ -36,6 +36,73 @@ AcsManifest.ValidateFile("manifest.yaml");
 `AcsManifest.SupportedVersions()` reports the grammar versions this
 engine accepts. Read it rather than hardcoding the set.
 
+## Activating a policy version
+
+`AcsInterceptor` readies a policy lazily, on the first emission. A host
+that pins a policy version and serves traffic against it wants the
+opposite split — pay to read and compile the bundle once, at a moment of
+its choosing, then evaluate a named intervention point with nothing left
+to set up. Compiling is bounded by the eval timeout: a policy too slow to
+compile in that window activates anyway, not necessarily fully readied, and pays
+compilation on its first evaluation instead:
+
+```csharp
+using var policy = AcsPolicy.Activate("manifest.yaml");   // once per policy version
+policy.Evaluate(InterceptionPoint.Input, contextJson);
+policy.Evaluate(InterceptionPoint.PreToolCall, contextJson);
+```
+
+`ActivatedPolicy` is immutable and safe to evaluate from any number of
+threads at once; keep one per policy version rather than one per
+request. `InterventionPoints` reports the points the manifest binds, so
+a host can skip emitting where the policy does not govern:
+
+```csharp
+if (policy.Governs(InterceptionPoint.PostToolCall))
+    policy.Evaluate(InterceptionPoint.PostToolCall, contextJson);
+```
+
+A host that keeps manifests and Rego in a database has no path to give,
+and staging both to a temporary directory before every activation is
+work it should not have to do. `ActivateFromMemory` takes the manifest
+as text and the modules as values:
+
+```csharp
+var bundles = new Dictionary<string, RegoBundle>
+{
+    ["gate"] = new RegoBundle
+    {
+        Modules = new Dictionary<string, string> { ["gate.rego"] = regoSource },
+        Data = [new RegoDataDocument { Mount = ["limits"], Document = limits }],
+    },
+};
+
+using var policy = AcsPolicy.ActivateFromMemory(manifestYaml, bundles);
+```
+
+`Mount` says where a data document lands under `data`; on disk that
+comes from the file's directory, and nothing implies it in memory. A
+`RegoBundle` carries source text and nothing compiled, so it costs
+microseconds to build and is not worth caching on its own. Cache the
+activated policy.
+
+A Rego policy left naming a relative `bundle` or data path is refused: a
+manifest parsed from text has no directory of its own, so the path would
+resolve against the working directory and load a policy nobody chose.
+Write it absolute to keep it.
+
+Disposal is deterministic, safe to repeat, and safe against evaluations
+already in flight. Evaluating an unbound point is not an exception; like
+every other failure it is a fail-closed deny, here with reason
+`runtime_error:intervention_point_unknown`.
+
+A manifest names its policy bundle relative to itself, so the manifest
+path is the only one that has to be right; the host's working directory
+does not matter.
+
+`bench/` measures this surface — activation cost, warm p50/p95/p99, and
+throughput at concurrency 32. See [bench/README.md](bench/README.md).
+
 Native libraries: this wrapper loads `agent_control_spec_ffi` (built
 with `cargo build --release -p agent-control-spec-ffi`), and the
 agent-hooks package separately loads `agent_hooks_ffi`; both resolve

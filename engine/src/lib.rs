@@ -12,6 +12,7 @@
 
 pub type JsonValue = serde_json::Value;
 
+pub mod activation;
 pub mod annotation;
 pub mod cedar;
 mod constants;
@@ -30,6 +31,8 @@ pub mod point_ext;
 pub mod policy;
 pub mod policy_input;
 pub mod policy_output;
+#[cfg(feature = "rego")]
+pub mod rego;
 pub mod runtime;
 #[cfg(feature = "streaming")]
 pub mod stream_session;
@@ -43,6 +46,7 @@ pub use agent_hooks::{
     Verdict, Warning,
 };
 
+pub use activation::ActivatedPolicy;
 pub use annotation::{
     AnnotationConfig, AnnotatorConfig, AnnotatorDispatcher, AnnotatorInvocation, AnnotatorType,
 };
@@ -67,11 +71,13 @@ pub use perf_telemetry::PerfTelemetry;
 pub use point_ext::InterceptionPointExt;
 pub use policy::{
     CedarPolicyConfig, CedarPolicyInvocation, CustomPolicyConfig, CustomPolicyInvocation,
-    PolicyBinding, PolicyConfig, PreparedPolicyInvocation, RegoPolicyConfig, RegoPolicyInvocation,
-    TestPolicyConfig, TestPolicyInvocation,
+    InMemoryRegoBundle, MountedRegoData, PolicyBinding, PolicyConfig, PreparedPolicyInvocation,
+    RegoPolicyConfig, RegoPolicyInvocation, TestPolicyConfig, TestPolicyInvocation,
 };
 pub use policy_input::{build_policy_input, canonical_json};
 pub use policy_output::{normalize_policy_output, runtime_error_verdict};
+#[cfg(feature = "rego")]
+pub use rego::{RegorusPolicyDispatcher, RegorusRegoRunner};
 pub use runtime::{EvaluationRequest, EvaluationResult, PolicyDispatcher, Runtime};
 #[cfg(feature = "streaming")]
 pub use stream_session::{

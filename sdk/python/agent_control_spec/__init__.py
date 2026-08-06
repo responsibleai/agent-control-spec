@@ -23,7 +23,9 @@ from agent_control_spec import _native
 
 __all__ = [
     "AcsInterceptor",
+    "ActivatedPolicy",
     "ManifestInvalidError",
+    "RegoBundle",
     "__version__",
     "supported_manifest_versions",
     "validate_manifest",
@@ -32,13 +34,18 @@ __all__ = [
 
 __version__ = "0.4.0a1"
 
+#: One Rego policy's sources, held in memory rather than on disk:
+#: ``{"modules": {name: source}, "data": [{"mount": [...], "document":
+#: {...}}]}``. Both keys default to empty and nothing else is accepted.
+RegoBundle = Mapping[str, Any]
+
 
 class AcsInterceptor:
     """agent-hooks interceptor over the Agent Control Specification runtime.
 
     Register an instance with any agent-hooks host emitter. The manifest
     is loaded once at construction with the zero-config dispatchers
-    (bundled annotators; Rego through OPA, Cedar through the built-in
+    (bundled annotators; Rego in process, Cedar through the built-in
     evaluator, ``test`` policies through their embedded verdict).
     """
 
@@ -48,6 +55,112 @@ class AcsInterceptor:
     def intercept(self, context: Mapping[str, Any]) -> Verdict:
         wire = _native.intercept(self._handle, json.dumps(context, allow_nan=False))
         return Verdict.from_wire(json.loads(wire))
+
+
+class ActivatedPolicy:
+    """One policy version, readied once and evaluated many times.
+
+    :class:`AcsInterceptor` answers "evaluate this agent context against
+    a manifest" and readies the policy lazily on the first call. This
+    class is the other split: :meth:`activate` pays for reading the
+    manifest, loading every Rego module and data document, and compiling
+    the entrypoint each intervention point queries, so that every later
+    :meth:`evaluate` costs no I/O and no compile.
+
+    Compiling is bounded by the eval timeout: a policy too slow to
+    compile in that window activates anyway, not necessarily fully readied, and
+    pays compilation on its first evaluation instead.
+
+    Activate once per policy version and keep the instance. A policy edit
+    on disk needs a new activation, which is the point: the host controls
+    when a version changes. The handle is immutable and evaluation
+    releases the GIL, so one instance serves concurrent threads.
+
+    A manifest names its bundle relative to itself, so an absolute
+    manifest path is enough and the working directory does not matter.
+    :meth:`from_memory` is the other source: manifest text and Rego
+    sources held by the host, with no file to read.
+    """
+
+    __slots__ = ("_handle",)
+
+    def __init__(self, manifest_path: str) -> None:
+        """Activate the manifest at ``manifest_path`` with the
+        zero-config dispatchers (bundled annotators; Rego in process,
+        Cedar through the built-in evaluator, ``test`` policies through
+        their embedded verdict).
+
+        Raises :class:`ValueError` when the manifest cannot be read or is
+        rejected, and :class:`RuntimeError` when it binds a policy that
+        readying finds broken, such as a missing bundle, and only when
+        readying finished: a bundle whose load does not complete inside
+        the deadline surfaces at the first decision instead. A policy that
+        merely needs real input to produce a verdict activates fine.
+        """
+        self._handle = _native.policy_activate(manifest_path)
+
+    @classmethod
+    def activate(cls, manifest_path: str) -> ActivatedPolicy:
+        """Activate the manifest at ``manifest_path``.
+
+        Same as the constructor, named for the lifecycle it belongs to.
+        """
+        return cls(manifest_path)
+
+    @classmethod
+    def from_memory(
+        cls, manifest_yaml: str, bundles: Mapping[str, RegoBundle]
+    ) -> ActivatedPolicy:
+        """Activate a manifest and its Rego supplied as values.
+
+        ``manifest_yaml`` is the manifest text. ``bundles`` maps a policy
+        id declared in it to that policy's sources, replacing whatever
+        ``bundle`` path the manifest names. A service that keeps
+        manifests and Rego in a database activates from them directly,
+        rather than staging a temporary directory per activation.
+
+        Raises :class:`ManifestInvalidError` when the manifest is
+        rejected, when a key of ``bundles`` names a policy the manifest
+        does not declare as Rego, and when a Rego policy is left naming a
+        *relative* bundle path: a manifest parsed from a string has no
+        directory of its own, so that path would resolve against the
+        process working directory. Absolute paths are left as written, so
+        one manifest can mix policy from a database with policy from a
+        known location on disk.
+        """
+        policy = cls.__new__(cls)
+        policy._handle = _native.policy_activate_from_memory(
+            manifest_yaml, json.dumps(bundles, allow_nan=False)
+        )
+        return policy
+
+    def evaluate(self, point: str, context: Mapping[str, Any]) -> Verdict:
+        """Evaluate one intervention point. This is the hot path.
+
+        ``point`` is an agent-hooks intervention point name, such as
+        ``"input"`` or ``"pre_tool_call"``.
+
+        Evaluation failures return a fail-closed ``deny`` verdict
+        (``runtime_error:*`` reason), including a point this policy
+        version does not bind. Raises only on boundary problems: an
+        unknown point name or a context that will not serialize.
+        """
+        wire = _native.policy_evaluate(
+            self._handle, point, json.dumps(context, allow_nan=False)
+        )
+        return Verdict.from_wire(json.loads(wire))
+
+    @property
+    def intervention_points(self) -> tuple[str, ...]:
+        """The intervention points this policy version binds, in manifest
+        order. Read it to skip emitting points the policy does not
+        govern.
+        """
+        return tuple(_native.policy_intervention_points(self._handle))
+
+    def governs(self, point: str) -> bool:
+        """Whether this policy version governs ``point``."""
+        return point in self.intervention_points
 
 
 #: A manifest failed grammar validation. Raised by
@@ -62,7 +175,7 @@ def validate_manifest(source: str) -> None:
     Raises :class:`ManifestInvalidError` when the manifest is rejected,
     and returns ``None`` when it is accepted. Nothing is evaluated and no
     runtime is built, so this works before a policy is runnable and
-    without an ``opa`` binary on PATH.
+    without resolving a policy bundle.
 
     Anything else the call raises is a boundary problem rather than a
     verdict on the manifest, and propagates unchanged.

@@ -45,6 +45,26 @@ internal static partial class Native
     [LibraryImport(Lib)]
     private static partial void acs_free_string(IntPtr s);
 
+    // Activated policy: one policy version readied once, evaluated many
+    // times. Same err_out convention as the interceptor entry points.
+    [LibraryImport(Lib)]
+    private static partial IntPtr acs_policy_activate(
+        ReadOnlySpan<byte> manifestPath, nuint manifestPathLen, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_policy_activate_from_memory(
+        string manifestYaml, string? bundlesJson, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_policy_evaluate(
+        IntPtr handle, string point, string contextJson, out IntPtr errOut);
+
+    [LibraryImport(Lib)]
+    private static partial IntPtr acs_policy_intervention_points(IntPtr handle, out IntPtr errOut);
+
+    [LibraryImport(Lib)]
+    private static partial void acs_policy_free(IntPtr handle);
+
     // Explicit byte length rather than a NUL-terminated string, because
     // manifest text may contain an interior NUL and stopping there would
     // validate only the prefix.
@@ -195,4 +215,123 @@ internal static partial class Native
     }
 
     internal static void Free(IntPtr handle) => acs_interceptor_free(handle);
+
+    internal static ActivatedPolicyHandle PolicyActivate(string manifestPath)
+    {
+        byte[] pathBytes;
+        try
+        {
+            pathBytes = StrictUtf8.GetBytes(manifestPath);
+        }
+        catch (System.Text.EncoderFallbackException e)
+        {
+            throw new AgentControlSpecNativeException(
+                $"manifestPath is not encodable as UTF-8: {e.Message}");
+        }
+
+        var raw = acs_policy_activate(pathBytes, (nuint)pathBytes.Length, out var err);
+        // Take ownership before anything can throw, so a handle the
+        // engine did return is never leaked by an error on the way out.
+        var handle = new ActivatedPolicyHandle(raw);
+        try
+        {
+            ThrowIfError(err);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+        if (handle.IsInvalid)
+            throw new AgentControlSpecNativeException("acs_policy_activate returned no handle");
+        return handle;
+    }
+
+    internal static ActivatedPolicyHandle PolicyActivateFromMemory(
+        string manifestYaml, string? bundlesJson)
+    {
+        var raw = acs_policy_activate_from_memory(manifestYaml, bundlesJson, out var err);
+        // Ownership first, as above: an error raised on the way out must
+        // not strand a handle the engine did return.
+        var handle = new ActivatedPolicyHandle(raw);
+        try
+        {
+            ThrowIfError(err);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+        if (handle.IsInvalid)
+        {
+            throw new AgentControlSpecNativeException(
+                "acs_policy_activate_from_memory returned no handle");
+        }
+        return handle;
+    }
+
+    // The ref-count pair is what makes concurrent evaluation safe against
+    // a racing Dispose: the native pointer cannot be freed while a call
+    // is in flight. The engine's own policy handle is Send + Sync, so
+    // beyond that no lock is needed.
+    internal static string PolicyEvaluate(
+        ActivatedPolicyHandle handle, string point, string contextJson)
+    {
+        var added = false;
+        try
+        {
+            handle.DangerousAddRef(ref added);
+            var verdict = acs_policy_evaluate(
+                handle.DangerousGetHandle(), point, contextJson, out var err);
+            ThrowIfError(err);
+            return TakeString(verdict);
+        }
+        finally
+        {
+            if (added)
+                handle.DangerousRelease();
+        }
+    }
+
+    internal static string PolicyInterventionPoints(ActivatedPolicyHandle handle)
+    {
+        var added = false;
+        try
+        {
+            handle.DangerousAddRef(ref added);
+            var json = acs_policy_intervention_points(handle.DangerousGetHandle(), out var err);
+            ThrowIfError(err);
+            return TakeString(json);
+        }
+        finally
+        {
+            if (added)
+                handle.DangerousRelease();
+        }
+    }
+
+    internal static void PolicyFree(IntPtr handle) => acs_policy_free(handle);
+}
+
+/// <summary>Owns one activated policy version's native allocation.</summary>
+/// <remarks>
+/// A <see cref="SafeHandle"/> rather than the bare pointer the
+/// interceptor keeps, because an activated policy is shared across
+/// threads by design: the ref count holds the pointer alive for the
+/// duration of every in-flight evaluation, so disposing while another
+/// thread evaluates frees after that call rather than under it.
+/// </remarks>
+internal sealed class ActivatedPolicyHandle : SafeHandle
+{
+    internal ActivatedPolicyHandle(IntPtr handle)
+        : base(IntPtr.Zero, ownsHandle: true) => SetHandle(handle);
+
+    public override bool IsInvalid => handle == IntPtr.Zero;
+
+    protected override bool ReleaseHandle()
+    {
+        Native.PolicyFree(handle);
+        return true;
+    }
 }

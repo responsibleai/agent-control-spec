@@ -18,14 +18,43 @@ use serde_json::Value as JsonValue;
 
 /// Wraps a [`Runtime`] as an agent-hooks [`Interceptor`].
 pub struct AcsInterceptor {
-    runtime: Runtime,
+    runtime: RuntimeSource,
     name: String,
+}
+
+/// Where an interceptor's runtime came from.
+///
+/// An interceptor built directly owns its runtime. One built from an
+/// [`crate::ActivatedPolicy`] shares that activation instead, so a host
+/// on the emitter path gets the readied policy rather than a second copy
+/// that would load and compile the bundle again.
+enum RuntimeSource {
+    Owned(Box<Runtime>),
+    Activated(crate::ActivatedPolicy),
+}
+
+impl RuntimeSource {
+    fn runtime(&self) -> &Runtime {
+        match self {
+            Self::Owned(runtime) => runtime,
+            Self::Activated(policy) => policy.runtime(),
+        }
+    }
 }
 
 impl AcsInterceptor {
     pub fn new(runtime: Runtime) -> Self {
         Self {
-            runtime,
+            runtime: RuntimeSource::Owned(Box::new(runtime)),
+            name: "acs".to_string(),
+        }
+    }
+
+    /// An interceptor over an already-activated policy version, sharing
+    /// its loaded and compiled state.
+    pub fn from_activated(policy: crate::ActivatedPolicy) -> Self {
+        Self {
+            runtime: RuntimeSource::Activated(policy),
             name: "acs".to_string(),
         }
     }
@@ -38,7 +67,7 @@ impl AcsInterceptor {
     }
 
     pub fn runtime(&self) -> &Runtime {
-        &self.runtime
+        self.runtime.runtime()
     }
 }
 
@@ -46,7 +75,7 @@ impl AcsInterceptor {
 impl Interceptor for AcsInterceptor {
     async fn intercept(&self, context: &AgentContext) -> Verdict {
         let snapshot = JsonValue::Object(context.clone());
-        self.runtime.evaluate(&snapshot).verdict
+        self.runtime.runtime().evaluate(&snapshot).verdict
     }
 
     fn name(&self) -> Option<String> {
