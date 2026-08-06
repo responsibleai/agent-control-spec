@@ -15,10 +15,66 @@ export declare function intercept(handle: ExternalObject<Handle>, contextJson: s
 
 /**
  * Build a runtime handle from a manifest path using the zero-config
- * dispatchers (bundled annotators; Rego through OPA, Cedar through the
+ * dispatchers (bundled annotators; Rego in process, Cedar through the
  * built-in evaluator, `test` policies through their embedded verdict).
  */
 export declare function interceptorNew(manifestPath: string): ExternalObject<Handle>
+
+/**
+ * Activate the manifest at `manifest_path`, readying every policy it
+ * binds, against the zero-config dispatchers.
+ *
+ * This is the expensive call: it reads the manifest, loads every Rego
+ * module and data document, and compiles the entrypoint each
+ * intervention point queries. Do it once per policy version and keep
+ * the handle; `policyEvaluate` then costs no I/O and no compile.
+ *
+ * Readying is bounded by the eval timeout. A policy too slow to ready
+ * inside it activates anyway and pays that cost on its first
+ * evaluation instead.
+ */
+export declare function policyActivate(manifestPath: string): ExternalObject<PolicyHandle>
+
+/**
+ * Activate a manifest and its Rego, both supplied as values rather
+ * than read from disk.
+ *
+ * `manifest_yaml` is the manifest text. `bundles_json` is a JSON
+ * object mapping a policy id declared in that manifest to
+ * `{"modules": {name: source}, "data": [{"mount": [..], "document":
+ * {..}}]}`, replacing whatever `bundle` path the manifest names. A
+ * service holding manifests and Rego in a database activates from them
+ * directly rather than staging a temporary directory per activation.
+ *
+ * Throws when the manifest does not parse, when a key of `bundles_json`
+ * names a policy the manifest does not declare as Rego, and when a Rego
+ * policy is left naming a relative `bundle` or data path: that path would
+ * resolve against the process working directory, since a manifest
+ * parsed from a string has no directory of its own. An absolute path is
+ * left as written.
+ */
+export declare function policyActivateFromMemory(manifestYaml: string, bundlesJson: string): ExternalObject<PolicyHandle>
+
+/**
+ * Evaluate one intervention point against an activated policy and
+ * return the verdict as wire JSON.
+ *
+ * `point` is an agent-hooks intervention point name, such as `input`
+ * or `pre_tool_call`. `context_json` is the agent context object
+ * (AGENT-HOOKS-0.1 §4).
+ *
+ * A policy that does not bind `point` is not thrown at: it fails
+ * closed with a `runtime_error:*` deny, exactly as every other
+ * evaluation failure does. An unknown point name is a boundary problem
+ * and throws.
+ */
+export declare function policyEvaluate(handle: ExternalObject<PolicyHandle>, point: string, contextJson: string): string
+
+/**
+ * The intervention points this policy version binds, in manifest
+ * order, as agent-hooks wire names.
+ */
+export declare function policyInterventionPoints(handle: ExternalObject<PolicyHandle>): Array<string>
 
 /** The manifest grammar versions this engine accepts. */
 export declare function supportedManifestVersions(): Array<string>
@@ -29,7 +85,7 @@ export declare function supportedManifestVersions(): Array<string>
  *
  * Authoring and migration tools need this answer before a policy is
  * runnable, and building a runtime would additionally require the
- * bundled dispatchers and, for Rego, an `opa` binary on PATH.
+ * bundled dispatchers and, for Rego, a loadable policy bundle.
  *
  * A rejected manifest comes back as `Some(message)` rather than being
  * thrown, so a thrown error from this function always means the call

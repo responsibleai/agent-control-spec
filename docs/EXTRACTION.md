@@ -15,7 +15,7 @@ policies and returns agent-hooks verdicts.
 | --- | --- | --- |
 | `core/src/manifest.rs` | `engine/src/manifest.rs` | Policy/intervention-point binding grammar. Point names validate against the agent-hooks closed set. |
 | `core/src/runtime.rs` | `engine/src/runtime.rs` | Evaluation pipeline (annotators → policy → normalization). Transform application and `evaluate_only` handling removed — those are host obligations under agent-hooks. |
-| `core/src/policy.rs`, `cedar.rs`, `opa.rs`, `dispatchers/` | `engine/src/…` | Dispatcher plane, unchanged in structure. |
+| `core/src/policy.rs`, `cedar.rs`, `opa.rs`, `dispatchers/` | `engine/src/…` | Dispatcher plane, unchanged in structure. `engine/src/rego.rs` adds the in-process Rego dispatcher that supersedes `opa.rs` as the bundled default. |
 | `core/src/annotation.rs`, `tool_projection.rs` | `engine/src/…` | Annotator plane. |
 | `core/src/paths.rs` | `engine/src/paths.rs` | `$policy_target` root renamed `$target` (agent-hooks transform grammar). `$snap` remains the manifest's name for the agent context. |
 | `core/src/policy_input.rs` | `engine/src/policy_input.rs` | Builds the policy-input document from an agent-hooks `AgentContext`. Canonicalization/identity helpers removed — context identity is owned by agent-hooks (§10). |

@@ -15,20 +15,25 @@ name = "agent_control_spec"
 crate-type = ["lib"]
 
 [features]
-# The default surface is the core plus the bundled OPA Rego dispatcher and
-# the bundled Cedar dispatcher. Hosts that do not want either heavyweight
-# backend can disable default features and opt back in.
+# The default surface is the core plus the bundled in-process Rego
+# dispatcher and the bundled Cedar dispatcher. Hosts that do not want
+# either heavyweight backend can disable default features and opt back in.
 #
-# * `opa` gates `pub mod opa`, the `Opa*` re-exports, and the OPA arm of the
-#   default policy dispatcher. The OPA dispatcher shells out to the `opa`
-#   CLI and carries no Rust build deps; the gate exists so callers that
-#   never use Rego do not see the Rego dispatcher surface.
+# * `rego` gates `pub mod rego`, the `Regorus*` re-exports, and the default
+#   policy dispatcher. Rego is evaluated in process with the `regorus`
+#   crate, so no external binary is required and evaluation costs no
+#   process spawn.
+# * `opa` gates `pub mod opa` and the `Opa*` re-exports: the legacy
+#   dispatcher that shells out to the `opa` CLI. It is OFF by default
+#   because the in-process `rego` path is faster and dependency free at
+#   run time; hosts that need OPA's exact CLI semantics can opt back in.
 # * `cedar` gates the `CedarBuiltinDispatcher` powered by the upstream
 #   `cedar-policy` crate. The manifest grammar, `PolicyConfig::Cedar`, the
 #   `CedarPolicyDispatcher` trait, the request mapping, the advice
 #   translator, and the always-compiled `CedarTestDispatcher` stay
 #   available under no-default-features.
-default = ["opa", "cedar"]
+default = ["rego", "cedar"]
+rego = ["dep:regorus"]
 opa = []
 cedar = ["dep:cedar-policy"]
 # Bundled reference dispatchers providing zero-config defaults. OFF by
@@ -53,8 +58,17 @@ base64 = "0.22"
 url = "2"
 ureq = { version = "2", features = ["json"] }
 cedar-policy = { version = "4", optional = true }
+regorus = { version = "0.11", features = ["arc"], optional = true }
 
 [dev-dependencies]
 agent-hooks-sdk = { version = "0.1.0-alpha.3", features = ["ctk"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 jsonschema = { version = "0.17", default-features = false }
+
+# The benchmark drives `ActivatedPolicy::activate_manifest`, which needs
+# the bundled dispatchers, so it is built only when they are on. Without
+# this, `cargo test -p agent-control-spec` fails to build the example
+# under the default feature set.
+[[example]]
+name = "benchmark"
+required-features = ["default-dispatchers", "rego"]

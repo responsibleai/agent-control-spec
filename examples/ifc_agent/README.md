@@ -12,7 +12,6 @@ A host that tracks data provenance needs a deterministic sink check before data 
 cargo run -p agent_control_specification --example ifc_agent --quiet
 ```
 
-`opa` must be available on `PATH`.
 
 ## Expected verdicts
 

@@ -1,0 +1,17 @@
+# Rego counterpart to manifest.yaml, for the in-memory activation tests:
+# the same text activates from this directory and, with modules supplied
+# as values, from memory, so the two sources can be compared.
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: node-wrapper-rego
+policies:
+  gate:
+    type: rego
+    bundle: ./policy
+    query: data.gate.verdict
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    policy:
+      id: gate

@@ -2,6 +2,170 @@
 
 ## Unreleased
 
+- A policy version can be activated once and evaluated many times.
+  `ActivatedPolicy::activate` reads the manifest, loads every Rego module
+  and data document, and compiles the entrypoint each intervention point
+  queries, so a decision afterwards costs no I/O and no compilation. Readying is bounded by the eval
+  timeout, so a policy too slow to compile inside it activates anyway,
+  not necessarily fully readied, and pays compilation on its first decision. The
+  handle is immutable, `Send + Sync`, and cheap to clone, so a host holds
+  one per policy version and shares it across threads under its own
+  versioning scheme rather than relying on the runtime to guess when a
+  policy changed.
+  - `PolicyDispatcher` gains a `warm` method with a default no-op, so any
+    dispatcher can prepare a policy ahead of the first decision and none
+    is required to.
+  - Over `examples/bank_agent`, activation costs milliseconds and a
+    later decision hundreds of microseconds, so activation repays itself
+    in tens of decisions rather than thousands. The four benchmarks
+    measured the `input` point at 166us from Rust, 200us from .NET,
+    249us from Node, and 284us from Python, run back to back so they
+    compare: the spread is what each binding adds around one engine
+    call, not four different engines. Read the ratios rather than the
+    microseconds. The same machine returned figures a third lower
+    earlier in the day, so an absolute number here says as much about
+    the machine as about the code; the benchmarks print their own.
+  - Warming earns its keep in proportion to the policy set, and the
+    benchmark takes a module count so that claim is reproducible from
+    this tree rather than asserted. At 200 modules the first decision
+    drops from about 17.6ms to about 6.9ms, medians of seven runs, because
+    compilation is otherwise charged to it. Read those two numbers off a
+    settled machine: the first runs after a build measure the page cache
+    as much as the policy, and moved between 6.7ms and 17.1ms here.
+  - Reachable from every binding: `AcsPolicy.Activate` (.NET),
+    `policyActivate` (Node), `ActivatedPolicy` (Python), and
+    `acs_policy_activate` / `acs_policy_evaluate` / `acs_policy_free`
+    over the C ABI.
+  - `cargo run --release -p agent-control-spec --all-features --example
+    benchmark` reports activation cost, warm p50/p95/p99 per intervention
+    point, and the concurrency curve.
+
+- A policy version can be activated from a manifest and Rego held in
+  memory, not only from a path. A service that keeps both in a database
+  had to stage them to a temporary directory before every activation;
+  `ActivatedPolicy::activate_from_memory` takes the manifest as text and
+  a map from policy id to the modules and data documents that policy
+  evaluates. The path-based entry points are unchanged.
+  - The engine reads policy source as a string either way, so this is
+    the existing load path with the read removed rather than a second
+    way to load a policy. A test pins that the same policy activated
+    from disk and from memory reaches the same verdict.
+  - A data document carries its mount point explicitly. On disk that
+    comes from the file's directory relative to the bundle root, and
+    nothing implies it in memory.
+  - The prepared-engine cache is keyed on a bundle path, which an
+    in-memory bundle does not have, so such a bundle is keyed on a
+    SHA-256 over its contents instead. Without it, two Rego policies in
+    one manifest would share one cache entry, and the second would be
+    served the first one's engine and fail closed on its own query.
+  - A Rego policy left naming a relative `bundle` path is refused. A
+    manifest parsed from text has no directory of its own, so the path
+    would resolve against the process working directory and load a
+    policy nobody chose. An absolute path is left as written, so one
+    manifest can mix policy from a database with policy on disk.
+  - The `opa` CLI dispatcher refuses an in-memory bundle rather than
+    evaluating without it: it passes policy to a subprocess as paths, so
+    it would otherwise return a verdict for a policy the host did not
+    supply.
+  - Building a bundle validates and hashes it; nothing is compiled until
+    activation. It cost 0.4us at one module and 14.7us at 200 against
+    1.6ms to 3.7ms to activate over the same range, four orders of
+    magnitude apart, so a host gains nothing by caching a bundle
+    separately from the activation it feeds. Cache the activated policy.
+  - Reachable from every binding: `AcsPolicy.ActivateFromMemory` (.NET),
+    `ActivatedPolicy.activateFromMemory` (Node),
+    `ActivatedPolicy.from_memory` (Python), and
+    `acs_policy_activate_from_memory` over the C ABI.
+  - `RegoPolicyInvocation` and `RegoPolicyConfig` gain an `inline_bundle`
+    field. Both have public fields, so code constructing either
+    literally has to add it.
+
+- A policy calling `http.send` now fails closed. `regorus` registers the
+  builtin but leaves it permanently undefined, so a deny rule gated on it
+  did not fire and the policy allowed: the one divergence in this
+  dispatcher that failed open. It is shadowed by an extension that
+  errors, so it behaves like every other builtin this runtime does not
+  provide. Policies here are meant to be pure and offline, so no correct
+  policy changes; one that reaches for the network now says so at the
+  first decision.
+
+- A manifest query naming a rule, which is the ordinary case, is read as
+  a rule rather than parsed as query text on every decision. In the
+  engine call alone the parse dominated, 284us against 46us; end to end
+  a warm decision over `examples/bank_agent` fell about a fifth to a
+  quarter, from 221us to 166us at p50 on the `input` point, medians of
+  five runs interleaved with the previous commit to hold the machine
+  steady. The rest of a decision is annotation, input building, and
+  dispatch, which this does not touch. Queries that are not plain rule
+  paths, including the expression forms the specification permits, still
+  go through the general path, and a rule left undefined by its input
+  still fails closed with the reason it always had.
+
+- The bundled Rego dispatcher evaluates policy in process through
+  [`regorus`](https://crates.io/crates/regorus) instead of shelling out to
+  an `opa` binary on PATH. Nothing has to be installed on the host, and a
+  decision no longer costs a process spawn, a pipe round trip, and a JSON
+  re-parse: measured over the `examples/bank_agent` policy set, one
+  intervention point drops from 26ms to 0.3ms. The new dispatcher reads
+  the same single query expression value the `opa` CLI returned, and
+  loads bundles and data documents by OPA's own rules, so a bundle within
+  the Rego that `regorus` implements produces the same verdict. It is not
+  a drop-in for every bundle: see the divergences below.
+  - New default feature `rego`, exposing `RegorusRegoRunner` and
+    `RegorusPolicyDispatcher`. `default_policy_dispatcher` and the
+    language bindings use it.
+  - The `opa` CLI dispatcher is unchanged, but its `opa` feature is no
+    longer on by default. Hosts that need OPA's exact CLI semantics can
+    opt back in and register `OpaPolicyDispatcher` themselves. One
+    behaviour does differ: the in-process dispatcher reads a bundle
+    directory or a single file, never a packaged `.tar.gz`.
+  - `ACS_OPA_TIMEOUT_MS` still sets the eval timeout. The dispatcher
+    enforces it twice, through a cooperative deadline inside the
+    evaluator and through a pooled worker thread it abandons when the
+    deadline passes, so a caller returns on time even for a policy the
+    evaluator cannot interrupt. `ACS_OPA_PATH` applies only to the opt-in
+    CLI dispatcher.
+  - `RegorusRegoRunner::with_policy_cache(true)` reuses a parsed bundle
+    across evaluations. It stays off by default on the bare runner
+    because it hides on-disk policy edits until the runner is rebuilt.
+    `default_policy_dispatcher` and the language bindings turn it on,
+    since they hold one runtime for the life of the process and would
+    otherwise re-read the whole policy set on every decision.
+  - Known divergences from the `opa` CLI, for hosts porting a bundle:
+    Rego parses as v1 unless `ACS_REGO_V0=1` or
+    `RegorusRegoRunner::with_rego_v0(true)`; packaged `.tar.gz` bundles
+    are not read; `regorus` lacks some OPA builtins (`crypto.*`,
+    `io.jwt.*`, `json.patch`, GraphQL, AWS signing), where calling one is
+    a loud fail-closed evaluation error, except `http.send`, which is
+    registered but always undefined and so silently fails open for a deny
+    rule gated on it; and numeric precision differs, which can flip a
+    verdict. Integers agree exactly while they fit in `i64`/`u64`, so
+    counts and integer thresholds are unaffected, but every non-integer
+    is an `f64` here against OPA's higher-precision decimal arithmetic:
+    `sum([0.1, 0.2])` is `0.3` under OPA and `0.30000000000000004` here,
+    enough for a budget policy comparing it against a `0.3` cap to allow
+    under OPA and deny here. Upstream tracks this as
+    microsoft/regorus#202. Integers past `u64` likewise arrive as
+    doubles, which is this crate's choice rather than a `regorus` limit:
+    carrying them exactly needs `serde_json/arbitrary_precision`, a
+    global feature that makes `canonical_json` non-idempotent (`0.5` and
+    `5e-1` would canonicalize differently and so hash differently).
+  - A host can now be told that a decision was refused rather than
+    evaluated. A run abandoned at its deadline leaves a thread that
+    cannot be killed, so once
+    `agent_control_spec::rego::MAX_ABANDONED_WORKERS` of them are
+    outstanding in a pool, that pool stops starting new work and fails
+    closed with `runtime_error:policy_invocation_failed` until the
+    backlog drains. A runner keeps two pools, one for evaluation and one
+    for readying a policy, so the limit bounds a pool rather than a
+    runner. `RegorusRegoRunner::abandoned_evaluations()` reports the sum
+    across both, which is the number to watch for a leak rather than the
+    number either gate compares against.
+  - A policy's `print()` output is captured and discarded rather than
+    reaching the host's stderr. The CLI dispatcher kept it inside the
+    child process, so letting it through would have been a new way for
+    policy input to land in host logs.
+
 - Manifest grammar validation is reachable from every binding, not just
   the Rust crate: `validate_manifest` (Python), `validateManifest`
   (Node), `AcsManifest.Validate` (.NET), over the new C ABI entry point

@@ -3,6 +3,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentControlSpec", "src\Age
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentControlSpec.Tests", "tests\AgentControlSpec.Tests\AgentControlSpec.Tests.csproj", "{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AgentControlSpec.Bench", "bench\AgentControlSpec.Bench\AgentControlSpec.Bench.csproj", "{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0003}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -17,5 +19,9 @@ Global
 		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{1A6A11D1-3E30-4A9A-9C3B-5A0E1D3C0003}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

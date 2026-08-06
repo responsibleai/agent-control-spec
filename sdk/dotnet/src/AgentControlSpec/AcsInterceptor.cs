@@ -29,7 +29,7 @@ public sealed class AcsInterceptor : IInterceptor, IDisposable
 
     /// <summary>
     /// Build an interceptor from a manifest path using the zero-config
-    /// dispatchers: bundled annotators; Rego policies through OPA,
+    /// dispatchers: bundled annotators; Rego policies in process,
     /// Cedar through the built-in evaluator, test policies through
     /// their embedded verdict. Custom policies require a host
     /// dispatcher and fail closed under this construction.

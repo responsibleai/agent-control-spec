@@ -1,6 +1,6 @@
 # .NET records agent example
 
-This .NET SDK example wraps a medical records loop with `RunAsync`, `RunModelAsync`, and `RunToolAsync`. It uses deterministic annotators, an OPA policy dispatcher, and an approval resolver.
+This .NET SDK example wraps a medical records loop with `RunAsync`, `RunModelAsync`, and `RunToolAsync`. It uses deterministic annotators, its own OPA CLI policy dispatcher, and an approval resolver.
 
 ## Threat or governance need
 

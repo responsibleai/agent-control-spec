@@ -11,7 +11,7 @@ namespace AgentControlSpec;
 /// Authoring and migration tools need to know whether a manifest is
 /// valid before any policy is runnable. Building an
 /// <see cref="AcsInterceptor"/> would additionally require the bundled
-/// dispatchers and, for Rego policies, an <c>opa</c> binary on PATH.
+/// dispatchers and, for Rego policies, a loadable policy bundle.
 /// </remarks>
 public static class AcsManifest
 {
