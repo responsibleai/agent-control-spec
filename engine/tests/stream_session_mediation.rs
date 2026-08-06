@@ -200,7 +200,7 @@ fn an_approved_prefix_is_released_before_the_stream_ends() {
         .expect("clean stream");
     // Released mid stream rather than held until settlement.
     assert_eq!(host.delivered, "the quick brown ");
-    assert_eq!(host.session.safe_offset(StreamTrack::Response), 16);
+    assert_eq!(host.session.safe_offset(StreamTrack::Response), Some(16));
     assert_eq!(host.session.finish().reason, StreamEndReason::Complete);
 }
 
@@ -309,7 +309,7 @@ fn withholding_holds_text_that_no_task_has_cleared() {
         .expect("one task clears");
     // The second task has not reported, so nothing is releasable.
     assert_eq!(session.advance(StreamTrack::Response), None);
-    assert_eq!(session.safe_offset(StreamTrack::Response), 0);
+    assert_eq!(session.safe_offset(StreamTrack::Response), Some(0));
     session
         .record_outcome("pii", &span, SegmentOutcome::Cleared)
         .expect("second task clears");

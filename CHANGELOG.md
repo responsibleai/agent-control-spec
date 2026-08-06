@@ -43,10 +43,12 @@
   a term overlapping a span can begin `L - 1` runes above where the span
   starts. For a suffix window of `N` runes over spans of at most `S`, the bound
   is `N >= S + L - 1`.
-- `safe_offset` documents that its value is historical once the session has
-  ended. A denial withholds every rune the host has not already emitted,
-  including cleared ones, so a host that delivers lazily has to check
-  `is_ended` before treating the offset as permission.
+- `safe_offset` returns `Option<u32>` and is `None` once the session has ended.
+  A denial withholds every rune the host has not already emitted, including
+  cleared ones, so a terminal session has no offset anyone may emit through and
+  a host that delivers lazily by polling now stops without having to remember
+  to check. The offset the track reached is unaffected and stays readable
+  through `watermark`, which is what an audit record needs.
 - Incremental stream mediation, specification section 18.1. A host that must
   release model output before the whole response exists can now drive
   `StreamSession`, which tracks how far each configured task has cleared a

@@ -142,9 +142,19 @@ impl Harness {
     /// I2 monotonicity, I3 minimum, I1 safety.
     fn check_invariants(&mut self, seed: u64, step: usize, what: &str) {
         for track in [StreamTrack::Request, StreamTrack::Response] {
-            let observed = self.session.safe_offset(track);
+            // A terminal session offers no offset at all, which is the point
+            // of the `Option`. What it froze at is still readable through the
+            // watermark, and I4 checks that.
+            let Some(observed) = self.session.safe_offset(track) else {
+                assert!(
+                    self.session.is_ended(),
+                    "seed {seed} step {step} after {what}: {track:?} withheld an offset \
+                     while still live"
+                );
+                continue;
+            };
 
-            // I2: the safe offset never moves backwards.
+            // I2: the safe offset never moves backwards while it is offered.
             let previously = *self.released.get(&track).unwrap_or(&0);
             assert!(
                 observed >= previously,
@@ -152,12 +162,6 @@ impl Harness {
                  {previously} then {observed}"
             );
             self.released.insert(track, observed);
-
-            // I1 and I3 hold only while the session is live. A terminal session
-            // reports the offset it froze at, which is checked by I4.
-            if self.session.is_ended() {
-                continue;
-            }
 
             let shadow = self.shadow(track);
             // I3: the released offset is the minimum across the track's tasks,
@@ -333,7 +337,7 @@ fn run_one(seed: u64) {
                 };
                 let task_belongs = track_tasks.contains(&task);
                 let was_ended = harness.session.is_ended();
-                let confirmed_before = harness.session.safe_offset(track);
+                let confirmed_before = harness.session.watermark(track).confirmed();
 
                 // The model's own verdict, computed before the call so both
                 // directions can be checked against it. Asserting only that a
@@ -437,9 +441,9 @@ fn run_one(seed: u64) {
 
             // Advance the watermark.
             90..=97 => {
-                let before = harness.session.safe_offset(track);
+                let before = harness.session.watermark(track).confirmed();
                 let advanced = harness.session.advance(track);
-                let after = harness.session.safe_offset(track);
+                let after = harness.session.watermark(track).confirmed();
                 if let Some(offset) = advanced {
                     assert_eq!(
                         offset, after,
@@ -507,7 +511,7 @@ fn run_one(seed: u64) {
 
     // I4: nothing is released after settlement.
     for track in [StreamTrack::Request, StreamTrack::Response] {
-        let after = harness.session.safe_offset(track);
+        let after = harness.session.watermark(track).confirmed();
         let peak = *harness.released.get(&track).unwrap_or(&0);
         assert!(
             after <= peak.max(after),
@@ -578,7 +582,7 @@ fn contiguity_is_never_violated_under_adversarial_ordering() {
         }
 
         session.advance(StreamTrack::Response);
-        let safe = session.safe_offset(StreamTrack::Response);
+        let safe = session.watermark(StreamTrack::Response).confirmed();
 
         // Every rune below the safe offset must have been covered by an
         // outcome that was actually accepted.
@@ -618,7 +622,7 @@ fn offset_ceiling_arithmetic_never_wraps() {
                 }
             }
         }
-        assert!(session.safe_offset(StreamTrack::Response) <= MAX_RUNE_OFFSET);
+        assert!(session.watermark(StreamTrack::Response).confirmed() <= MAX_RUNE_OFFSET);
     }
 
     // A span cannot be constructed past the ceiling.

@@ -863,18 +863,22 @@ impl StreamSession {
         }
     }
 
-    /// Offset through which the host may emit this track, while the session
-    /// is running.
+    /// Offset through which the host may emit this track, or `None` once the
+    /// session has ended.
     ///
-    /// Once the session has ended this value is historical and MUST NOT be
-    /// used to emit. It keeps the offset the track reached, which an audit
-    /// record needs, but a `deny` withholds every rune the host has not
-    /// already emitted, including runes a task had cleared. A host that
-    /// delivers lazily by polling this offset therefore has to check
-    /// [`StreamSession::is_ended`] first, or it will release text a denial
-    /// covers on the strength of a number this method still returns.
-    pub fn safe_offset(&self, track: StreamTrack) -> u32 {
-        self.watermark(track).confirmed()
+    /// A `deny` withholds every rune the host has not already emitted,
+    /// including runes a task had cleared, so a terminal session has no offset
+    /// anyone may emit through. Returning `None` says that in the type, which
+    /// a host cannot read as permission by accident. A host that delivers
+    /// lazily by polling this therefore stops on its own.
+    ///
+    /// The offset the track reached is unaffected and stays available for an
+    /// audit record through [`StreamSession::watermark`].
+    pub fn safe_offset(&self, track: StreamTrack) -> Option<u32> {
+        if self.ended.is_some() {
+            return None;
+        }
+        Some(self.watermark(track).confirmed())
     }
 
     /// Runes observed but not yet cleared by every task on this track.
@@ -1242,11 +1246,11 @@ mod tests {
     fn single_task_clears_and_advances() {
         let mut s = session(&["safety"], SafetyLevel::Blocking);
         assert_eq!(s.observe(RES, 10), Ok(10));
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
         s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Cleared)
             .expect("outcome records");
         assert_eq!(s.advance(StreamTrack::Response), Some(10));
-        assert_eq!(s.safe_offset(StreamTrack::Response), 10);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 10);
         // No further progress means no further watermark.
         assert_eq!(s.advance(StreamTrack::Response), None);
     }
@@ -1259,7 +1263,7 @@ mod tests {
             .expect("safety clears");
         // Only one of two tasks cleared, so nothing is releasable.
         assert_eq!(s.advance(StreamTrack::Response), None);
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
         s.record_outcome("pii", &span(RES, 0, 12), SegmentOutcome::Cleared)
             .expect("pii clears part");
         assert_eq!(s.advance(StreamTrack::Response), Some(12));
@@ -1285,7 +1289,7 @@ mod tests {
             }
         );
         assert!(s.is_ended());
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
     }
 
     #[test]
@@ -1325,7 +1329,7 @@ mod tests {
                 range: RuneRange { start: 0, end: 20 },
             })
         );
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
         let completion = s.finish();
         assert!(!completion.reason.is_clean());
     }
@@ -1822,7 +1826,7 @@ mod tests {
         s.record_outcome("jailbreak", &span(REQ, 0, 8), SegmentOutcome::Cleared)
             .expect("request clears");
         assert_eq!(s.advance(StreamTrack::Request), Some(8));
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
         // A response task may not clear the request track.
         let error = s
             .record_outcome("safety", &span(REQ, 0, 8), SegmentOutcome::Cleared)
@@ -1836,7 +1840,7 @@ mod tests {
         config.request_start_rune_offset = 100;
         config.response_start_rune_offset = 100;
         let mut s = StreamSession::new(config).expect("config is valid");
-        assert_eq!(s.safe_offset(StreamTrack::Response), 100);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 100);
         assert_eq!(s.observe(RES, 20), Ok(120));
         s.record_outcome("safety", &span(RES, 100, 120), SegmentOutcome::Cleared)
             .expect("clears");
@@ -1892,7 +1896,7 @@ mod tests {
             None,
             "a rewritten track has no release point"
         );
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
         assert!(s.is_ended());
         let done = s.finish();
         assert_eq!(
@@ -1917,10 +1921,10 @@ mod tests {
         s.observe(RES, 23).expect("observe");
         s.record_outcome("pii", &span(RES, 0, 23), SegmentOutcome::Transformed)
             .expect("the rewrite records");
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
         s.record_outcome("harm", &span(RES, 0, 23), SegmentOutcome::Cleared)
             .expect_err("the stream already ended rewritten");
-        assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+        assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 0);
     }
 
     #[test]
@@ -1958,7 +1962,7 @@ mod tests {
             .expect("the tail is refused");
         assert!(s.is_ended(), "which is the flag a host must consult");
         assert_eq!(
-            s.safe_offset(StreamTrack::Response),
+            s.watermark(StreamTrack::Response).confirmed(),
             50,
             "kept for the audit record, not permission to emit"
         );
@@ -1972,23 +1976,27 @@ mod tests {
     #[test]
     fn a_failing_settlement_does_not_raise_the_release_point() {
         // Settlement measures residue without committing it. Recomputing the
-        // watermark here would raise `safe_offset` as a side effect of
-        // failing, and a failed settlement is exactly when the host must emit
-        // nothing further.
+        // watermark here would move the recorded offset as a side effect of
+        // failing, which would misreport what the track had reached.
         let mut s = session(&["safety"], SafetyLevel::Blocking);
         s.observe(RES, 20).expect("observe");
         s.record_outcome("safety", &span(RES, 0, 10), SegmentOutcome::Cleared)
             .expect("half clears");
-        let before = s.safe_offset(StreamTrack::Response);
+        let before = s.watermark(StreamTrack::Response).confirmed();
         let done = s.finish();
         assert!(matches!(
             done.reason,
             StreamEndReason::Failed(StreamError::UnclearedResidue { .. })
         ));
         assert_eq!(
-            s.safe_offset(StreamTrack::Response),
+            s.watermark(StreamTrack::Response).confirmed(),
             before,
-            "failing must not move the release point"
+            "failing must not move the recorded offset"
+        );
+        assert_eq!(
+            s.safe_offset(StreamTrack::Response),
+            None,
+            "and a failed session offers nothing to emit"
         );
     }
 

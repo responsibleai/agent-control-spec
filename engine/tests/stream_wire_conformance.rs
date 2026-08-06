@@ -95,7 +95,7 @@ fn one_session_carries_both_tracks_with_independent_offsets() {
         .expect("request clears");
     assert_eq!(s.advance(StreamTrack::Request), Some(6));
     // Clearing one track releases nothing on the other.
-    assert_eq!(s.safe_offset(StreamTrack::Response), 0);
+    assert_eq!(s.safe_offset(StreamTrack::Response), Some(0));
     assert_eq!(s.advance(StreamTrack::Response), None);
 }
 
@@ -148,7 +148,7 @@ fn the_reported_watermark_is_monotonic_and_only_on_progress() {
     s.record_outcome("harm", &span(RES, 0, 3), SegmentOutcome::Cleared)
         .expect("stale span is ignored");
     assert_eq!(s.advance(StreamTrack::Response), None);
-    assert_eq!(s.safe_offset(StreamTrack::Response), 4);
+    assert_eq!(s.safe_offset(StreamTrack::Response), Some(4));
     s.record_outcome("harm", &span(RES, 4, 10), SegmentOutcome::Cleared)
         .expect("clears the rest");
     assert_eq!(s.advance(StreamTrack::Response), Some(10));
@@ -172,8 +172,9 @@ fn a_skipped_outcome_fails_closed_rather_than_confirming_the_gap() {
         })
     );
     assert!(s.is_ended());
-    // The gap never became releasable.
-    assert_eq!(s.safe_offset(StreamTrack::Response), 3);
+    // The gap never became releasable, and the ended session offers nothing.
+    assert_eq!(s.safe_offset(StreamTrack::Response), None);
+    assert_eq!(s.watermark(StreamTrack::Response).confirmed(), 3);
     assert_eq!(s.advance(StreamTrack::Response), None);
 }
 
@@ -189,7 +190,7 @@ fn a_resumed_attempt_continues_the_earlier_offset_space() {
         response_tasks: vec!["harm".to_string()],
     })
     .unwrap();
-    assert_eq!(s.safe_offset(StreamTrack::Response), 42);
+    assert_eq!(s.safe_offset(StreamTrack::Response), Some(42));
     assert_eq!(s.observe_text(RES, "resumed"), Ok(49));
     s.record_outcome("harm", &span(RES, 42, 49), SegmentOutcome::Cleared)
         .expect("clears");
