@@ -102,11 +102,26 @@ struct Host {
     eval_cursor: u32,
     emitted: u32,
     delivered: String,
-    cumulative: bool,
+    target: TargetMode,
+}
+
+/// How the host chooses the value it evaluates for a span.
+#[derive(Clone, Copy)]
+enum TargetMode {
+    /// The whole accumulated prefix, which satisfies the coverage obligation
+    /// in section 18.1 unconditionally.
+    Cumulative,
+    /// The span's own text and nothing else. The negative control: it violates
+    /// the obligation, so a term straddling a boundary escapes.
+    DeltaOnly,
+    /// A bounded suffix window of this many runes ending at the span's end.
+    /// Sound only when the window reaches at least `L - 1` runes below the
+    /// span's start, where `L` is the longest term the policy detects.
+    SuffixWindow(u32),
 }
 
 impl Host {
-    fn new(level: SafetyLevel, cumulative: bool) -> Self {
+    fn new(level: SafetyLevel, target: TargetMode) -> Self {
         let session = StreamSession::new(StreamSessionConfig {
             safety_level: level,
             request_start_rune_offset: 0,
@@ -121,12 +136,12 @@ impl Host {
             eval_cursor: 0,
             emitted: 0,
             delivered: String::new(),
-            cumulative,
+            target,
         }
     }
 
     fn withholding(level: SafetyLevel) -> Self {
-        Self::new(level, true)
+        Self::new(level, TargetMode::Cumulative)
     }
 
     /// Accept one payload and run the whole host side loop over it.
@@ -143,10 +158,12 @@ impl Host {
             return Ok(());
         }
         let span = StreamSpan::new(StreamSourceType::ModelGenerated, self.eval_cursor, end)?;
-        let policy_target = if self.cumulative {
-            self.text.clone()
-        } else {
-            slice_runes(&self.text, self.eval_cursor, end)
+        let policy_target = match self.target {
+            TargetMode::Cumulative => self.text.clone(),
+            TargetMode::DeltaOnly => slice_runes(&self.text, self.eval_cursor, end),
+            TargetMode::SuffixWindow(window) => {
+                slice_runes(&self.text, end.saturating_sub(window), end)
+            }
         };
         let verdict = evaluate(runtime, &policy_target);
         self.session.record_verdict("harm", &span, &verdict)?;
@@ -204,12 +221,49 @@ fn a_banned_span_split_across_payloads_is_still_stopped() {
 }
 
 #[test]
+fn a_window_sized_only_above_the_term_still_misses_it() {
+    // The obligation in section 18.1 is not satisfied by a window merely
+    // longer than the term. Sizing must be measured from the span's START,
+    // because a term overlapping the span can begin `L - 1` runes above it.
+    //
+    // Term `forbidden` is 9 runes at [4,13). Payloads of 4 runes, so spans are
+    // 4 runes. A suffix window of 10 runes is longer than the term and always
+    // contains the span, yet at span [12,16) it holds [6,16), `rbiddenyyy`.
+    // No evaluated value ever holds the whole term, so every span clears.
+    let runtime = runtime("forbidden");
+    let mut host = Host::new(SafetyLevel::Blocking, TargetMode::SuffixWindow(10));
+    host.drive(&runtime, &["xxxx", "forb", "idde", "nyyy"])
+        .expect("no denial is ever recorded");
+    assert_eq!(host.session.end_reason(), None);
+    assert!(
+        host.delivered.contains("forbidden"),
+        "a window longer than the term is not enough"
+    );
+}
+
+#[test]
+fn a_window_reaching_below_the_span_start_catches_the_term() {
+    // The sound bound. For spans of at most `S` runes and a longest term of
+    // `L`, a suffix window must be at least `S + L - 1`, here 4 + 9 - 1 = 12.
+    // The same stream the undersized window missed is now refused.
+    let runtime = runtime("forbidden");
+    let mut host = Host::new(SafetyLevel::Blocking, TargetMode::SuffixWindow(12));
+    let outcome = host.drive(&runtime, &["xxxx", "forb", "idde", "nyyy"]);
+    assert!(outcome.is_ok(), "the denial is recorded, not an error");
+    assert!(matches!(
+        host.session.end_reason(),
+        Some(StreamEndReason::Denied { .. })
+    ));
+    assert!(!host.delivered.contains("forbidden"));
+}
+
+#[test]
 fn evaluating_only_the_delta_would_miss_the_split_span() {
     // The negative control for the host obligation in section 18.1: a host
     // that evaluates the isolated delta sees "safe for" then "bidden text",
     // and the policy allows both.
     let runtime = runtime("forbidden");
-    let mut host = Host::new(SafetyLevel::Blocking, false);
+    let mut host = Host::new(SafetyLevel::Blocking, TargetMode::DeltaOnly);
     host.drive(&runtime, &["safe for", "bidden text"])
         .expect("no denial is ever recorded");
     assert_eq!(host.session.end_reason(), None);
@@ -293,7 +347,7 @@ fn an_unevaluated_tail_fails_closed_at_the_end_of_the_stream() {
 #[test]
 fn deferred_emits_on_arrival_and_still_terminates_on_a_denial() {
     let runtime = runtime("forbidden");
-    let mut host = Host::new(SafetyLevel::Deferred, true);
+    let mut host = Host::new(SafetyLevel::Deferred, TargetMode::Cumulative);
     host.drive(&runtime, &["clean ", "forbidden"])
         .expect("denial recorded behind the stream");
     // Deferred already sent the offending text; the accounting still refuses

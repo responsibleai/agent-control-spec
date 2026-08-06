@@ -29,10 +29,16 @@
 //! This leaves the host owing three obligations that a session cannot check
 //! for it:
 //!
-//! 1. The text evaluated for a span covers at least that span. A policy
-//!    target smaller than the span it gates lets a banned term slip through a
-//!    segment boundary, because the policy sees `for`, then `bidden`, and
-//!    allows both.
+//! 1. The text evaluated for a span covers at least that span, and reaches
+//!    far enough below it. A target smaller than the span lets a banned term
+//!    slip through a segment boundary, because the policy sees `for`, then
+//!    `bidden`, and allows both. A bounded target must also reach at least
+//!    `L - 1` runes below where the span begins, where `L` is the longest term
+//!    the policy detects, since a term overlapping the span can start that far
+//!    above its lower edge. Sizing a window merely longer than `L` is not
+//!    enough: with a 9 rune term, 4 rune spans, and a 10 rune suffix window,
+//!    every span clears and the term still egresses. For a suffix window of
+//!    `N` runes over spans of at most `S`, the bound is `N >= S + L - 1`.
 //! 2. The rune counts reported match the text accumulated.
 //! 3. The outcomes fed in come from enforcement and not from an
 //!    `evaluate_only` evaluation. A cleared span releases text, which
@@ -857,7 +863,16 @@ impl StreamSession {
         }
     }
 
-    /// Offset through which the host may emit this track.
+    /// Offset through which the host may emit this track, while the session
+    /// is running.
+    ///
+    /// Once the session has ended this value is historical and MUST NOT be
+    /// used to emit. It keeps the offset the track reached, which an audit
+    /// record needs, but a `deny` withholds every rune the host has not
+    /// already emitted, including runes a task had cleared. A host that
+    /// delivers lazily by polling this offset therefore has to check
+    /// [`StreamSession::is_ended`] first, or it will release text a denial
+    /// covers on the strength of a number this method still returns.
     pub fn safe_offset(&self, track: StreamTrack) -> u32 {
         self.watermark(track).confirmed()
     }
@@ -1925,6 +1940,33 @@ mod tests {
             s.end_reason(),
             Some(StreamEndReason::Rewritten { .. })
         ));
+    }
+
+    #[test]
+    fn the_release_offset_is_historical_once_the_session_ends() {
+        // A denial withholds every rune the host has not already emitted,
+        // including runes a task had cleared. The offset is kept for the audit
+        // record rather than reset, so this pins the behavior the accessor
+        // documents: the number survives, and `is_ended` is what a host has to
+        // consult before treating it as permission.
+        let mut s = session(&["safety"], SafetyLevel::Blocking);
+        s.observe(RES, 60).expect("observe");
+        s.record_outcome("safety", &span(RES, 0, 50), SegmentOutcome::Cleared)
+            .expect("a prefix clears");
+        assert_eq!(s.advance(StreamTrack::Response), Some(50));
+        s.record_outcome("safety", &span(RES, 50, 60), SegmentOutcome::Denied)
+            .expect("the tail is refused");
+        assert!(s.is_ended(), "which is the flag a host must consult");
+        assert_eq!(
+            s.safe_offset(StreamTrack::Response),
+            50,
+            "kept for the audit record, not permission to emit"
+        );
+        assert_eq!(
+            s.advance(StreamTrack::Response),
+            None,
+            "and it can never move again"
+        );
     }
 
     #[test]

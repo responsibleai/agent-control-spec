@@ -37,6 +37,16 @@
 - `StreamEndReason::Denied` and `StreamEndReason::Rewritten` carry the track.
   The same task name may gate both tracks, which left the audit record
   ambiguous about which one ended the session.
+- The section 18.1 rule for sizing a bounded policy target is stated against
+  the span's start rather than the term's length. A window merely longer than
+  the longest term still misses a term that straddles a segment boundary, since
+  a term overlapping a span can begin `L - 1` runes above where the span
+  starts. For a suffix window of `N` runes over spans of at most `S`, the bound
+  is `N >= S + L - 1`.
+- `safe_offset` documents that its value is historical once the session has
+  ended. A denial withholds every rune the host has not already emitted,
+  including cleared ones, so a host that delivers lazily has to check
+  `is_ended` before treating the offset as permission.
 - Incremental stream mediation, specification section 18.1. A host that must
   release model output before the whole response exists can now drive
   `StreamSession`, which tracks how far each configured task has cleared a
