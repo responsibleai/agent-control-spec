@@ -26,7 +26,7 @@
 //! runes. So the host declares the range it evaluated, and the session tracks
 //! only what that clears.
 //!
-//! This leaves the host owing three obligations that a session cannot check
+//! This leaves the host owing five obligations that a session cannot check
 //! for it:
 //!
 //! 1. The text evaluated for a span covers at least that span, and reaches
@@ -44,6 +44,27 @@
 //!    `evaluate_only` evaluation. A cleared span releases text, which
 //!    specification section 20 forbids presenting an `evaluate_only` result as
 //!    doing. No verdict carries the mode, so nothing here can check it.
+//! 4. The runes released are rune identical to the runes the recorded
+//!    outcomes were evaluated against. A clearance vouches for the text the
+//!    task saw, so a host side rewrite after clearance, the host's own post
+//!    processing included, invalidates the clearance it would ride on. Text
+//!    the host must alter belongs on the whole snapshot path, or in a new
+//!    session over the altered value. A session holds no text, so it cannot
+//!    compare the two.
+//! 5. Durable incorporation of stream text waits for the same watermark that
+//!    gates emission. A rune becomes eligible for a durable write when the
+//!    watermark covers it, under every safety level; on a terminal deny or a
+//!    failing settlement the withheld and uncleared runes are not persisted,
+//!    per AGENT-HOOKS-0.1 section 6.1. The released prefix is already part
+//!    of the caller visible record and may stay durable alongside the
+//!    refusal that followed it.
+//!
+//! The caller these obligations withhold from is any consumer outside the
+//! enforcement boundary: an observer, a callback, a preview channel, a sink
+//! fed from the raw accumulation. Specification section 18.1 states the
+//! full set, including that a host settles every session it opens, an
+//! abandoned one included, because a dropped session leaves a trail with no
+//! settlement outcome.
 //!
 //! One capability limit is worth stating plainly, because it is not obvious
 //! from the types. A `transform` ends the session. The substitution replaces

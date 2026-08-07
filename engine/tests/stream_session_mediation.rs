@@ -399,3 +399,115 @@ fn a_transform_verdict_records_the_host_obligation_to_substitute() {
         "settlement must tell the host the stream was not verbatim"
     );
 }
+
+/// A session resuming attempt 2 of a response stream whose first attempt
+/// delivered runes `[0, resume_at)` before it was abandoned.
+fn resumed_session(resume_at: u32) -> StreamSession {
+    StreamSession::new(StreamSessionConfig {
+        safety_level: SafetyLevel::Blocking,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: resume_at,
+        request_tasks: Vec::new(),
+        response_tasks: vec!["harm".to_string()],
+    })
+    .expect("config is valid")
+}
+
+/// Drive a resumed attempt over `payloads`, evaluating each span over the
+/// accumulated attempt text prefixed by `retained`, and return what the
+/// retry released. `retained` is the tail of the earlier attempt's delivered
+/// text that the host kept across the boundary; passing an empty string is
+/// the host that dropped it.
+fn drive_resumed(
+    runtime: &Runtime,
+    session: &mut StreamSession,
+    resume_at: u32,
+    retained: &str,
+    payloads: &[&str],
+) -> String {
+    let mut attempt_text = String::new();
+    let mut released = String::new();
+    let mut cursor = resume_at;
+    let mut emitted = resume_at;
+    for payload in payloads {
+        attempt_text.push_str(payload);
+        let end = session
+            .observe_text(StreamSourceType::ModelGenerated, payload)
+            .expect("observe");
+        let span =
+            StreamSpan::new(StreamSourceType::ModelGenerated, cursor, end).expect("range is valid");
+        let value = format!("{retained}{attempt_text}");
+        let verdict = evaluate(runtime, &value);
+        session
+            .record_verdict("harm", &span, &verdict)
+            .expect("the outcome records, a denial included");
+        cursor = end;
+        if session.is_ended() {
+            break;
+        }
+        if let Some(safe) = session.advance(StreamTrack::Response) {
+            released.push_str(&slice_runes(
+                &attempt_text,
+                emitted - resume_at,
+                safe - resume_at,
+            ));
+            emitted = safe;
+        }
+    }
+    released
+}
+
+#[test]
+fn a_term_straddling_a_resume_boundary_is_caught_with_the_retained_tail() {
+    // Section 18.1: the attempt boundary is not a clearance boundary. A
+    // track resuming at an offset above zero MUST retain the last `L - 1`
+    // runes the earlier attempt delivered and include them in the value it
+    // evaluates near the boundary.
+    //
+    // Attempt 1 released `xxxxforb`, 8 runes, then was abandoned. The term
+    // `forbidden` is 9 runes at [4, 13): it begins inside attempt 1's
+    // released tail and ends inside attempt 2's first spans, so no value
+    // drawn from attempt 2 alone can ever contain it. With `L - 1` of 8 the
+    // tail the host must retain happens to be the whole of what attempt 1
+    // delivered.
+    let runtime = runtime("forbidden");
+    let delivered = "xxxxforb";
+    let resume_at = 8;
+    let mut session = resumed_session(resume_at);
+    let released = drive_resumed(
+        &runtime,
+        &mut session,
+        resume_at,
+        delivered,
+        &["idde", "nyyy"],
+    );
+    assert!(matches!(
+        session.end_reason(),
+        Some(StreamEndReason::Denied { .. })
+    ));
+    // The retry released only the prefix cleared before the term completed.
+    assert_eq!(released, "idde");
+    let caller_sees = format!("{delivered}{released}");
+    assert!(!caller_sees.contains("forbidden"));
+}
+
+#[test]
+fn a_resumed_host_that_drops_the_prior_tail_misses_the_straddling_term() {
+    // The negative control for the retention obligation. The same stream,
+    // resumed by a host that evaluates only what attempt 2 accumulated:
+    // every value it evaluates holds at most `iddenyyy`, so every span
+    // clears, the session settles clean, and the caller assembles the term
+    // across the attempts.
+    let runtime = runtime("forbidden");
+    let delivered = "xxxxforb";
+    let resume_at = 8;
+    let mut session = resumed_session(resume_at);
+    let released = drive_resumed(&runtime, &mut session, resume_at, "", &["idde", "nyyy"]);
+    assert_eq!(session.finish().reason, StreamEndReason::Complete);
+    assert_eq!(released, "iddenyyy");
+    let caller_sees = format!("{delivered}{released}");
+    assert!(
+        caller_sees.contains("forbidden"),
+        "dropping the prior attempt's tail is what the retention obligation exists to prevent"
+    );
+}
