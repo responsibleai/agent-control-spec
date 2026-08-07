@@ -36,6 +36,21 @@ default = ["rego", "cedar"]
 rego = ["dep:regorus"]
 opa = []
 cedar = ["dep:cedar-policy"]
+# NOTE: because this gate is off by default, `cargo test` without
+# `--all-features` compiles the streaming test binaries to nothing and reports
+# green having run none of them. CI passes `--all-features`, so use that
+# locally before trusting a green run that touched this module.
+#
+# `streaming` gates `pub mod stream_session` and its re-exports, the host
+# side accounting for the incremental stream profile in specification
+# section 18.1. OFF by default for two reasons. The profile is opt in, so a
+# host that assembles a stream before evaluating it never needs the module.
+# And a `StreamSession` carries per stream state, which the default surface
+# of this crate deliberately does not, so gating it keeps the statelessness
+# invariant in section 1.1 true of everything a caller gets by default. The
+# runtime itself is untouched either way: each segment is one ordinary
+# stateless evaluation, and the session only records what they cleared.
+streaming = []
 # Bundled reference dispatchers providing zero-config defaults. OFF by
 # default.
 default-dispatchers = []

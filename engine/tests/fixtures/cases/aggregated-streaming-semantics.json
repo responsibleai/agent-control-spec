@@ -3,7 +3,7 @@
   "covers": [
     "aggregated_streaming_semantics"
   ],
-  "description": "Streaming cases use aggregated post-model and final-output policy_targets; chunk-level verdicts are intentionally absent.",
+  "description": "Streaming cases use aggregated post-model and final-output policy_targets; chunk-level verdicts are intentionally absent. The opt-in incremental profile in specification section 18.1 is separate and is not exercised here.",
   "evaluations": [
     {
       "expected": {
