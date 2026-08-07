@@ -169,6 +169,11 @@ jobs:
         run: |
           npm ci
           npx napi artifacts -d artifacts
+          # The committed binding.js is version-agnostic between bumps:
+          # napi's version-check strings are stamped here from
+          # package.json, the node-side version source, so the published
+          # loader always checks against the version it ships as.
+          node scripts/stamp-binding-version.mjs binding.js
           npx tsc
           npm pack
         working-directory: sdk/node
