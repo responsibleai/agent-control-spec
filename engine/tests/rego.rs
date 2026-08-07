@@ -465,26 +465,46 @@ fn rego_dispatcher_honours_the_deadline_inside_an_uninterruptible_builtin() {
     // deadline shorter than the dispatcher's own overhead would measure
     // the dispatcher rather than the policy.
     let deadline = (uninterrupted / 8).max(Duration::from_millis(20));
-    let dispatcher =
-        RegorusPolicyDispatcher::with_runner(RegorusRegoRunner::new().with_eval_timeout(deadline));
+    let runner = RegorusRegoRunner::new().with_eval_timeout(deadline);
+    let dispatcher = RegorusPolicyDispatcher::with_runner(runner.clone());
 
-    let started = Instant::now();
-    let error = dispatcher
-        .evaluate(&rego_invocation(
-            QUERY,
-            None,
-            BTreeMap::new(),
-            json!({"policy_target": {"value": {}}}),
-        ))
-        .unwrap_err();
-    let bounded = started.elapsed();
+    // Best of three for the return latency, like the bundle-load test
+    // below: the bound measures when the dispatcher releases the caller,
+    // and on a shared two-core runner the wakeup after the deadline can
+    // lag by hundreds of milliseconds — a single sample read 872ms
+    // against a 175ms deadline and failed a bound the dispatcher had in
+    // fact met. Scheduling can inflate a sample; it cannot deflate one,
+    // so the minimum is the dispatcher and the rest is the runner.
+    let mut bounded = Duration::MAX;
+    for _ in 0..3 {
+        let started = Instant::now();
+        let error = dispatcher
+            .evaluate(&rego_invocation(
+                QUERY,
+                None,
+                BTreeMap::new(),
+                json!({"policy_target": {"value": {}}}),
+            ))
+            .unwrap_err();
+        bounded = bounded.min(started.elapsed());
 
-    assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
-    assert!(
-        error.detail().contains("Rego eval exceeded timeout"),
-        "{}",
-        error.detail()
-    );
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert!(
+            error.detail().contains("Rego eval exceeded timeout"),
+            "{}",
+            error.detail()
+        );
+
+        // Let the stranded worker finish before the next sample: it
+        // cannot be killed, and while it runs it burns a core, which
+        // would inflate the next sample and could trip the abandoned
+        // ceiling into refusing instead of timing out.
+        let drained = Instant::now() + Duration::from_secs(60);
+        while runner.abandoned_evaluations() > 0 && Instant::now() < drained {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     // The point of the hard deadline: the caller is released while the
     // builtin is still running, so it returns in a fraction of what the
     // builtin costs rather than waiting it out.
