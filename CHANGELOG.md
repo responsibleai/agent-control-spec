@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0-alpha.2
+
 - Section 18's requirement that a host assemble streamed model output before
   `post_model_call` now carries an exception for a host adopting section 18.1.
   The requirement to assemble streamed final output before `output` is unchanged
