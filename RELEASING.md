@@ -7,7 +7,13 @@ manifests (`scripts/check-version-consistency.py`, enforced in CI).
    `sdk/python/{Cargo.toml,pyproject.toml}` + `Cargo.lock`,
    `sdk/node/package.json` + `npm/*/package.json` + lockfile,
    `sdk/dotnet/src/AgentControlSpec/AgentControlSpec.csproj`) and add a
-   `CHANGELOG.md` entry, through a PR.
+   `CHANGELOG.md` entry, through a PR. Do NOT regenerate
+   `sdk/node/binding.js` for the bump: the napi version-check strings it
+   embeds are stamped from `package.json` at publish time
+   (`sdk/node/scripts/stamp-binding-version.mjs`, run by the release
+   workflow), and the CI drift check compares the file modulo those
+   strings — committing a regenerated copy is harmless but never
+   required.
 2. Dry-run: Actions → release → Run workflow (`dry_run: true`). Builds
    and attests everything, uploads nothing.
 3. Tag the merged commit and push:

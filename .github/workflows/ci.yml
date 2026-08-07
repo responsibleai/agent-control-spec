@@ -119,9 +119,19 @@ jobs:
       # `npm test` regenerates binding.js and binding.d.ts, which are
       # committed and shipped in the npm package. Without this gate a
       # native signature change leaves a stale declaration in the
-      # published types and CI stays green.
+      # published types and CI stays green. binding.js is compared
+      # modulo napi's embedded version-check strings: those are stamped
+      # from package.json at publish time (release.yml), so a version
+      # bump does not have to regenerate the bindings (#31). Stamping
+      # both sides to the same version leaves only real generator-output
+      # drift to fail the diff.
       - name: generated bindings are current
-        run: git diff --exit-code -- binding.js binding.d.ts
+        run: |
+          git diff --exit-code -- binding.d.ts
+          git show HEAD:sdk/node/binding.js > /tmp/binding.committed.js
+          node scripts/stamp-binding-version.mjs /tmp/binding.committed.js
+          node scripts/stamp-binding-version.mjs binding.js
+          diff -u /tmp/binding.committed.js binding.js
         working-directory: sdk/node
 
   dotnet:
