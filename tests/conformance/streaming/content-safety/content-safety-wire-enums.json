@@ -1,0 +1,34 @@
+{
+  "source": "Azure content safety Annotate contract, contracts/rai.proto in the Service-ContentModerator-vnext repository.",
+  "why": "AgentControlSpecification.ContentSafety declares neutral copies of these enumerations so the package builds without a dependency on a non public service. The numeric values are part of the contract, because a caller may translate by value rather than by name. This fixture pins them so a reordering is caught by a test rather than by a mis-routed payload.",
+  "enums": {
+    "SourceType": {
+      "UNKNOWN": 0,
+      "USER_REQUEST": 1,
+      "MODEL_GENERATED": 2,
+      "CONCAT_ALL": 3,
+      "CONTEXT": 4,
+      "PRE_TOOL_CALL": 5,
+      "POST_TOOL_CALL": 6,
+      "PRE_RUN": 7,
+      "POST_RUN": 8
+    },
+    "TextType": {
+      "UNKNOWN": 0,
+      "USER_REQUEST": 1,
+      "MODEL_GENERATED": 2,
+      "CONCAT_ALL": 3,
+      "CONTEXT": 4,
+      "PRE_TOOL_CALL": 5,
+      "POST_TOOL_CALL": 6,
+      "PRE_RUN": 7,
+      "POST_RUN": 8
+    },
+    "ResponseActionType": {
+      "ANNOTATE": 0,
+      "BLOCK": 1,
+      "HITL": 7,
+      "RETRY": 8
+    }
+  }
+}

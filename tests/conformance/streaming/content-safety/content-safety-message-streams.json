@@ -1,0 +1,2464 @@
+{
+  "source": "Generated from contracts/rai.proto with protoc, then rendered as canonical protobuf JSON so a replaying test needs no protobuf dependency. Field names and enum names are the wire ones.",
+  "streams": [
+    {
+      "case": 0,
+      "start_rune_offset": 1024,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-0",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 1024
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 1026,
+      "expected_completion_end": 1122
+    },
+    {
+      "case": 1,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-1",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 0,
+      "expected_completion_end": 66
+    },
+    {
+      "case": 2,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-2",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "MODEL_GENERATED"
+          }
+        }
+      ],
+      "expected_prompt_end": 23,
+      "expected_completion_end": 69
+    },
+    {
+      "case": 3,
+      "start_rune_offset": 1024,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-3",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 1024
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "USER_REQUEST"
+          }
+        }
+      ],
+      "expected_prompt_end": 1040,
+      "expected_completion_end": 1024
+    },
+    {
+      "case": 4,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.default"
+            },
+            "correlation_id": "corr-4",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        }
+      ],
+      "expected_prompt_end": 0,
+      "expected_completion_end": 68
+    },
+    {
+      "case": 5,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-5",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        }
+      ],
+      "expected_prompt_end": 156,
+      "expected_completion_end": 189
+    },
+    {
+      "case": 6,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-6",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 0,
+      "expected_completion_end": 87
+    },
+    {
+      "case": 7,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.default"
+            },
+            "correlation_id": "corr-7",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 137,
+      "expected_completion_end": 151
+    },
+    {
+      "case": 8,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-8",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "CONCAT_ALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 154,
+      "expected_completion_end": 183
+    },
+    {
+      "case": 9,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-9",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 15,
+      "expected_completion_end": 49
+    },
+    {
+      "case": 10,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.default"
+            },
+            "correlation_id": "corr-10",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        }
+      ],
+      "expected_prompt_end": 144,
+      "expected_completion_end": 193
+    },
+    {
+      "case": 11,
+      "start_rune_offset": 1024,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-11",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 1024
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 1039,
+      "expected_completion_end": 1026
+    },
+    {
+      "case": 12,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-12",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 144,
+      "expected_completion_end": 210
+    },
+    {
+      "case": 13,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-13",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "USER_REQUEST"
+          }
+        }
+      ],
+      "expected_prompt_end": 151,
+      "expected_completion_end": 146
+    },
+    {
+      "case": 14,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-14",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 1,
+      "expected_completion_end": 37
+    },
+    {
+      "case": 15,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-15",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 0,
+      "expected_completion_end": 27
+    },
+    {
+      "case": 16,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-16",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        }
+      ],
+      "expected_prompt_end": 12,
+      "expected_completion_end": 50
+    },
+    {
+      "case": 17,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-17",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 17,
+      "expected_completion_end": 19
+    },
+    {
+      "case": 18,
+      "start_rune_offset": 1024,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-18",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 1024
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        }
+      ],
+      "expected_prompt_end": 1024,
+      "expected_completion_end": 1026
+    },
+    {
+      "case": 19,
+      "start_rune_offset": 1024,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-19",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 1024
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 1039,
+      "expected_completion_end": 1089
+    },
+    {
+      "case": 20,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-20",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 15,
+      "expected_completion_end": 68
+    },
+    {
+      "case": 21,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-21",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 18,
+      "expected_completion_end": 13
+    },
+    {
+      "case": 22,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-22",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 137,
+      "expected_completion_end": 229
+    },
+    {
+      "case": 23,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.default"
+            },
+            "correlation_id": "corr-23",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 159,
+      "expected_completion_end": 232
+    },
+    {
+      "case": 24,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-24",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 12,
+      "expected_completion_end": 21
+    },
+    {
+      "case": 25,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-25",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "MODEL_GENERATED"
+          }
+        }
+      ],
+      "expected_prompt_end": 137,
+      "expected_completion_end": 160
+    },
+    {
+      "case": 26,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-26",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 0,
+      "expected_completion_end": 62
+    },
+    {
+      "case": 27,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-27",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 152,
+      "expected_completion_end": 203
+    },
+    {
+      "case": 28,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.default"
+            },
+            "correlation_id": "corr-28",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 7,
+      "expected_completion_end": 83
+    },
+    {
+      "case": 29,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.default"
+            },
+            "correlation_id": "corr-29",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 9,
+      "expected_completion_end": 68
+    },
+    {
+      "case": 30,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-30",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 2,
+      "expected_completion_end": 53
+    },
+    {
+      "case": 31,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-31",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "MODEL_GENERATED"
+          }
+        }
+      ],
+      "expected_prompt_end": 1,
+      "expected_completion_end": 42
+    },
+    {
+      "case": 32,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-32",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 7,
+      "expected_completion_end": 30
+    },
+    {
+      "case": 33,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-33",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 12,
+      "expected_completion_end": 51
+    },
+    {
+      "case": 34,
+      "start_rune_offset": 137,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-34",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 137
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 137,
+      "expected_completion_end": 170
+    },
+    {
+      "case": 35,
+      "start_rune_offset": 1024,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-35",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user",
+            "start_rune_offset": 1024
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "USER_REQUEST"
+          }
+        }
+      ],
+      "expected_prompt_end": 1031,
+      "expected_completion_end": 1038
+    },
+    {
+      "case": 36,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.custom"
+            },
+            "correlation_id": "corr-36",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "POST_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "POST_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 0,
+      "expected_completion_end": 25
+    },
+    {
+      "case": 37,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-37",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "CONTEXT"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "PRE_TOOL_CALL"
+          }
+        }
+      ],
+      "expected_prompt_end": 1,
+      "expected_completion_end": 39
+    },
+    {
+      "case": 38,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-38",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "नमस्ते ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        }
+      ],
+      "expected_prompt_end": 1,
+      "expected_completion_end": 29
+    },
+    {
+      "case": 39,
+      "start_rune_offset": 0,
+      "messages": [
+        {
+          "config": {
+            "policy": {
+              "policy_id": "policy.strict"
+            },
+            "correlation_id": "corr-39",
+            "object_coarse_id": "tenant",
+            "object_fine_id": "user"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "a",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "the weather is ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "hello there ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "CONCAT_ALL"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "héllo 🌍 ",
+            "source_type": "MODEL_GENERATED"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "  ",
+            "source_type": "USER_REQUEST"
+          }
+        },
+        {
+          "payload": {
+            "incremental_text": "👨‍👩‍👧‍👦",
+            "source_type": "MODEL_GENERATED"
+          }
+        }
+      ],
+      "expected_prompt_end": 33,
+      "expected_completion_end": 29
+    }
+  ]
+}

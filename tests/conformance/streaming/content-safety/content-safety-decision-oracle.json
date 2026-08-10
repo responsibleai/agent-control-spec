@@ -1,0 +1,85 @@
+{
+  "source": "Frontdoor.Grpc.Tests/Services/Mapper/RAIOMapperTest.cs in the Service-ContentModerator-vnext repository, extracted mechanically from the arrange blocks and ActionFlags assertions.",
+  "why": "These are the service's own expectations for the decision logic this package reimplements. They are the authoritative oracle for the port, so a divergence here is a defect in this package rather than a disagreement of opinion.",
+  "action_flags": [
+    {
+      "test": "GetTxt2CodeLowAuc_WithDetectedValue_ShouldReturnBlocked",
+      "criterion_kind": "IsDetected",
+      "criterion_enabled": true,
+      "configured_action": "(unset)",
+      "observation_matches": true,
+      "expected_flags": "Block"
+    },
+    {
+      "test": "GetPersonallyIdentifiableInformation_WhenPIIFilteredAndBlockingEnabled_ShouldReturnTrueWithBlock",
+      "criterion_kind": "IsDetected",
+      "criterion_enabled": true,
+      "configured_action": "(unset)",
+      "observation_matches": true,
+      "expected_flags": "Block"
+    },
+    {
+      "test": "GetPersonallyIdentifiableInformation_ShouldSetCorrectAlternateEncodings",
+      "criterion_kind": "IsDetected",
+      "criterion_enabled": true,
+      "configured_action": "(unset)",
+      "observation_matches": true,
+      "expected_flags": "Block"
+    },
+    {
+      "test": "GetPersonallyIdentifiableInformation_3PResult_ShouldHaveEmptyRedactedText",
+      "criterion_kind": "IsDetected",
+      "criterion_enabled": true,
+      "configured_action": "(unset)",
+      "observation_matches": true,
+      "expected_flags": "Block"
+    },
+    {
+      "test": "GetPersonallyIdentifiableInformation_WhenPIIFilteredAndActionHitl_ShouldReturnHitlWithAnnotate",
+      "criterion_kind": "IsDetected",
+      "criterion_enabled": true,
+      "configured_action": "Hitl",
+      "observation_matches": true,
+      "expected_flags": "Hitl"
+    },
+    {
+      "test": "GetPersonallyIdentifiableInformation_WhenPIIFilteredAndActionRetry_ShouldReturnRetry",
+      "criterion_kind": "IsDetected",
+      "criterion_enabled": true,
+      "configured_action": "Retry",
+      "observation_matches": true,
+      "expected_flags": "Retry"
+    }
+  ],
+  "filtered_rule": {
+    "statement": "The annotation's filtered field is true only when the resolved action is block. A matched criterion whose action is human review or retry withholds the content but reports filtered as false.",
+    "evidence": "RAIOMapperTest.cs lines 2251 and 2310, commented 'Filtered is only true for Block'.",
+    "cases": [
+      {
+        "configured_action": "(unset)",
+        "resolved_action": "Block",
+        "filtered": true
+      },
+      {
+        "configured_action": "Block",
+        "resolved_action": "Block",
+        "filtered": true
+      },
+      {
+        "configured_action": "Hitl",
+        "resolved_action": "Hitl",
+        "filtered": false
+      },
+      {
+        "configured_action": "Retry",
+        "resolved_action": "Retry",
+        "filtered": false
+      },
+      {
+        "configured_action": "Annotate",
+        "resolved_action": "Annotate",
+        "filtered": false
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PackageId>ResponsibleAI.AgentControlSpec.ContentSafety</PackageId>
+    <Version>0.4.0-alpha.2</Version>
+    <Description>Agent Control Specification adapter for a streaming content safety front door. Maps blocking criteria and actions onto Agent Control Specification verdicts and supplies release accounting over a mediated stream.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/responsibleai/agent-control-spec</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AgentControlSpec\AgentControlSpec.csproj" />
+  </ItemGroup>
+
+</Project>
