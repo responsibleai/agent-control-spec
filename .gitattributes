@@ -3,3 +3,9 @@
 # the "allow re-emits input verbatim" contract compares against them
 # byte-for-byte. Never let autocrlf rewrite their line endings on checkout.
 /tests/conformance/streaming/inputs/*.sse -text
+
+# The differential traces are compared byte for byte against a string the
+# Rust exporter builds with LF endings, and are replayed by the .NET SDK from
+# the same bytes. Autocrlf rewriting them on checkout makes both fail on
+# Windows for a reason that has nothing to do with the behavior under test.
+/tests/conformance/streaming/stream-session-traces.txt -text
