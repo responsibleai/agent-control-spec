@@ -72,9 +72,10 @@ public enum SegmentOutcome
 
     /// <summary>
     /// The policy returned <c>transform</c> and the host will substitute its
-    /// own replacement before emitting this span. The session clears the span
-    /// and records that the stream was modified; applying the replacement is
-    /// the host's job, because the session holds no text to apply it to.
+    /// own replacement for this span. Applying the replacement is the host's
+    /// job, because the session holds no text to apply it to. A rewrite is
+    /// terminal, and it is refused once any rune has been released, since
+    /// released text can no longer be rewritten.
     /// </summary>
     Transformed,
 
@@ -158,8 +159,8 @@ public abstract record StreamEndReason
 /// <summary>Terminal settlement of a session.</summary>
 /// <param name="Reason">Why the session ended.</param>
 /// <param name="Transformed">
-/// Whether any span cleared through a <see cref="SegmentOutcome.Transformed"/>
-/// outcome, so the text the host emitted is not verbatim model output.
+/// Whether the session ended in a rewrite, so the text the host emitted is
+/// not verbatim model output.
 /// </param>
 public sealed record StreamCompletion(StreamEndReason Reason, bool Transformed);
 
@@ -557,13 +558,11 @@ public sealed class StreamSession
     /// <summary>
     /// Map an ACS verdict onto an outcome and record it.
     ///
-    /// <c>allow</c> and <c>warn</c> clear. <c>deny</c> denies. <c>escalate</c>
-    /// denies, because section 17.1 makes an unresolved escalation a deny and
-    /// a session cannot hold a connection open across an out of band
-    /// approval; a host that runs an approval path must resolve it first and
-    /// record the resolved outcome through <see cref="RecordOutcome"/>.
-    /// <c>transform</c> records a transform outcome, which obliges the host to
-    /// apply the verdict's replacement to this span before emitting it.
+    /// <c>allow</c> clears and <c>deny</c> denies. <c>transform</c> records a
+    /// rewrite, which obliges the host to apply the verdict's replacement to
+    /// this span and ends the session. Any other decision is refused rather
+    /// than mapped, because treating an unrecognised decision as a clear would
+    /// release text no policy passed.
     /// </summary>
     public void RecordVerdict(string task, StreamSpan span, Verdict verdict)
     {

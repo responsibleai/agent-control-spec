@@ -59,6 +59,7 @@ internal static class StreamSessionHarness
         ARewriteEndsTheStreamAndReportsNoWatermark();
         TransformFailsClosedUnderANonWithholdingLevel();
         TransformFailsClosedOverAlreadyReleasedText();
+        TransformAboveReleasedTextStillFailsClosed();
         OutcomePastObservedTextFailsClosed();
         UnknownTaskFailsClosed();
         ARefusalFromAnUnconfiguredTaskIsRefusedNotRecorded();
@@ -240,6 +241,23 @@ internal static class StreamSessionHarness
         Throws(
             () => session.RecordOutcome("pii", Span(Res, 10, 40), SegmentOutcome.Transformed),
             "a transform reaching released text must fail closed");
+        Assert(session.IsEnded, "the session is terminal");
+    }
+
+    private static void TransformAboveReleasedTextStillFailsClosed()
+    {
+        // The span starts exactly at the watermark, so it reaches no released
+        // rune and an overlap check would let it through. It must still fail,
+        // because a transform names a node of the policy target rather than a
+        // rune range, and this type holds no text, so it cannot know how far
+        // below the span the target reaches.
+        var session = Session(SafetyLevel.Blocking, "pii");
+        session.Observe(Res, 40);
+        session.RecordOutcome("pii", Span(Res, 0, 20), SegmentOutcome.Cleared);
+        Assert(session.Advance(StreamTrack.Response) == 20, "the first span is released");
+        Throws(
+            () => session.RecordOutcome("pii", Span(Res, 20, 40), SegmentOutcome.Transformed),
+            "a transform above released text must fail closed");
         Assert(session.IsEnded, "the session is terminal");
     }
 

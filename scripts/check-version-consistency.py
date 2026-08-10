@@ -64,12 +64,12 @@ def read_versions() -> dict[str, str]:
             "version"
         ]
 
-    csproj = (
-        ROOT / "sdk/dotnet/src/AgentControlSpec/AgentControlSpec.csproj"
-    ).read_text(encoding="utf-8")
-    m = re.search(r"<Version>([^<]+)</Version>", csproj)
-    assert m, "no <Version> in AgentControlSpec.csproj"
-    versions["sdk/dotnet/src/AgentControlSpec/AgentControlSpec.csproj"] = m.group(1)
+    for name in ("AgentControlSpec", "AgentControlSpec.ContentSafety"):
+        rel = f"sdk/dotnet/src/{name}/{name}.csproj"
+        csproj = (ROOT / rel).read_text(encoding="utf-8")
+        m = re.search(r"<Version>([^<]+)</Version>", csproj)
+        assert m, f"no <Version> in {name}.csproj"
+        versions[rel] = m.group(1)
     return versions
 
 

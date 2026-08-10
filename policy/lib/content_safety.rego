@@ -95,6 +95,12 @@ malformed(criterion) if {
 # outranks annotate. An unset or unrecognised action on a matched criterion
 # resolves to block, because a task that found something must not be permitted
 # by a gap in its own configuration.
+#
+# These rules are also implemented in C# in ContentSafetyDecision, and both
+# answer to the same authority: the service's own expectations, committed at
+# tests/conformance/streaming/content-safety/content-safety-decision-oracle.json.
+# The .NET tests check against that file. Nothing checks this one against it, so
+# a change to the precedence here has to be made in both places by hand.
 action_rank := {
 	"annotate": 0,
 	"retry": 1,

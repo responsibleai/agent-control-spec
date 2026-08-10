@@ -9,6 +9,13 @@
     <Description>Agent Control Specification adapter for a streaming content safety front door. Maps blocking criteria and actions onto Agent Control Specification verdicts and supplies release accounting over a mediated stream.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/responsibleai/agent-control-spec</RepositoryUrl>
+    <!--
+      Not published while the home for this adapter is still open. Its
+      vocabulary is front door wire vocabulary, so it may belong with the
+      consumer rather than here, and a published package id would make that
+      move a breaking change for anyone who took it.
+    -->
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <ItemGroup>
