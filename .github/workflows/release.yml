@@ -297,7 +297,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version=$(ls sdk/dotnet/dist/*.nupkg | sed -E 's/.*ResponsibleAI\.AgentControlSpec\.(.*)\.nupkg/\1/')
+          nupkg=$(find sdk/dotnet/dist -name 'ResponsibleAI.AgentControlSpec.*.nupkg' -print -quit)
+          version=$(basename "$nupkg" .nupkg)
+          version=${version#ResponsibleAI.AgentControlSpec.}
           bash scripts/verify-dotnet-package.sh "$PWD/sdk/dotnet/dist" "$version"
       - name: SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
