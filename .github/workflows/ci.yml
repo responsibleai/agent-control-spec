@@ -193,7 +193,7 @@ jobs:
           pip install maturin==1.8.7
           maturin build --release -m sdk/python/Cargo.toml -o dist
           pip install dist/*.whl
-      - name: Compare every language against the same stream
-        run: python tests/conformance/streaming/cross_language_parity.py
+      - name: Compare every language across the whole surface
+        run: python tests/conformance/parity/cross_language_parity.py
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/release

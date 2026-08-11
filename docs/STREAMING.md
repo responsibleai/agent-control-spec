@@ -166,5 +166,6 @@ direct crate dependency, pyo3, napi, and a C ABI with P/Invoke over it.
 Each converts enums, offsets and the absent release point at its own
 boundary, so agreement is not structural.
 
-`tests/conformance/streaming/cross_language_parity.py` runs one scenario
-in all four and fails on any divergence. It is part of CI.
+`tests/conformance/parity/cross_language_parity.py` runs the whole
+public surface, streaming and otherwise, in all four and fails on any
+divergence. It is part of CI.

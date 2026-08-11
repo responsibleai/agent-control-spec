@@ -50,8 +50,19 @@ class AcsInterceptor:
     evaluator, ``test`` policies through their embedded verdict).
     """
 
-    def __init__(self, manifest_path: str) -> None:
+    def __init__(self, manifest_path: str, name: str = "acs") -> None:
         self._handle = _native.interceptor_new(manifest_path)
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        """Payload-free identifier for the record's ``verdicts[].name``.
+
+        The engine does not stamp this onto a verdict. A host that runs
+        more than one interceptor records it alongside the verdict so the
+        entry says which one decided.
+        """
+        return self._name
 
     def intercept(self, context: Mapping[str, Any]) -> Verdict:
         wire = _native.intercept(self._handle, json.dumps(context, allow_nan=False))
