@@ -168,4 +168,9 @@ boundary, so agreement is not structural.
 
 `tests/conformance/parity/cross_language_parity.py` runs the whole
 public surface, streaming and otherwise, in all four and fails on any
-divergence. It is part of CI.
+divergence.
+
+That harness runs against this checkout. `scripts/verify-artifacts.py`
+runs the same surface from a clean install of the built crate, wheel,
+tarball and nupkg, which is the only thing that catches a package
+shipping less than the repository holds. Both are part of CI.
