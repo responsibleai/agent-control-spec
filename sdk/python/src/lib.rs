@@ -12,16 +12,17 @@ use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
 use agent_control_spec::policy::PreparedPolicyInvocation;
 use agent_control_spec::runtime::PolicyDispatcher;
-use agent_control_spec::telemetry::{TelemetryEvent, TelemetrySink};
+use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
 use agent_control_spec::{
-    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, PerfTelemetry, Runtime,
-    RuntimeError, SafetyLevel, SegmentOutcome, StreamEndReason, StreamError, StreamSession,
-    StreamSessionConfig, StreamSourceType, StreamSpan, StreamTrack, Verdict, SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Limits, Manifest, PerfTelemetry,
+    Runtime, RuntimeError, SafetyLevel, SegmentOutcome, StreamEndReason, StreamError,
+    StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan, StreamTrack, Verdict,
+    SUPPORTED_VERSIONS,
 };
 use pyo3::create_exception;
-use pyo3::exceptions::{PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyMapping, PyString};
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, Mutex};
 
@@ -378,6 +379,113 @@ fn resolve_telemetry_sink(sink: Option<Py<PyAny>>) -> Option<Arc<dyn TelemetrySi
     })
 }
 
+/// The engine's default resource caps as a mapping. A host that raises
+/// one cap on the way to `interceptor_new` reads this to see what it is
+/// overriding, so a shipping change to another default cannot be
+/// silently absorbed.
+fn limits_defaults_map<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+    let defaults = Limits::default();
+    let d = PyDict::new(py);
+    d.set_item("max_snapshot_bytes", defaults.max_snapshot_bytes)?;
+    d.set_item("max_policy_input_depth", defaults.max_policy_input_depth)?;
+    d.set_item(
+        "max_annotators_per_point",
+        defaults.max_annotators_per_point,
+    )?;
+    d.set_item(
+        "max_annotator_output_bytes",
+        defaults.max_annotator_output_bytes,
+    )?;
+    d.set_item("max_policy_output_bytes", defaults.max_policy_output_bytes)?;
+    d.set_item("max_extends_depth", defaults.max_extends_depth)?;
+    d.set_item(
+        "max_merged_manifest_bytes",
+        defaults.max_merged_manifest_bytes,
+    )?;
+    d.set_item("max_manifest_url_bytes", defaults.max_manifest_url_bytes)?;
+    d.set_item("manifest_url_timeout_ms", defaults.manifest_url_timeout_ms)?;
+    d.set_item(
+        "max_manifest_url_redirects",
+        defaults.max_manifest_url_redirects,
+    )?;
+    Ok(d)
+}
+
+/// Read a limits override, mirroring the FFI's `parse_limits`:
+///
+/// - `None` (absent) means keep every default.
+/// - Each field is individually optional; an absent field keeps its own
+///   default, so a host raising one cap does not restate the other nine.
+/// - A field present but not a non-negative integer is a hard ERROR, not
+///   a silently-kept default. A host that asked for a smaller bound and
+///   got the larger one would believe it was protected when it was not.
+fn resolve_limits(limits: Option<Py<PyAny>>) -> PyResult<Limits> {
+    let mut out = Limits::default();
+    let Some(value) = limits else {
+        return Ok(out);
+    };
+
+    Python::attach(|py| -> PyResult<()> {
+        let bound = value.bind(py);
+        if bound.is_none() {
+            return Ok(());
+        }
+        // Accept any Mapping (dict, MappingProxyType, custom mapping).
+        // Reject non-mappings loudly rather than silently ignoring the
+        // caller's intent.
+        let mapping: Bound<'_, PyMapping> = bound
+            .cast::<PyMapping>()
+            .map_err(|_| PyTypeError::new_err("limits must be a Mapping[str, int] or None"))?
+            .clone();
+
+        let read = |key: &str| -> PyResult<Option<u64>> {
+            if !mapping.contains(key)? {
+                return Ok(None);
+            }
+            let raw = mapping.get_item(key)?;
+            if raw.is_none() {
+                return Ok(None);
+            }
+            // Booleans are ints in Python. Refuse them: a host that meant
+            // `True` for a cap almost certainly meant something else, and
+            // a silently-accepted `1` masks a bug.
+            if raw.cast::<PyBool>().is_ok() {
+                return Err(PyValueError::new_err(format!(
+                    "limits[{key:?}] must be a non-negative integer"
+                )));
+            }
+            let extracted: Result<u64, _> = raw.extract();
+            match extracted {
+                Ok(n) => Ok(Some(n)),
+                Err(_) => Err(PyValueError::new_err(format!(
+                    "limits[{key:?}] must be a non-negative integer"
+                ))),
+            }
+        };
+
+        macro_rules! apply {
+            ($field:ident, $ty:ty) => {
+                if let Some(v) = read(stringify!($field))? {
+                    out.$field = v as $ty;
+                }
+            };
+        }
+        apply!(max_snapshot_bytes, usize);
+        apply!(max_policy_input_depth, usize);
+        apply!(max_annotators_per_point, usize);
+        apply!(max_annotator_output_bytes, usize);
+        apply!(max_policy_output_bytes, usize);
+        apply!(max_extends_depth, usize);
+        apply!(max_merged_manifest_bytes, usize);
+        apply!(max_manifest_url_bytes, usize);
+        apply!(manifest_url_timeout_ms, u64);
+        apply!(max_manifest_url_redirects, usize);
+        Ok(())
+    })?;
+
+    Ok(out)
+}
+
 #[pyclass(frozen)]
 struct RuntimeHandle {
     runtime: Runtime,
@@ -387,8 +495,9 @@ struct RuntimeHandle {
 ///
 /// Passing no host arguments preserves the zero-config path: bundled
 /// annotators, `BindingPolicyDispatcher` for Rego/Cedar/test policies,
-/// no-op telemetry, `PerfTelemetry::Off`. Host-supplied callbacks and
-/// a `perf_telemetry` other than "off" replace them.
+/// no-op telemetry, `PerfTelemetry::Off`, and the engine's default
+/// resource caps. Host-supplied callbacks, a `perf_telemetry` other
+/// than "off", and a `limits` mapping replace them.
 #[pyfunction]
 #[pyo3(signature = (
     manifest_path,
@@ -396,6 +505,7 @@ struct RuntimeHandle {
     policy_dispatcher = None,
     telemetry_sink = None,
     perf_telemetry = "off",
+    limits = None,
 ))]
 fn interceptor_new(
     manifest_path: &str,
@@ -403,6 +513,7 @@ fn interceptor_new(
     policy_dispatcher: Option<Py<PyAny>>,
     telemetry_sink: Option<Py<PyAny>>,
     perf_telemetry: &str,
+    limits: Option<Py<PyAny>>,
 ) -> PyResult<RuntimeHandle> {
     let manifest =
         Manifest::from_path(manifest_path).map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -410,12 +521,18 @@ fn interceptor_new(
     let policy = resolve_policy_dispatcher(policy_dispatcher);
     let perf = parse_perf_telemetry(perf_telemetry)?;
     let telemetry = resolve_telemetry_sink(telemetry_sink);
-    let runtime = match telemetry {
-        Some(sink) => Runtime::with_telemetry_and_perf(manifest, annotations, policy, sink, perf)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?,
-        None => Runtime::with_perf_telemetry(manifest, annotations, policy, perf)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?,
-    };
+    let limits = resolve_limits(limits)?;
+    let telemetry_arc: Arc<dyn TelemetrySink> =
+        telemetry.unwrap_or_else(|| Arc::new(NoopTelemetrySink));
+    let runtime = Runtime::with_telemetry_perf_and_limits(
+        manifest,
+        annotations,
+        policy,
+        telemetry_arc,
+        perf,
+        limits,
+    )
+    .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
     Ok(RuntimeHandle { runtime })
 }
 
@@ -1128,6 +1245,13 @@ fn stream_config(handle: &StreamSessionHandle) -> PyResult<String> {
     json_string(&value)
 }
 
+/// The engine's default resource caps as a `dict[str, int]`. A host
+/// that raises one cap reads this to see what it is overriding.
+#[pyfunction]
+fn default_limits(py: Python<'_>) -> PyResult<Py<PyDict>> {
+    Ok(limits_defaults_map(py)?.unbind())
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeHandle>()?;
@@ -1154,6 +1278,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(stream_transformed, m)?)?;
     m.add_function(wrap_pyfunction!(stream_end_reason, m)?)?;
     m.add_function(wrap_pyfunction!(stream_config, m)?)?;
+    m.add_function(wrap_pyfunction!(default_limits, m)?)?;
     m.add("ManifestInvalid", m.py().get_type::<ManifestInvalid>())?;
     m.add_function(wrap_pyfunction!(validate_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(validate_manifest_file, m)?)?;

@@ -279,5 +279,37 @@ public sealed class HostHooksTests : IDisposable
             AcsManifestTools.ValidateArtifacts(Bad, null).Count);
     }
 
+
+    [Fact]
+    public async Task ALoweredSnapshotCapIsEnforced()
+    {
+        var manifest = WriteFixture();
+        var big = new string('x', 4096);
+
+        using var permissive = AcsHostInterceptor.FromPath(
+            manifest, annotator: (_, _, _) => """{"severity":1}""");
+        Assert.Equal(Decision.Allow, (await permissive.InterceptAsync(Input(big))).Decision);
+
+        // The same context against a cap smaller than it. A host that
+        // asked for a smaller bound and kept the larger one would believe
+        // it was protected when it was not.
+        using var capped = AcsHostInterceptor.FromPath(
+            manifest,
+            annotator: (_, _, _) => """{"severity":1}""",
+            limits: """{"max_snapshot_bytes": 64}""");
+
+        var verdict = await capped.InterceptAsync(Input(big));
+        Assert.Equal(Decision.Deny, verdict.Decision);
+        Assert.StartsWith("runtime_error:", verdict.Reason);
+    }
+
+    [Fact]
+    public void ALimitThatIsNotANumberIsRefused()
+    {
+        var manifest = WriteFixture();
+        Assert.Throws<AgentControlSpecNativeException>(() =>
+            AcsHostInterceptor.FromPath(manifest, limits: """{"max_snapshot_bytes": "big"}"""));
+    }
+
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 }

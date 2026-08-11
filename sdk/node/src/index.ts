@@ -34,8 +34,10 @@ const native = require("../binding.js") as {
     policyDispatcher?: ((invocationJson: string) => string) | null,
     telemetrySink?: ((eventJson: string) => void) | null,
     perfTelemetry?: string | null,
+    limitsJson?: string | null,
   ): unknown;
   intercept(handle: unknown, contextJson: string): string;
+  defaultLimits(): string;
   policyActivate(manifestPath: string): unknown;
   policyActivateFromMemory(manifestYaml: string, bundlesJson: string): unknown;
   policyActivateWithHooks(
@@ -222,6 +224,53 @@ export type TelemetrySink = (event: TelemetryEvent) => void;
 export type PerfTelemetry = "off" | "external" | "full";
 
 /**
+ * Resource caps overriding the engine's defaults, field by field.
+ *
+ * `Limits` is a denial-of-service control surface: a host feeding
+ * large payloads raises `maxSnapshotBytes`; one hardening against a
+ * hostile manifest lowers `maxExtendsDepth` or
+ * `manifestUrlTimeoutMs`. Each field is individually optional; an
+ * absent field keeps its own default, so a host raising one cap does
+ * not restate the other nine. A field present but not a non-negative
+ * integer is a hard error, not a silently-kept default: a host that
+ * asked for a smaller bound and got the larger one would believe it
+ * was protected when it was not.
+ *
+ * See {@link DEFAULT_LIMITS} for the shipped values.
+ */
+export interface Limits {
+  /** Cap on the canonicalized context snapshot in bytes. */
+  max_snapshot_bytes?: number;
+  /** JSON nesting depth accepted anywhere in policy input/output. */
+  max_policy_input_depth?: number;
+  /** Number of annotators the engine will dispatch per intervention point. */
+  max_annotators_per_point?: number;
+  /** Per-annotator serialized output cap in bytes. */
+  max_annotator_output_bytes?: number;
+  /** Policy-decision serialized output cap in bytes. */
+  max_policy_output_bytes?: number;
+  /** Manifest `extends` chain length. */
+  max_extends_depth?: number;
+  /** Composed manifest total size cap in bytes. */
+  max_merged_manifest_bytes?: number;
+  /** Per-URL manifest fetch body cap in bytes. */
+  max_manifest_url_bytes?: number;
+  /** Per-URL manifest fetch deadline in milliseconds. */
+  manifest_url_timeout_ms?: number;
+  /** Per-URL manifest fetch redirect count. */
+  max_manifest_url_redirects?: number;
+}
+
+/**
+ * The engine's shipped resource caps, as a frozen object. Read this to
+ * see what a `limits` mapping is overriding; a shipping change to
+ * another default cannot then be silently absorbed by a stale mapping.
+ */
+export const DEFAULT_LIMITS: Readonly<Required<Limits>> = Object.freeze(
+  JSON.parse(native.defaultLimits()) as Required<Limits>,
+);
+
+/**
  * Host extension points. Each is optional; supplying one replaces the
  * zero-config default for that slot.
  */
@@ -230,6 +279,11 @@ export interface HostHooks {
   policyDispatcher?: PolicyDispatcher;
   telemetrySink?: TelemetrySink;
   perfTelemetry?: PerfTelemetry;
+  /**
+   * Resource caps overriding the engine's defaults, field by field.
+   * See {@link Limits} and {@link DEFAULT_LIMITS}.
+   */
+  limits?: Readonly<Limits>;
 }
 
 // --- Bridges between the object-oriented TS surface and the JSON --------
@@ -281,7 +335,8 @@ function hasHostHooks(options: HostHooks): boolean {
     options.annotatorDispatcher !== undefined ||
     options.policyDispatcher !== undefined ||
     options.telemetrySink !== undefined ||
-    options.perfTelemetry !== undefined
+    options.perfTelemetry !== undefined ||
+    options.limits !== undefined
   );
 }
 
@@ -310,10 +365,13 @@ export class AcsInterceptor implements Interceptor {
    * construction.
    *
    * Supply `annotatorDispatcher`, `policyDispatcher`, `telemetrySink`,
-   * or `perfTelemetry` to override the engine's extension points. Each
-   * callback is called synchronously on the JS thread from inside
-   * `intercept`. A callback that throws surfaces as a fail-closed
-   * `runtime_error:*` deny rather than reading as "no annotation".
+   * `perfTelemetry`, or `limits` to override the engine's extension
+   * points and resource caps. Each callback is called synchronously on
+   * the JS thread from inside `intercept`. A callback that throws
+   * surfaces as a fail-closed `runtime_error:*` deny rather than
+   * reading as "no annotation". A `limits` mapping overrides only the
+   * fields it names; the rest keep the engine's defaults, see
+   * {@link DEFAULT_LIMITS}.
    */
   static fromPath(manifestPath: string, options: AcsInterceptorOptions = {}): AcsInterceptor {
     const name = options.name ?? "acs";
@@ -328,6 +386,7 @@ export class AcsInterceptor implements Interceptor {
             : null,
           options.telemetrySink ? wrapTelemetrySink(options.telemetrySink) : null,
           options.perfTelemetry ?? null,
+          options.limits ? JSON.stringify(options.limits) : null,
         )
       : native.interceptorNew(manifestPath);
     return new AcsInterceptor(handle, name);

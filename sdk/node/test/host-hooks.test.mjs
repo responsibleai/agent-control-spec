@@ -494,3 +494,137 @@ test("validateArtifacts throws on boundary problems", () => {
   assert.throws(() => validateArtifacts(ARTIFACT_MANIFEST, 5), TypeError);
   assert.throws(() => validateArtifacts(ARTIFACT_MANIFEST, "not-an-object"), TypeError);
 });
+
+// ---------------------------------------------------------------------
+// 9. Resource limits: caps overriding the engine's defaults reach the
+// runtime and change the verdict.
+//
+// `Limits` is a denial-of-service control surface: a host feeding
+// large payloads raises `max_snapshot_bytes`; one hardening against a
+// hostile manifest lowers `max_extends_depth` or
+// `manifest_url_timeout_ms`.
+//
+// The behavioural test is deliberately end-to-end: the same manifest
+// and the same context, evaluated once with default caps and once with
+// a small `max_snapshot_bytes`, produce different verdicts. That is
+// what proves the value reaches the engine rather than being accepted
+// on the JS side and dropped on the way in.
+// ---------------------------------------------------------------------
+
+const { DEFAULT_LIMITS } = require("../dist/index.js");
+
+test("a lowered snapshot cap flips the verdict from allow to fail-closed deny", () => {
+  const big = "x".repeat(4096);
+  const permissive = AcsInterceptor.fromPath(fixtureManifestPath);
+  assert.equal(permissive.intercept(builder().input(big)).decision, "allow");
+
+  // Same manifest, same context, but the cap is now smaller than the
+  // canonicalized snapshot. A host that asked for the smaller bound and
+  // got the larger one would believe it was protected when it was not.
+  const capped = AcsInterceptor.fromPath(fixtureManifestPath, {
+    limits: { max_snapshot_bytes: 64 },
+  });
+  const verdict = capped.intercept(builder().input(big));
+  assert.equal(verdict.decision, "deny");
+  assert.ok(
+    verdict.reason.startsWith("runtime_error:"),
+    `expected runtime_error:*, got ${verdict.reason}`,
+  );
+});
+
+test("no limits option matches the baseline zero-config path", () => {
+  const baseline = AcsInterceptor.fromPath(fixtureManifestPath);
+  const empty = AcsInterceptor.fromPath(fixtureManifestPath, { limits: {} });
+  for (const ctx of [
+    builder().input("hi"),
+    builder().preToolCall("t1", "search", { q: "x" }),
+  ]) {
+    // Two independent Contexts of the same shape.
+    assert.deepEqual(
+      empty.intercept(ctx),
+      baseline.intercept(ctx),
+      "an empty limits object must be identical to no limits option",
+    );
+  }
+});
+
+test("overriding one limit leaves the others at their defaults", () => {
+  const big = "x".repeat(4096);
+  // Raise only the annotator output cap. Untouched `max_snapshot_bytes`
+  // still defaults big, so the 4096-char input allows.
+  const partial = AcsInterceptor.fromPath(fixtureManifestPath, {
+    limits: { max_annotator_output_bytes: 8_388_608 },
+  });
+  assert.equal(partial.intercept(builder().input(big)).decision, "allow");
+
+  // And when the second, untouched cap IS lowered on a separate
+  // interceptor, it enforces — proving the field-by-field override
+  // semantics: a raised cap does not silently reset a peer.
+  const both = AcsInterceptor.fromPath(fixtureManifestPath, {
+    limits: {
+      max_annotator_output_bytes: 8_388_608,
+      max_snapshot_bytes: 64,
+    },
+  });
+  const v = both.intercept(builder().input(big));
+  assert.equal(v.decision, "deny");
+  assert.ok(v.reason.startsWith("runtime_error:"));
+});
+
+test("a limit that is not a non-negative integer is refused", () => {
+  // A value the engine cannot parse is a hard error, not a
+  // silently-kept default. A host that typo'd learns immediately
+  // instead of finding out at the first breached limit that would
+  // never fire.
+  assert.throws(
+    () =>
+      AcsInterceptor.fromPath(fixtureManifestPath, {
+        limits: { max_snapshot_bytes: "big" },
+      }),
+    /max_snapshot_bytes/,
+  );
+  assert.throws(
+    () =>
+      AcsInterceptor.fromPath(fixtureManifestPath, {
+        limits: { max_snapshot_bytes: -1 },
+      }),
+    /max_snapshot_bytes/,
+  );
+  assert.throws(
+    () =>
+      AcsInterceptor.fromPath(fixtureManifestPath, {
+        limits: { max_snapshot_bytes: 1.5 },
+      }),
+    /max_snapshot_bytes/,
+  );
+});
+
+test("DEFAULT_LIMITS carries every documented field and is frozen", () => {
+  // A host raising one cap reads `DEFAULT_LIMITS` to see what it is
+  // overriding. The shape must stay wired to the engine's own
+  // defaults, so a shipping change to another cap cannot be silently
+  // absorbed by a stale mapping.
+  const expected = new Set([
+    "max_snapshot_bytes",
+    "max_policy_input_depth",
+    "max_annotators_per_point",
+    "max_annotator_output_bytes",
+    "max_policy_output_bytes",
+    "max_extends_depth",
+    "max_merged_manifest_bytes",
+    "max_manifest_url_bytes",
+    "manifest_url_timeout_ms",
+    "max_manifest_url_redirects",
+  ]);
+  assert.deepEqual(new Set(Object.keys(DEFAULT_LIMITS)), expected);
+  for (const [key, value] of Object.entries(DEFAULT_LIMITS)) {
+    assert.equal(
+      typeof value,
+      "number",
+      `DEFAULT_LIMITS[${key}] must be a number, was ${typeof value}`,
+    );
+    assert.ok(Number.isInteger(value) && value >= 0, `${key} = ${value}`);
+  }
+  // Frozen so a caller cannot mutate a shared default.
+  assert.ok(Object.isFrozen(DEFAULT_LIMITS));
+});

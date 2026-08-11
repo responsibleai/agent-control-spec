@@ -20,6 +20,7 @@ import pathlib
 
 import pytest
 from agent_control_spec import (
+    DEFAULT_LIMITS,
     PERF_TELEMETRY_LEVELS,
     AcsInterceptor,
     ActivatedPolicy,
@@ -518,3 +519,137 @@ def test_validate_artifacts_accepts_none_for_bundles():
     assert validate_artifacts(ARTIFACT_MANIFEST, None) == validate_artifacts(
         ARTIFACT_MANIFEST, {}
     )
+
+
+# ---------------------------------------------------------------------
+# Resource limits: caps overriding the engine's defaults reach the
+# runtime and change the verdict. `Limits` is a denial-of-service
+# control surface: a host feeding large payloads raises
+# `max_snapshot_bytes`; one hardening against a hostile manifest lowers
+# `max_extends_depth` or `manifest_url_timeout_ms`.
+#
+# The behavioural test is deliberately end-to-end: the same manifest
+# and the same context, evaluated once with default caps and once with
+# a small `max_snapshot_bytes`, produce different verdicts. That is
+# what proves the value reaches the engine, rather than being accepted
+# on the Python side and dropped on the way in.
+# ---------------------------------------------------------------------
+
+
+def test_lowered_snapshot_cap_flips_the_verdict():
+    """A snapshot bigger than the cap must fail closed. With default
+    caps the same input allows; with the cap lowered below the
+    canonicalized snapshot size, the engine denies with
+    ``runtime_error:*``. A host that asked for the smaller bound and
+    got the larger one would believe it was protected when it was not.
+    """
+    big = "x" * 4096
+    permissive = AcsInterceptor(DEFAULT_MANIFEST)
+    assert permissive.intercept(_builder().input(content=big)).decision.value == "allow"
+
+    capped = AcsInterceptor(DEFAULT_MANIFEST, limits={"max_snapshot_bytes": 64})
+    verdict = capped.intercept(_builder().input(content=big))
+    assert verdict.decision.value == "deny"
+    assert verdict.reason.startswith("runtime_error:"), verdict.reason
+
+
+def test_no_limits_argument_matches_the_baseline_zero_config_path():
+    """Regression guard: `limits=None` (and omitting the argument) must
+    behave identically to the pre-Limits baseline. Two contexts, one
+    that allowed and one that denied on the fixture, produce the same
+    verdicts under a `limits=None` interceptor as under one with no
+    kwarg at all.
+    """
+    baseline = AcsInterceptor(DEFAULT_MANIFEST)
+    explicit_none = AcsInterceptor(DEFAULT_MANIFEST, limits=None)
+    empty = AcsInterceptor(DEFAULT_MANIFEST, limits={})
+    for ctx in (
+        _builder().input(content="hi"),
+        _builder().pre_tool_call(call_id="t1", name="search", args={"q": "x"}),
+    ):
+        base_v = baseline.intercept(ctx)
+        assert explicit_none.intercept(ctx).decision == base_v.decision
+        assert empty.intercept(ctx).decision == base_v.decision
+
+
+def test_overriding_one_limit_leaves_the_others_at_their_defaults():
+    """Fields are individually optional. Overriding
+    ``max_annotator_output_bytes`` upward must not silently lower
+    ``max_snapshot_bytes`` back to some other value; the untouched cap
+    still enforces at its default. Concretely: an interceptor raising
+    only ``max_annotator_output_bytes`` still allows a 4096-char input
+    (well under the default 1 MiB snapshot cap) and still fails closed
+    when explicitly capped small in a separate construction.
+    """
+    big = "x" * 4096
+    partial = AcsInterceptor(
+        DEFAULT_MANIFEST,
+        limits={"max_annotator_output_bytes": 8_388_608},
+    )
+    # Untouched `max_snapshot_bytes` still defaults big, so the input
+    # allows.
+    assert partial.intercept(_builder().input(content=big)).decision.value == "allow"
+
+    # And when the second, untouched cap IS lowered on a separate
+    # interceptor, it enforces — proving the field-by-field override
+    # semantics.
+    both = AcsInterceptor(
+        DEFAULT_MANIFEST,
+        limits={
+            "max_annotator_output_bytes": 8_388_608,
+            "max_snapshot_bytes": 64,
+        },
+    )
+    v = both.intercept(_builder().input(content=big))
+    assert v.decision.value == "deny"
+    assert v.reason.startswith("runtime_error:")
+
+
+def test_limit_that_is_not_a_non_negative_integer_is_rejected():
+    """A value that does not parse must be a hard error, not a
+    silently-kept default. Refusing means a host that asked for a cap
+    it typo'd learns immediately instead of finding out at the first
+    breached limit that would never fire.
+    """
+    with pytest.raises((TypeError, ValueError)):
+        AcsInterceptor(DEFAULT_MANIFEST, limits={"max_snapshot_bytes": "big"})
+    with pytest.raises((TypeError, ValueError)):
+        AcsInterceptor(DEFAULT_MANIFEST, limits={"max_snapshot_bytes": -1})
+    with pytest.raises((TypeError, ValueError)):
+        AcsInterceptor(DEFAULT_MANIFEST, limits={"max_snapshot_bytes": 1.5})
+    # Booleans are ints in Python; refuse them here so `True` for a cap
+    # does not silently become `1`.
+    with pytest.raises((TypeError, ValueError)):
+        AcsInterceptor(DEFAULT_MANIFEST, limits={"max_snapshot_bytes": True})
+    # A non-mapping is a boundary problem, not a manifest problem.
+    with pytest.raises(TypeError):
+        AcsInterceptor(DEFAULT_MANIFEST, limits=[("max_snapshot_bytes", 64)])
+
+
+def test_default_limits_is_readable_and_matches_engine_defaults():
+    """A host raising one cap reads `DEFAULT_LIMITS` to see what it is
+    overriding. Assert the shape stays wired to the engine's own
+    defaults so a shipping change to another cap cannot be silently
+    absorbed by a stale mapping.
+    """
+    # Every documented field is present as a non-negative int.
+    expected_keys = {
+        "max_snapshot_bytes",
+        "max_policy_input_depth",
+        "max_annotators_per_point",
+        "max_annotator_output_bytes",
+        "max_policy_output_bytes",
+        "max_extends_depth",
+        "max_merged_manifest_bytes",
+        "max_manifest_url_bytes",
+        "manifest_url_timeout_ms",
+        "max_manifest_url_redirects",
+    }
+    assert set(DEFAULT_LIMITS) == expected_keys
+    for key, value in DEFAULT_LIMITS.items():
+        assert isinstance(value, int) and value >= 0, (key, value)
+
+    # And it is read-only, so a caller cannot mutate a shared default
+    # out from under a peer.
+    with pytest.raises(TypeError):
+        DEFAULT_LIMITS["max_snapshot_bytes"] = 1  # type: ignore[index]

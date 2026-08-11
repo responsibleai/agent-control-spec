@@ -700,6 +700,7 @@ if (!nativeBinding) {
 }
 
 module.exports = nativeBinding
+module.exports.defaultLimits = nativeBinding.defaultLimits
 module.exports.intercept = nativeBinding.intercept
 module.exports.interceptorNew = nativeBinding.interceptorNew
 module.exports.interceptorNewWithHooks = nativeBinding.interceptorNewWithHooks

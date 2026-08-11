@@ -14,10 +14,10 @@ use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
 use agent_control_spec::Verdict;
 use agent_control_spec::{
-    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, JsonValue, Manifest, PerfTelemetry,
-    PreparedPolicyInvocation, Runtime, RuntimeError, SafetyLevel, SegmentOutcome, StreamEndReason,
-    StreamError, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan, StreamTrack,
-    SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, JsonValue, Limits, Manifest,
+    PerfTelemetry, PreparedPolicyInvocation, Runtime, RuntimeError, SafetyLevel, SegmentOutcome,
+    StreamEndReason, StreamError, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan,
+    StreamTrack, SUPPORTED_VERSIONS,
 };
 use napi::bindgen_prelude::{External, FnArgs, FunctionRef, Utf16String};
 use napi::Env;
@@ -270,6 +270,81 @@ fn parse_perf(value: Option<Utf16String>) -> napi::Result<PerfTelemetry> {
     }
 }
 
+/// Read a limits override, mirroring the FFI's `parse_limits`:
+///
+/// - Absent / null / empty means keep every default.
+/// - Each field is individually optional; an absent field keeps its own
+///   default, so a host raising one cap does not restate the other nine.
+/// - A field present but not a non-negative integer is a hard ERROR, not
+///   a silently-kept default. A host that asked for a smaller bound and
+///   got the larger one would believe it was protected when it was not.
+fn parse_limits(value: Option<Utf16String>) -> napi::Result<Limits> {
+    let mut limits = Limits::default();
+    let Some(value) = value else {
+        return Ok(limits);
+    };
+    let raw = decode("limits", &value)?;
+    if raw.trim().is_empty() {
+        return Ok(limits);
+    }
+    let parsed: Value = match serde_json::from_str(&raw) {
+        Ok(v @ Value::Object(_)) => v,
+        Ok(_) => return Err(err("limits must be a JSON object".to_string())),
+        Err(e) => return Err(err(format!("limits does not parse: {e}"))),
+    };
+
+    let read = |key: &str| -> napi::Result<Option<u64>> {
+        match parsed.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => match v.as_u64() {
+                Some(n) => Ok(Some(n)),
+                None => Err(err(format!("{key} must be a non negative integer"))),
+            },
+        }
+    };
+
+    macro_rules! apply {
+        ($field:ident, $ty:ty) => {
+            if let Some(v) = read(stringify!($field))? {
+                limits.$field = v as $ty;
+            }
+        };
+    }
+    apply!(max_snapshot_bytes, usize);
+    apply!(max_policy_input_depth, usize);
+    apply!(max_annotators_per_point, usize);
+    apply!(max_annotator_output_bytes, usize);
+    apply!(max_policy_output_bytes, usize);
+    apply!(max_extends_depth, usize);
+    apply!(max_merged_manifest_bytes, usize);
+    apply!(max_manifest_url_bytes, usize);
+    apply!(manifest_url_timeout_ms, u64);
+    apply!(max_manifest_url_redirects, usize);
+    Ok(limits)
+}
+
+/// The engine's default resource caps as a JSON object string. A host
+/// that raises one cap reads this to see what it is overriding, so a
+/// shipping change to another default cannot be silently absorbed by a
+/// stale mapping.
+#[napi]
+pub fn default_limits() -> napi::Result<String> {
+    let defaults = Limits::default();
+    let value = serde_json::json!({
+        "max_snapshot_bytes": defaults.max_snapshot_bytes,
+        "max_policy_input_depth": defaults.max_policy_input_depth,
+        "max_annotators_per_point": defaults.max_annotators_per_point,
+        "max_annotator_output_bytes": defaults.max_annotator_output_bytes,
+        "max_policy_output_bytes": defaults.max_policy_output_bytes,
+        "max_extends_depth": defaults.max_extends_depth,
+        "max_merged_manifest_bytes": defaults.max_merged_manifest_bytes,
+        "max_manifest_url_bytes": defaults.max_manifest_url_bytes,
+        "manifest_url_timeout_ms": defaults.manifest_url_timeout_ms,
+        "max_manifest_url_redirects": defaults.max_manifest_url_redirects,
+    });
+    serde_json::to_string(&value).map_err(|e| err(format!("{e}")))
+}
+
 // Type aliases for the FunctionRef signatures the JS↔Rust wire uses.
 // Kept private so they never leak into the TS declaration; napi-derive
 // still sees the expanded types on the entry points that take them as
@@ -316,13 +391,22 @@ pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Hand
 }
 
 /// Build a runtime handle from a manifest path, optionally overriding
-/// the annotator dispatcher, policy dispatcher, telemetry sink, and
-/// perf telemetry level.
+/// the annotator dispatcher, policy dispatcher, telemetry sink, perf
+/// telemetry level, and resource caps.
 ///
 /// Every callback is optional: absent means keep the zero-config
 /// default for that slot. Callbacks cross the boundary as JSON strings,
 /// mirroring the FFI hook contract, so a host that already sits behind
 /// a JSON schema does not re-model its wire shape for this SDK.
+///
+/// `limits_json` is a JSON object of resource caps overriding the
+/// engine's defaults field by field. Null or empty means keep every
+/// default; each field is individually optional, so a host raising one
+/// cap does not restate the other nine. A host feeding large payloads
+/// raises `max_snapshot_bytes`; one hardening against a hostile
+/// manifest lowers `max_extends_depth` or `manifest_url_timeout_ms`.
+/// A field present but not a non-negative integer is a hard ERROR, not
+/// a silently-kept default.
 ///
 /// Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
 /// engine's evaluation. A callback that throws surfaces as a fail-closed
@@ -337,15 +421,24 @@ pub fn interceptor_new_with_hooks(
     policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, String>>,
     telemetry_sink: Option<FunctionRef<FnArgs<(String,)>, ()>>,
     perf_telemetry: Option<Utf16String>,
+    limits_json: Option<Utf16String>,
 ) -> napi::Result<External<Handle>> {
     let manifest_path = decode("manifest_path", &manifest_path)?;
     let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
     let perf = parse_perf(perf_telemetry)?;
+    let limits = parse_limits(limits_json)?;
     let annotations = build_annotator(annotator_dispatcher);
     let policy = build_policy(policy_dispatcher);
     let telemetry = build_telemetry(telemetry_sink);
-    let runtime = Runtime::with_telemetry_and_perf(manifest, annotations, policy, telemetry, perf)
-        .map_err(|e| err(format!("{e}")))?;
+    let runtime = Runtime::with_telemetry_perf_and_limits(
+        manifest,
+        annotations,
+        policy,
+        telemetry,
+        perf,
+        limits,
+    )
+    .map_err(|e| err(format!("{e}")))?;
     Ok(External::new(Handle { runtime }))
 }
 

@@ -28,8 +28,8 @@ use agent_control_spec::stream_session::{
 };
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
 use agent_control_spec::{
-    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
-    Verdict, SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Limits, Manifest, Runtime,
+    RuntimeError, Verdict, SUPPORTED_VERSIONS,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -1011,6 +1011,67 @@ impl TelemetrySink for HostTelemetrySink {
     }
 }
 
+/// Read a limits override, treating NULL and empty as "keep the
+/// defaults". Absent fields keep their default individually, so a host
+/// that only needs a bigger snapshot cap does not have to restate the
+/// other nine.
+fn parse_limits(value: *const c_char, err_out: *mut *mut c_char) -> Option<Limits> {
+    let mut limits = Limits::default();
+    if value.is_null() {
+        return Some(limits);
+    }
+    let raw = unsafe { read_utf8(value, "limits_json", err_out) }?;
+    if raw.trim().is_empty() {
+        return Some(limits);
+    }
+    let parsed: Value = match serde_json::from_str(raw) {
+        Ok(v @ Value::Object(_)) => v,
+        Ok(_) => {
+            set_err(err_out, "limits_json must be a JSON object".to_string());
+            return None;
+        }
+        Err(e) => {
+            set_err(err_out, format!("limits_json does not parse: {e}"));
+            return None;
+        }
+    };
+
+    // A cap that does not parse is refused rather than silently kept at
+    // its default. A host that asked for a smaller bound and got the
+    // larger one would believe it was protected when it was not.
+    let read = |key: &str| -> Option<Option<u64>> {
+        match parsed.get(key) {
+            None | Some(Value::Null) => Some(None),
+            Some(v) => match v.as_u64() {
+                Some(n) => Some(Some(n)),
+                None => {
+                    set_err(err_out, format!("{key} must be a non negative integer"));
+                    None
+                }
+            },
+        }
+    };
+
+    macro_rules! apply {
+        ($field:ident, $ty:ty) => {
+            if let Some(v) = read(stringify!($field))? {
+                limits.$field = v as $ty;
+            }
+        };
+    }
+    apply!(max_snapshot_bytes, usize);
+    apply!(max_policy_input_depth, usize);
+    apply!(max_annotators_per_point, usize);
+    apply!(max_annotator_output_bytes, usize);
+    apply!(max_policy_output_bytes, usize);
+    apply!(max_extends_depth, usize);
+    apply!(max_merged_manifest_bytes, usize);
+    apply!(max_manifest_url_bytes, usize);
+    apply!(manifest_url_timeout_ms, u64);
+    apply!(max_manifest_url_redirects, usize);
+    Some(limits)
+}
+
 fn parse_perf(value: *const c_char, err_out: *mut *mut c_char) -> Option<PerfTelemetry> {
     if value.is_null() {
         return Some(PerfTelemetry::Off);
@@ -1057,6 +1118,7 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
     telemetry_ctx: *mut c_void,
     hook_free: Option<AcsHookFree>,
     perf_telemetry: *const c_char,
+    limits_json: *const c_char,
     err_out: *mut *mut c_char,
 ) -> *mut AcsInterceptor {
     clear_err(err_out);
@@ -1073,6 +1135,9 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
             }
         };
         let Some(perf) = parse_perf(perf_telemetry, err_out) else {
+            return std::ptr::null_mut();
+        };
+        let Some(limits) = parse_limits(limits_json, err_out) else {
             return std::ptr::null_mut();
         };
 
@@ -1107,7 +1172,14 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
             None => Arc::new(NoopTelemetrySink),
         };
 
-        match Runtime::with_telemetry_and_perf(manifest, annotations, policy, telemetry, perf) {
+        match Runtime::with_telemetry_perf_and_limits(
+            manifest,
+            annotations,
+            policy,
+            telemetry,
+            perf,
+            limits,
+        ) {
             Ok(runtime) => Box::into_raw(Box::new(AcsInterceptor {
                 runtime,
                 name: "acs".to_string(),

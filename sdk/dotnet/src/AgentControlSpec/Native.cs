@@ -474,6 +474,7 @@ internal static partial class Native
         IntPtr telemetryFn, IntPtr telemetryCtx,
         IntPtr hookFree,
         IntPtr perfTelemetry,
+        IntPtr limitsJson,
         out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
@@ -495,18 +496,20 @@ internal static partial class Native
         IntPtr policyFn, IntPtr policyCtx,
         IntPtr telemetryFn, IntPtr telemetryCtx,
         IntPtr hookFree,
-        string? perfTelemetry)
+        string? perfTelemetry,
+        string? limitsJson)
     {
         var bytes = System.Text.Encoding.UTF8.GetBytes(manifestPath);
         var perf = perfTelemetry is null
             ? IntPtr.Zero
             : Marshal.StringToCoTaskMemUTF8(perfTelemetry);
+        var limits = limitsJson is null ? IntPtr.Zero : Marshal.StringToCoTaskMemUTF8(limitsJson);
         try
         {
             var handle = acs_interceptor_new_with_hooks(
                 bytes, (nuint)bytes.Length,
                 annotatorFn, annotatorCtx, policyFn, policyCtx,
-                telemetryFn, telemetryCtx, hookFree, perf, out var err);
+                telemetryFn, telemetryCtx, hookFree, perf, limits, out var err);
             if (handle == IntPtr.Zero)
             {
                 ThrowIfError(err);
@@ -519,6 +522,8 @@ internal static partial class Native
         {
             if (perf != IntPtr.Zero)
                 Marshal.FreeCoTaskMem(perf);
+            if (limits != IntPtr.Zero)
+                Marshal.FreeCoTaskMem(limits);
         }
     }
 

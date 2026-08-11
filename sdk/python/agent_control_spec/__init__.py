@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable, Mapping
+from types import MappingProxyType as _MappingProxyType
 from typing import Any
 
 from agent_hooks import Verdict
@@ -22,6 +23,7 @@ from agent_hooks import Verdict
 from agent_control_spec import _native
 
 __all__ = [
+    "DEFAULT_LIMITS",
     "PERF_TELEMETRY_LEVELS",
     "AcsInterceptor",
     "ActivatedPolicy",
@@ -52,6 +54,24 @@ RegoBundle = Mapping[str, Any]
 #: than a Rust-side enum: the constructor argument is a string, so the
 #: allowed values are the vocabulary a Python host reads.
 PERF_TELEMETRY_LEVELS: tuple[str, ...] = ("off", "external", "full")
+
+#: The engine's shipped resource caps, as a read-only mapping. A host
+#: passing ``limits=`` to :class:`AcsInterceptor` reads this to see what
+#: it is overriding — a shipping change to another default cannot then
+#: be silently absorbed. Frozen at import time so a caller cannot mutate
+#: a shared default. Fields:
+#:
+#: - ``max_snapshot_bytes``: cap on the canonicalized context snapshot.
+#: - ``max_policy_input_depth``: JSON nesting depth accepted anywhere.
+#: - ``max_annotators_per_point``: annotators the engine will dispatch.
+#: - ``max_annotator_output_bytes``: per-annotator serialized output.
+#: - ``max_policy_output_bytes``: policy-decision serialized output.
+#: - ``max_extends_depth``: manifest ``extends`` chain length.
+#: - ``max_merged_manifest_bytes``: composed manifest total size.
+#: - ``max_manifest_url_bytes``: per-URL fetch body cap.
+#: - ``manifest_url_timeout_ms``: per-URL fetch deadline.
+#: - ``max_manifest_url_redirects``: per-URL fetch redirect count.
+DEFAULT_LIMITS: Mapping[str, int] = _MappingProxyType(_native.default_limits())
 
 #: A telemetry event a host-supplied sink receives from the engine.
 #:
@@ -128,7 +148,8 @@ class AcsInterceptor:
 
     Zero-config path (the default): bundled annotators; Rego in process,
     Cedar through the built-in evaluator, ``test`` policies through
-    their embedded verdict; no-op telemetry.
+    their embedded verdict; no-op telemetry; the engine's default
+    resource caps.
 
     Host hooks are supplied by keyword:
 
@@ -146,6 +167,13 @@ class AcsInterceptor:
     - ``perf_telemetry``: ``"off"`` (default), ``"external"``, or
       ``"full"``, gating whether external and per-stage timing events
       are emitted.
+    - ``limits``: a mapping of resource caps that overrides the engine's
+      defaults field by field. Absent means keep every default; each
+      field is individually optional, so a host raising one cap does
+      not restate the other nine. A host feeding large payloads raises
+      ``max_snapshot_bytes``; one hardening against a hostile manifest
+      lowers ``max_extends_depth`` or ``manifest_url_timeout_ms``. Read
+      :data:`DEFAULT_LIMITS` to see the shipped values.
 
     A dispatcher that raises does not silently no-op: the engine
     normalizes the failure into a fail-closed ``deny`` verdict with a
@@ -161,6 +189,7 @@ class AcsInterceptor:
         policy_dispatcher: object | None = None,
         telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
         perf_telemetry: str = "off",
+        limits: Mapping[str, int] | None = None,
     ) -> None:
         perf = _normalize_perf_telemetry(perf_telemetry)
         self._handle = _native.interceptor_new(
@@ -169,6 +198,7 @@ class AcsInterceptor:
             policy_dispatcher,
             telemetry_sink,
             perf,
+            limits,
         )
         self._name = name
 

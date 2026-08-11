@@ -85,6 +85,12 @@ jobs:
           ./actionlint -color
       - name: Version surfaces agree
         run: python3 scripts/check-version-consistency.py
+      # The parity harness proves the bindings agree about the calls it
+      # makes. It cannot notice a capability none of them expose, because
+      # a surface absent everywhere is consistent everywhere. That blind
+      # spot is how streaming shipped reachable only from Rust.
+      - name: Every engine capability is reachable from every language
+        run: python3 scripts/check-language-coverage.py
       - name: cargo-audit over example lockfiles (pinned, checksum-verified)
         # Examples are deliberately outside the Dependabot update config,
         # and the coding_agent app's path dependency predates the engine

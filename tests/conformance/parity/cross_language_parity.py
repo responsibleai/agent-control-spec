@@ -125,7 +125,17 @@ EXPECTED = {
     "artifacts_good_rego": 0,
     "artifacts_bad_rego": 1,
     "artifacts_bad_rego_code": "runtime_error:policy_invocation_failed",
+    # Resource caps. The same context must pass under the defaults and
+    # fail closed under a cap smaller than it, or the cap was accepted
+    # and dropped.
+    "limits_default_decision": "allow",
+    "limits_capped_decision": "deny",
+    "limits_capped_reason": "runtime_error:resource_limit_exceeded",
 }
+
+# Larger than the capped bound below, smaller than the default one.
+BIG_INPUT = "x" * 4096
+SMALL_CAP = {"max_snapshot_bytes": 64}
 
 
 def _run(cmd: list[str], **kw) -> dict:
@@ -136,7 +146,7 @@ def _run(cmd: list[str], **kw) -> dict:
 RUST_MAIN = r"""
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
 use agent_control_spec::stream_session::*;
-use agent_control_spec::{ActivatedPolicy, InterceptionPoint, Manifest, Runtime};
+use agent_control_spec::{ActivatedPolicy, InterceptionPoint, Limits, Manifest, Runtime};
 use std::sync::Arc;
 
 struct Classifier {
@@ -273,6 +283,23 @@ fn main() {
             Err(e) => (1, Some(e.reason().to_string())),
         }
     };
+    let big_ctx: serde_json::Value =
+        serde_json::from_str(BIG_CTX).expect("big ctx");
+    let lim = |limits: Limits| -> (String, Option<String>) {
+        let manifest = Manifest::from_path(&hooks_manifest).expect("hooks manifest");
+        let rt = Runtime::with_limits(
+            manifest,
+            Arc::new(Classifier { severity: 1, calls: std::sync::atomic::AtomicUsize::new(0) }),
+            Arc::new(BindingPolicyDispatcher::new()),
+            limits,
+        )
+        .expect("limited runtime");
+        let v = rt.evaluate(&big_ctx).verdict;
+        (format!("{:?}", v.decision).to_lowercase(), v.reason.clone())
+    };
+    let lim_default = lim(Limits::default());
+    let lim_capped = lim(Limits { max_snapshot_bytes: 64, ..Limits::default() });
+
     let art_only = art("{}");
     let art_good = art(GOOD_BUNDLES);
     let art_bad = art(BAD_BUNDLES);
@@ -299,6 +326,9 @@ fn main() {
             "artifacts_good_rego": art_good.0,
             "artifacts_bad_rego": art_bad.0,
             "artifacts_bad_rego_code": art_bad.1,
+            "limits_default_decision": lim_default.0,
+            "limits_capped_decision": lim_capped.0,
+            "limits_capped_reason": lim_capped.1,
             "supported_versions_nonempty": !agent_control_spec::SUPPORTED_VERSIONS.is_empty(),
             "validate_good": validate_good,
             "validate_bad": validate_bad,
@@ -332,6 +362,10 @@ def rust() -> dict:
         .replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST))
         .replace("GOOD_BUNDLES", json.dumps(json.dumps(GOOD_BUNDLES)))
         .replace("BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES)))
+        .replace(
+            "BIG_CTX",
+            json.dumps(json.dumps({"interception_point": "input", "input": BIG_INPUT})),
+        )
     )
     (work / "Cargo.toml").write_text(
         f"""
@@ -431,6 +465,12 @@ _art_only = validate_artifacts({REGO_MANIFEST!r})
 _art_good = validate_artifacts({REGO_MANIFEST!r}, {GOOD_BUNDLES!r})
 _art_bad = validate_artifacts({REGO_MANIFEST!r}, {BAD_BUNDLES!r})
 
+_big_ctx = {{"interception_point": "input", "input": {BIG_INPUT!r}}}
+_lim_default = AcsInterceptor({str(HOOKS_MANIFEST)!r}, annotator_dispatcher=_Classifier(1)).intercept(_big_ctx)
+_lim_capped = AcsInterceptor(
+    {str(HOOKS_MANIFEST)!r}, annotator_dispatcher=_Classifier(1), limits={SMALL_CAP!r}
+).intercept(_big_ctx)
+
 print(json.dumps({{
     "hook_benign_decision": _b[0],
     "hook_harmful_decision": _h[0],
@@ -445,6 +485,9 @@ print(json.dumps({{
     "artifacts_good_rego": len(_art_good),
     "artifacts_bad_rego": len(_art_bad),
     "artifacts_bad_rego_code": _art_bad[0]["code"] if _art_bad else None,
+    "limits_default_decision": decision(_lim_default),
+    "limits_capped_decision": decision(_lim_capped),
+    "limits_capped_reason": _lim_capped.reason,
     "supported_versions_nonempty": len(supported_manifest_versions()) > 0,
     "validate_good": check(open({str(MANIFEST)!r}).read()),
     "validate_bad": check({BAD_MANIFEST!r}),
@@ -510,6 +553,14 @@ const artOnly = acs.validateArtifacts({json.dumps(REGO_MANIFEST)});
 const artGood = acs.validateArtifacts({json.dumps(REGO_MANIFEST)}, {json.dumps(GOOD_BUNDLES)});
 const artBad = acs.validateArtifacts({json.dumps(REGO_MANIFEST)}, {json.dumps(BAD_BUNDLES)});
 
+const bigCtx = {{ interception_point: 'input', input: {json.dumps(BIG_INPUT)} }};
+const limDefault = acs.AcsInterceptor
+  .fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: () => ({{ severity: 1 }}) }})
+  .intercept(bigCtx);
+const limCapped = acs.AcsInterceptor
+  .fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: () => ({{ severity: 1 }}), limits: {json.dumps(SMALL_CAP)} }})
+  .intercept(bigCtx);
+
 console.log(JSON.stringify({{
   hook_benign_decision: b[0],
   hook_harmful_decision: hh[0],
@@ -524,6 +575,9 @@ console.log(JSON.stringify({{
   artifacts_good_rego: artGood.length,
   artifacts_bad_rego: artBad.length,
   artifacts_bad_rego_code: artBad.length ? artBad[0].code : null,
+  limits_default_decision: String(limDefault.decision).toLowerCase(),
+  limits_capped_decision: String(limCapped.decision).toLowerCase(),
+  limits_capped_reason: limCapped.reason ?? null,
   supported_versions_nonempty: acs.supportedManifestVersions().length > 0,
   validate_good: check(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8')),
   validate_bad: check({json.dumps(BAD_MANIFEST)}),
@@ -595,6 +649,13 @@ var artOnly = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, null);
 var artGood = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, GOOD_BUNDLES);
 var artBad = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, BAD_BUNDLES);
 
+var bigCtx = new AgentContext(JsonNode.Parse(BIG_CTX)!.AsObject());
+using var limDefault = AcsHostInterceptor.FromPath(HOOKS_MANIFEST, annotator: (_, _, _) => SEV1);
+using var limCapped = AcsHostInterceptor.FromPath(
+    HOOKS_MANIFEST, annotator: (_, _, _) => SEV1, limits: SMALL_CAP);
+var limDefaultVerdict = limDefault.InterceptAsync(bigCtx).AsTask().Result;
+var limCappedVerdict = limCapped.InterceptAsync(bigCtx).AsTask().Result;
+
 Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
 {
     ["hook_benign_decision"] = b.Item1,
@@ -610,6 +671,9 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
     ["artifacts_good_rego"] = artGood.Count,
     ["artifacts_bad_rego"] = artBad.Count,
     ["artifacts_bad_rego_code"] = artBad.Count > 0 ? artBad[0].Code : null,
+    ["limits_default_decision"] = limDefaultVerdict.Decision.ToString().ToLowerInvariant(),
+    ["limits_capped_decision"] = limCappedVerdict.Decision.ToString().ToLowerInvariant(),
+    ["limits_capped_reason"] = limCappedVerdict.Reason,
     ["supported_versions_nonempty"] = AcsManifest.SupportedVersions().Count > 0,
     ["validate_good"] = Check(() => AcsManifest.Validate(File.ReadAllText(manifest))),
     ["validate_bad"] = Check(() => AcsManifest.Validate(BAD_JSON)),
@@ -659,6 +723,20 @@ def dotnet() -> dict:
             .replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST))
             .replace("GOOD_BUNDLES", json.dumps(json.dumps(GOOD_BUNDLES)))
             .replace("BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES)))
+            .replace(
+                "BIG_CTX",
+                json.dumps(
+                    json.dumps({"interception_point": "input", "input": BIG_INPUT})
+                ),
+            )
+            .replace("SMALL_CAP", json.dumps(json.dumps(SMALL_CAP)))
+            .replace(
+                "__BIGCTX__",
+                json.dumps(
+                    json.dumps({"interception_point": "input", "input": BIG_INPUT})
+                ),
+            )
+            .replace("__SMALLCAP__", json.dumps(json.dumps(SMALL_CAP)))
             .replace("ALLOW_JSON", json.dumps(json.dumps(ALLOW_CONTEXT)))
             .replace("DENY_JSON", json.dumps(json.dumps(DENY_CONTEXT)))
             .replace("BAD_JSON", json.dumps(BAD_MANIFEST))

@@ -56,6 +56,8 @@ REGO_MANIFEST = (
     "    policy:\n      id: gate\n      query: data.acs.decision\n"
 )
 BAD_BUNDLES = {"gate": {"modules": {"p.rego": "package acs\nthis is not rego ***\n"}}}
+BIG_INPUT = "x" * 4096
+SMALL_CAP = {"max_snapshot_bytes": 64}
 
 EXPECTED = {
     "non_streaming": True,
@@ -71,6 +73,9 @@ EXPECTED = {
     "streaming_settled": None,
     # A manifest the document check passes whose Rego does not compile.
     "artifacts_bad_rego": 1,
+    # A cap smaller than the context must deny, or the artifact accepted
+    # the limit and dropped it.
+    "limits_capped_denies": True,
 }
 
 
@@ -204,6 +209,10 @@ print(json.dumps({{
     "streaming_offset": off, "streaming_clean": clean,
     "streaming_settled": s.safe_offset("response"),
     "artifacts_bad_rego": len(validate_artifacts({rego!r}, {bad!r})),
+    "limits_capped_denies": str(getattr(
+        AcsInterceptor(M, annotator_dispatcher=C(1), limits={cap!r}).intercept(
+            {{"interception_point": "input", "input": {big!r}}}).decision,
+        "value", "")).lower() == "deny",
 }}))
 """
 
@@ -217,7 +226,11 @@ def check_python(art: dict, stage: Path) -> dict:
             str(venv / "bin/python"),
             "-c",
             PY_PROGRAM.format(
-                manifest=str(HOOKS_MANIFEST), rego=REGO_MANIFEST, bad=BAD_BUNDLES
+                manifest=str(HOOKS_MANIFEST),
+                rego=REGO_MANIFEST,
+                bad=BAD_BUNDLES,
+                cap=SMALL_CAP,
+                big=BIG_INPUT,
             ),
         ]
     )
@@ -252,6 +265,9 @@ console.log(JSON.stringify({
   streaming_offset: off, streaming_clean: clean,
   streaming_settled: s.safeOffset('response'),
   artifacts_bad_rego: acs.validateArtifacts(%s, %s).length,
+  limits_capped_denies: String(acs.AcsInterceptor
+    .fromPath(M, { annotatorDispatcher: () => ({ severity: 1 }), limits: %s })
+    .intercept({ interception_point: 'input', input: %s }).decision).toLowerCase() === 'deny',
 }));
 """
 
@@ -273,6 +289,8 @@ def check_node(art: dict, stage: Path) -> dict:
                 json.dumps(str(HOOKS_MANIFEST)),
                 json.dumps(REGO_MANIFEST),
                 json.dumps(BAD_BUNDLES),
+                json.dumps(SMALL_CAP),
+                json.dumps(BIG_INPUT),
             ),
         ],
         cwd=app,
@@ -318,6 +336,10 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
     ["streaming_clean"] = clean,
     ["streaming_settled"] = s.SafeOffset(StreamTrack.Response),
     ["artifacts_bad_rego"] = AcsManifestTools.ValidateArtifacts(__REGO__, __BADB__).Count,
+    ["limits_capped_denies"] = (await AcsHostInterceptor
+        .FromPath(M, annotator: (_, _, _) => SEV1, limits: __CAP__)
+        .InterceptAsync(new AgentContext(JsonNode.Parse(__BIGCTX__)!.AsObject())))
+        .Decision.ToString().ToLowerInvariant() == "deny",
 }));
 """
 
@@ -358,6 +380,11 @@ def check_dotnet(art: dict, stage: Path) -> dict:
         .replace("SEV7", json.dumps(json.dumps({"severity": 7})))
         .replace("__REGO__", json.dumps(REGO_MANIFEST))
         .replace("__BADB__", json.dumps(json.dumps(BAD_BUNDLES)))
+        .replace("__CAP__", json.dumps(json.dumps(SMALL_CAP)))
+        .replace(
+            "__BIGCTX__",
+            json.dumps(json.dumps({"interception_point": "input", "input": BIG_INPUT})),
+        )
     )
     (app / "Program.cs").write_text(program)
     out = run(["dotnet", "run", "--project", str(app), "--nologo"])
@@ -415,6 +442,16 @@ fn main() {
     let clean = s.finish().reason.is_clean();
     let bad_bundles: std::collections::BTreeMap<String, agent_control_spec::InMemoryRegoBundle> =
         serde_json::from_str(BAD_BUNDLES).expect("bundles");
+    let capped = Runtime::with_limits(
+        Manifest::from_path(&m).expect("manifest"),
+        Arc::new(C(1, std::sync::atomic::AtomicUsize::new(0))),
+        Arc::new(BindingPolicyDispatcher::new()),
+        agent_control_spec::Limits { max_snapshot_bytes: 64, ..Default::default() },
+    )
+    .expect("capped runtime");
+    let big: serde_json::Value = serde_json::from_str(BIG_CTX).expect("big ctx");
+    let limits_capped_denies =
+        format!("{:?}", capped.evaluate(&big).verdict.decision).to_lowercase() == "deny";
     let artifacts_bad_rego = usize::from(
         agent_control_spec::ActivatedPolicy::activate_from_memory(REGO_MANIFEST, bad_bundles)
             .is_err(),
@@ -428,6 +465,7 @@ fn main() {
         "streaming_offset": off, "streaming_clean": clean,
         "streaming_settled": s.safe_offset(StreamTrack::Response),
         "artifacts_bad_rego": artifacts_bad_rego,
+        "limits_capped_denies": limits_capped_denies,
     }));
 }
 """
@@ -450,8 +488,11 @@ serde_json = "1"
 """
     )
     (app / "src/main.rs").write_text(
-        RUST_MAIN.replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST)).replace(
-            "BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES))
+        RUST_MAIN.replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST))
+        .replace("BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES)))
+        .replace(
+            "BIG_CTX",
+            json.dumps(json.dumps({"interception_point": "input", "input": BIG_INPUT})),
         )
     )
     out = run(

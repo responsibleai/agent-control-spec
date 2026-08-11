@@ -8,6 +8,14 @@ export declare class ExternalObject<T> {
   }
 }
 /**
+ * The engine's default resource caps as a JSON object string. A host
+ * that raises one cap reads this to see what it is overriding, so a
+ * shipping change to another default cannot be silently absorbed by a
+ * stale mapping.
+ */
+export declare function defaultLimits(): string
+
+/**
  * Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) and
  * return the verdict as wire JSON.
  */
@@ -22,13 +30,22 @@ export declare function interceptorNew(manifestPath: string): ExternalObject<Han
 
 /**
  * Build a runtime handle from a manifest path, optionally overriding
- * the annotator dispatcher, policy dispatcher, telemetry sink, and
- * perf telemetry level.
+ * the annotator dispatcher, policy dispatcher, telemetry sink, perf
+ * telemetry level, and resource caps.
  *
  * Every callback is optional: absent means keep the zero-config
  * default for that slot. Callbacks cross the boundary as JSON strings,
  * mirroring the FFI hook contract, so a host that already sits behind
  * a JSON schema does not re-model its wire shape for this SDK.
+ *
+ * `limits_json` is a JSON object of resource caps overriding the
+ * engine's defaults field by field. Null or empty means keep every
+ * default; each field is individually optional, so a host raising one
+ * cap does not restate the other nine. A host feeding large payloads
+ * raises `max_snapshot_bytes`; one hardening against a hostile
+ * manifest lowers `max_extends_depth` or `manifest_url_timeout_ms`.
+ * A field present but not a non-negative integer is a hard ERROR, not
+ * a silently-kept default.
  *
  * Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
  * engine's evaluation. A callback that throws surfaces as a fail-closed
@@ -36,7 +53,7 @@ export declare function interceptorNew(manifestPath: string): ExternalObject<Han
  * `policy_invocation_failed`) rather than silently reading as "no
  * annotation".
  */
-export declare function interceptorNewWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null, telemetrySink?: ((arg0: string) => void) | undefined | null, perfTelemetry?: string | undefined | null): ExternalObject<Handle>
+export declare function interceptorNewWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null, telemetrySink?: ((arg0: string) => void) | undefined | null, perfTelemetry?: string | undefined | null, limitsJson?: string | undefined | null): ExternalObject<Handle>
 
 /**
  * Compose a chain of manifest YAML documents (outermost base first)

@@ -165,12 +165,20 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     /// <param name="policy">Host policy engine, or null for the bundled dispatchers.</param>
     /// <param name="telemetry">Host telemetry sink, or null to record nothing.</param>
     /// <param name="perfTelemetry">How much timing detail to record.</param>
+    /// <param name="limits">
+    /// Resource caps as JSON, overriding the engine's defaults field by
+    /// field. Null keeps every default. A host feeding large payloads
+    /// raises <c>max_snapshot_bytes</c>; one hardening against a hostile
+    /// manifest lowers <c>max_extends_depth</c> or
+    /// <c>manifest_url_timeout_ms</c>.
+    /// </param>
     public static AcsHostInterceptor FromPath(
         string manifestPath,
         AnnotatorDispatcher? annotator = null,
         PolicyDispatcher? policy = null,
         TelemetrySink? telemetry = null,
-        PerfTelemetry perfTelemetry = PerfTelemetry.Off)
+        PerfTelemetry perfTelemetry = PerfTelemetry.Off,
+        string? limits = null)
     {
         var pinned = new List<Delegate>();
 
@@ -247,7 +255,8 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
             policyPtr, IntPtr.Zero,
             telemetryPtr, IntPtr.Zero,
             Marshal.GetFunctionPointerForDelegate(free),
-            perfTelemetry.ToString().ToLowerInvariant());
+            perfTelemetry.ToString().ToLowerInvariant(),
+            limits);
 
         var interceptor = new AcsHostInterceptor(handle);
         interceptor._pinned.AddRange(pinned);
