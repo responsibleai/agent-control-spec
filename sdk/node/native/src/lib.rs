@@ -8,16 +8,22 @@
 // mean a boundary problem only (unreadable manifest, non-object
 // context JSON).
 
+use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
+use agent_control_spec::runtime::PolicyDispatcher;
+use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
 use agent_control_spec::Verdict;
 use agent_control_spec::{
-    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
-    SafetyLevel, SegmentOutcome, StreamEndReason, StreamError, StreamSession, StreamSessionConfig,
-    StreamSourceType, StreamSpan, StreamTrack, SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, JsonValue, Manifest, PerfTelemetry,
+    PreparedPolicyInvocation, Runtime, RuntimeError, SafetyLevel, SegmentOutcome, StreamEndReason,
+    StreamError, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan, StreamTrack,
+    SUPPORTED_VERSIONS,
 };
-use napi::bindgen_prelude::{External, Utf16String};
+use napi::bindgen_prelude::{External, FnArgs, FunctionRef, Utf16String};
+use napi::Env;
 use napi_derive::napi;
 use serde_json::Value;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
@@ -56,6 +62,243 @@ fn decode(what: &str, value: &Utf16String) -> napi::Result<String> {
     String::from_utf16(value).map_err(|_| err(format!("{what} contains an unpaired surrogate")))
 }
 
+// ---------------------------------------------------------------------
+// Host dispatcher plumbing (annotator, policy, telemetry).
+//
+// The engine calls a dispatcher SYNCHRONOUSLY from inside its
+// evaluation, on whichever thread called into it. Every napi entry
+// point that drives evaluation (`intercept`, `policy_evaluate`) runs
+// on the JS thread, so a callback fired inside the engine is on the
+// same JS thread as the caller and can call the JS function directly
+// through a `Function` handle. That handle is scope-bound, so we hold a
+// `FunctionRef` (Send + Sync) and `borrow_back` it against the current
+// napi `Env` when the engine asks. The env is stored in a thread-local
+// set by each entry point for the duration of the call, so a dispatcher
+// invoked from a different thread errors out rather than reaching into
+// V8 off-thread.
+//
+// A ThreadsafeFunction would be wrong here: it dispatches ASYNCHRONOUSLY
+// to the JS thread, which deadlocks when the JS thread is already
+// blocked in the engine call that produced the callback.
+// ---------------------------------------------------------------------
+
+thread_local! {
+    // Set only while a napi entry point that drives engine evaluation
+    // is on the stack. A dispatcher invoked with no env available is
+    // treated as a host failure so the engine fails closed.
+    static CURRENT_ENV: Cell<napi::sys::napi_env> =
+        const { Cell::new(std::ptr::null_mut()) };
+}
+
+/// RAII guard binding a napi `Env` to the current thread for the
+/// duration of an engine call. Nesting is not expected (napi calls
+/// don't reenter), but the guard is nesting-safe: it saves the previous
+/// value and restores it on drop.
+struct EnvScope {
+    previous: napi::sys::napi_env,
+}
+
+impl EnvScope {
+    fn enter(env: &Env) -> Self {
+        let raw = env.raw();
+        let previous = CURRENT_ENV.with(|c| c.replace(raw));
+        Self { previous }
+    }
+}
+
+impl Drop for EnvScope {
+    fn drop(&mut self) {
+        let previous = self.previous;
+        CURRENT_ENV.with(|c| c.set(previous));
+    }
+}
+
+fn with_current_env<T>(
+    what: &str,
+    kind: fn(String) -> RuntimeError,
+    f: impl FnOnce(&Env) -> Result<T, RuntimeError>,
+) -> Result<T, RuntimeError> {
+    let raw = CURRENT_ENV.with(|c| c.get());
+    if raw.is_null() {
+        return Err(kind(format!(
+            "host {what} was invoked without a live napi env; this dispatcher can only be \
+             called from a napi entry point on the JS thread"
+        )));
+    }
+    // SAFETY: `raw` was captured by `EnvScope::enter` from the napi
+    // entry point currently on the stack, on this same JS thread.
+    let env = Env::from_raw(raw);
+    f(&env)
+}
+
+struct NodeAnnotatorDispatcher {
+    func: FunctionRef<FnArgs<(String, String, String)>, String>,
+}
+
+impl AnnotatorDispatcher for NodeAnnotatorDispatcher {
+    fn dispatch(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &JsonValue,
+    ) -> Result<JsonValue, RuntimeError> {
+        let invocation_json = serde_json::to_string(annotator).map_err(|e| {
+            RuntimeError::AnnotationFailed(format!("serialize annotator invocation: {e}"))
+        })?;
+        let policy_input_json = serde_json::to_string(preliminary_policy_input).map_err(|e| {
+            RuntimeError::AnnotationFailed(format!("serialize preliminary policy input: {e}"))
+        })?;
+        with_current_env(
+            "annotator dispatcher",
+            RuntimeError::AnnotationFailed,
+            |env| {
+                let func = self.func.borrow_back(env).map_err(|e| {
+                    RuntimeError::AnnotationFailed(format!("reacquire annotator function: {e}"))
+                })?;
+                let raw = func
+                    .call(FnArgs {
+                        data: (
+                            annotator_name.to_string(),
+                            invocation_json,
+                            policy_input_json,
+                        ),
+                    })
+                    .map_err(|e| {
+                        RuntimeError::AnnotationFailed(format!(
+                            "host annotator dispatcher threw: {e}"
+                        ))
+                    })?;
+                serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
+                    RuntimeError::AnnotationFailed(format!(
+                        "host annotator dispatcher returned non-JSON: {e}"
+                    ))
+                })
+            },
+        )
+    }
+}
+
+struct NodePolicyDispatcher {
+    func: FunctionRef<FnArgs<(String,)>, String>,
+}
+
+impl PolicyDispatcher for NodePolicyDispatcher {
+    fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+        let invocation_json = serde_json::to_string(invocation).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("serialize policy invocation: {e}"))
+        })?;
+        with_current_env(
+            "policy dispatcher",
+            RuntimeError::PolicyInvocationFailed,
+            |env| {
+                let func = self.func.borrow_back(env).map_err(|e| {
+                    RuntimeError::PolicyInvocationFailed(format!("reacquire policy function: {e}"))
+                })?;
+                let raw = func
+                    .call(FnArgs {
+                        data: (invocation_json,),
+                    })
+                    .map_err(|e| {
+                        RuntimeError::PolicyInvocationFailed(format!(
+                            "host policy dispatcher threw: {e}"
+                        ))
+                    })?;
+                serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
+                    RuntimeError::PolicyInvocationFailed(format!(
+                        "host policy dispatcher returned non-JSON: {e}"
+                    ))
+                })
+            },
+        )
+    }
+}
+
+struct NodeTelemetrySink {
+    func: FunctionRef<FnArgs<(String,)>, ()>,
+}
+
+impl TelemetrySink for NodeTelemetrySink {
+    fn emit(&self, event: TelemetryEvent) {
+        // TelemetryEvent is not Serialize, so the wire shape is owned
+        // here (matches the FFI binding). A sink cannot fail an
+        // evaluation, so every step drops on error rather than
+        // propagating.
+        let payload = serde_json::json!({
+            "event_type": event.event_type.as_str(),
+            "intervention_point": event.intervention_point.as_str(),
+            "decision": event.decision.map(|d| format!("{d:?}").to_lowercase()),
+            "reason_code": event.reason_code,
+            "error_class": event.error_class,
+            "policy_id": event.policy_id,
+            "annotators": event.annotators,
+            "enforcement_mode": event
+                .enforcement_mode
+                .map(|m| format!("{m:?}").to_lowercase()),
+            "duration_ms": event.duration_ms,
+            "evidence_artefact": event.evidence_artefact,
+            "evidence_verification_pointer_keys": event.evidence_verification_pointer_keys,
+            "action_identity": event.action_identity,
+            "metadata": event.metadata,
+        });
+        let Ok(json) = serde_json::to_string(&payload) else {
+            return;
+        };
+        let raw = CURRENT_ENV.with(|c| c.get());
+        if raw.is_null() {
+            return;
+        }
+        // SAFETY: same as `with_current_env`; the sink is called from
+        // engine code that is itself running inside a napi entry point.
+        let env = Env::from_raw(raw);
+        let Ok(func) = self.func.borrow_back(&env) else {
+            return;
+        };
+        let _: napi::Result<()> = func.call(FnArgs { data: (json,) });
+    }
+}
+
+fn parse_perf(value: Option<Utf16String>) -> napi::Result<PerfTelemetry> {
+    let Some(value) = value else {
+        return Ok(PerfTelemetry::Off);
+    };
+    let raw = decode("perfTelemetry", &value)?;
+    match raw.as_str() {
+        "off" => Ok(PerfTelemetry::Off),
+        "external" => Ok(PerfTelemetry::External),
+        "full" => Ok(PerfTelemetry::Full),
+        other => Err(err(format!("unknown perf telemetry level '{other}'"))),
+    }
+}
+
+// Type aliases for the FunctionRef signatures the JS↔Rust wire uses.
+// Kept private so they never leak into the TS declaration; napi-derive
+// still sees the expanded types on the entry points that take them as
+// arguments (aliases are not expanded through the `#[napi]` macro).
+type NodeAnnotatorFn = FunctionRef<FnArgs<(String, String, String)>, String>;
+type NodePolicyFn = FunctionRef<FnArgs<(String,)>, String>;
+type NodeTelemetryFn = FunctionRef<FnArgs<(String,)>, ()>;
+
+fn build_annotator(dispatcher: Option<NodeAnnotatorFn>) -> Arc<dyn AnnotatorDispatcher> {
+    match dispatcher {
+        Some(func) => Arc::new(NodeAnnotatorDispatcher { func }),
+        None => default_annotator_dispatcher(),
+    }
+}
+
+fn build_policy(dispatcher: Option<NodePolicyFn>) -> Arc<dyn PolicyDispatcher> {
+    match dispatcher {
+        Some(func) => Arc::new(NodePolicyDispatcher { func }),
+        None => Arc::new(BindingPolicyDispatcher::new()),
+    }
+}
+
+fn build_telemetry(sink: Option<NodeTelemetryFn>) -> Arc<dyn TelemetrySink> {
+    match sink {
+        Some(func) => Arc::new(NodeTelemetrySink { func }),
+        None => Arc::new(NoopTelemetrySink),
+    }
+}
+
 /// Build a runtime handle from a manifest path using the zero-config
 /// dispatchers (bundled annotators; Rego in process, Cedar through the
 /// built-in evaluator, `test` policies through their embedded verdict).
@@ -72,16 +315,58 @@ pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Hand
     Ok(External::new(Handle { runtime }))
 }
 
+/// Build a runtime handle from a manifest path, optionally overriding
+/// the annotator dispatcher, policy dispatcher, telemetry sink, and
+/// perf telemetry level.
+///
+/// Every callback is optional: absent means keep the zero-config
+/// default for that slot. Callbacks cross the boundary as JSON strings,
+/// mirroring the FFI hook contract, so a host that already sits behind
+/// a JSON schema does not re-model its wire shape for this SDK.
+///
+/// Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
+/// engine's evaluation. A callback that throws surfaces as a fail-closed
+/// `runtime_error:*` deny (annotator → `annotation_failed`, policy →
+/// `policy_invocation_failed`) rather than silently reading as "no
+/// annotation".
+#[napi]
+#[allow(clippy::type_complexity)]
+pub fn interceptor_new_with_hooks(
+    manifest_path: Utf16String,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, String>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, String>>,
+    telemetry_sink: Option<FunctionRef<FnArgs<(String,)>, ()>>,
+    perf_telemetry: Option<Utf16String>,
+) -> napi::Result<External<Handle>> {
+    let manifest_path = decode("manifest_path", &manifest_path)?;
+    let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
+    let perf = parse_perf(perf_telemetry)?;
+    let annotations = build_annotator(annotator_dispatcher);
+    let policy = build_policy(policy_dispatcher);
+    let telemetry = build_telemetry(telemetry_sink);
+    let runtime = Runtime::with_telemetry_and_perf(manifest, annotations, policy, telemetry, perf)
+        .map_err(|e| err(format!("{e}")))?;
+    Ok(External::new(Handle { runtime }))
+}
+
 /// Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) and
 /// return the verdict as wire JSON.
 #[napi]
-pub fn intercept(handle: &External<Handle>, context_json: Utf16String) -> napi::Result<String> {
+pub fn intercept(
+    env: Env,
+    handle: &External<Handle>,
+    context_json: Utf16String,
+) -> napi::Result<String> {
     let context_json = decode("context_json", &context_json)?;
     let snapshot: Value = serde_json::from_str(&context_json)
         .map_err(|e| err(format!("context_json does not parse: {e}")))?;
     if !snapshot.is_object() {
         return Err(err("context_json must be a JSON object".to_string()));
     }
+    // The engine may call a host dispatcher synchronously from inside
+    // `evaluate`; the scope publishes the current napi env for that
+    // callback and is torn down before we return.
+    let _scope = EnvScope::enter(&env);
     let verdict = handle.runtime.evaluate(&snapshot).verdict;
     serde_json::to_string(&verdict).map_err(|e| err(format!("verdict serialization failed: {e}")))
 }
@@ -158,6 +443,47 @@ pub fn policy_activate_from_memory(
     Ok(External::new(PolicyHandle { policy }))
 }
 
+/// Activate the manifest at `manifest_path` against host-supplied
+/// dispatchers. See `interceptor_new_with_hooks` for the callback
+/// contract.
+#[napi]
+#[allow(clippy::type_complexity)]
+pub fn policy_activate_with_hooks(
+    manifest_path: Utf16String,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, String>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, String>>,
+) -> napi::Result<External<PolicyHandle>> {
+    let manifest_path = decode("manifest_path", &manifest_path)?;
+    let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
+    let annotations = build_annotator(annotator_dispatcher);
+    let policy = build_policy(policy_dispatcher);
+    let handle = ActivatedPolicy::activate_with(manifest, annotations, policy)
+        .map_err(|e| err(format!("{e}")))?;
+    Ok(External::new(PolicyHandle { policy: handle }))
+}
+
+/// Activate a manifest and its Rego from memory against host-supplied
+/// dispatchers.
+#[napi]
+#[allow(clippy::type_complexity)]
+pub fn policy_activate_from_memory_with_hooks(
+    manifest_yaml: Utf16String,
+    bundles_json: Utf16String,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, String>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, String>>,
+) -> napi::Result<External<PolicyHandle>> {
+    let manifest_yaml = decode("manifest_yaml", &manifest_yaml)?;
+    let bundles_json = decode("bundles_json", &bundles_json)?;
+    let bundles: BTreeMap<String, InMemoryRegoBundle> = serde_json::from_str(&bundles_json)
+        .map_err(|e| err(format!("bundles_json does not parse: {e}")))?;
+    let annotations = build_annotator(annotator_dispatcher);
+    let policy = build_policy(policy_dispatcher);
+    let handle =
+        ActivatedPolicy::activate_from_memory_with(&manifest_yaml, bundles, annotations, policy)
+            .map_err(|e| err(format!("{e}")))?;
+    Ok(External::new(PolicyHandle { policy: handle }))
+}
+
 /// Evaluate one intervention point against an activated policy and
 /// return the verdict as wire JSON.
 ///
@@ -171,6 +497,7 @@ pub fn policy_activate_from_memory(
 /// and throws.
 #[napi]
 pub fn policy_evaluate(
+    env: Env,
     handle: &External<PolicyHandle>,
     point: Utf16String,
     context_json: Utf16String,
@@ -185,6 +512,7 @@ pub fn policy_evaluate(
     if !snapshot.is_object() {
         return Err(err("context_json must be a JSON object".to_string()));
     }
+    let _scope = EnvScope::enter(&env);
     let verdict = handle.policy.evaluate(point, snapshot).verdict;
     serde_json::to_string(&verdict).map_err(|e| err(format!("verdict serialization failed: {e}")))
 }
@@ -258,6 +586,135 @@ pub fn supported_manifest_versions() -> Vec<String> {
         .iter()
         .map(|v| (*v).to_string())
         .collect()
+}
+
+// ---------------------------------------------------------------------
+// Manifest tooling: parse, chain, structured diagnostics.
+//
+// The engine ships these as first-party APIs on `Manifest`; the wrapper
+// exposes them here so authoring, migration, and CI tooling can build
+// on the same surface across languages. Every entry point takes YAML
+// text, so a caller can drive them without staging a file on disk.
+// ---------------------------------------------------------------------
+
+/// Parse manifest YAML into an object (JSON encoded) without
+/// validating cross-references.
+///
+/// The document is deserialized as-written: a manifest with an
+/// unresolved `extends` chain parses fine, and returning it lets an
+/// authoring tool see the fragment. Use `validate_manifest` or
+/// `validate_manifest_detailed` to judge whether the fragment is
+/// runnable.
+#[napi]
+pub fn parse_manifest(source: Utf16String) -> napi::Result<String> {
+    let source = decode("source", &source)?;
+    let manifest = Manifest::parse_yaml_str(&source).map_err(|e| err(format!("{e}")))?;
+    serde_json::to_string(&manifest).map_err(|e| err(format!("manifest serialization failed: {e}")))
+}
+
+/// Compose a chain of manifest YAML documents (outermost base first)
+/// into one merged manifest, returned as JSON.
+///
+/// This is the overlay case: a base policy plus deltas an environment
+/// layers on it, resolved the same way the engine resolves `extends`.
+#[napi]
+pub fn merge_manifests(sources_json: Utf16String) -> napi::Result<String> {
+    let raw = decode("sources_json", &sources_json)?;
+    let sources: Vec<String> = serde_json::from_str(&raw).map_err(|e| {
+        err(format!(
+            "sources_json must be a JSON array of manifest sources: {e}"
+        ))
+    })?;
+    if sources.is_empty() {
+        return Err(err("sources_json must name at least one source".to_string()));
+    }
+    let borrowed: Vec<&str> = sources.iter().map(String::as_str).collect();
+    let manifest = Manifest::from_yaml_chain(&borrowed).map_err(|e| err(format!("{e}")))?;
+    serde_json::to_string(&manifest).map_err(|e| err(format!("manifest serialization failed: {e}")))
+}
+
+/// Validate manifest source and return findings as a JSON array.
+///
+/// An empty array means the manifest is valid. Each entry carries
+/// `code` (`runtime_error:*`), `message` (engine detail), `severity`,
+/// and a best-effort `field` extracted from the message. This is the
+/// shape an authoring tool or CI linter needs; `validate_manifest`
+/// answers yes/no with a single message and cannot be rendered
+/// per-field.
+#[napi]
+pub fn validate_manifest_detailed(source: Utf16String) -> napi::Result<String> {
+    let source = decode("source", &source)?;
+    let findings = match Manifest::parse_yaml_str(&source) {
+        Ok(manifest) => {
+            if !manifest.extends.is_empty() {
+                // A fragment cannot be judged against itself: its
+                // parent may define the annotator or policy this
+                // document references. Report that as a single
+                // finding rather than silently blaming references
+                // the fragment does not own.
+                vec![diagnostic_json(&RuntimeError::ManifestInvalid(
+                    "manifest extends other manifests; validation needs the merged document. \
+                     Use validate_manifest_file, which resolves the chain."
+                        .to_string(),
+                ))]
+            } else {
+                match manifest.validate() {
+                    Ok(()) => Vec::new(),
+                    Err(e) => vec![diagnostic_json(&e)],
+                }
+            }
+        }
+        Err(e) => vec![diagnostic_json(&e)],
+    };
+    serde_json::to_string(&findings)
+        .map_err(|e| err(format!("diagnostics serialization failed: {e}")))
+}
+
+fn diagnostic_json(error: &RuntimeError) -> Value {
+    let detail = error.detail();
+    let field = extract_field(detail);
+    serde_json::json!({
+        "code": error.reason(),
+        "message": detail,
+        "severity": "error",
+        "field": field,
+    })
+}
+
+/// Best-effort extraction of the offending field name from a
+/// RuntimeError detail. Returns `None` when the message does not name a
+/// field the caller can point at, so the wrapper reports the raw
+/// message and the field slot stays absent (not empty).
+fn extract_field(detail: &str) -> Option<String> {
+    // serde_yaml: "missing field `X` at line ..." or
+    //             "unknown field `X`, expected ..."
+    if let Some(start) = detail.find("field `") {
+        let after = &detail[start + "field `".len()..];
+        if let Some(end) = after.find('`') {
+            let name = after[..end].trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    // Engine: "unsupported agent_control_specification_version '...'"
+    if let Some(rest) = detail.strip_prefix("unsupported ") {
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            return Some(name);
+        }
+    }
+    // Engine: "X is required"
+    if let Some((head, _)) = detail.split_once(" is required") {
+        let name = head.trim();
+        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 // ---------------------------------------------------------------------

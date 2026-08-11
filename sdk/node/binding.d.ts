@@ -21,6 +21,45 @@ export declare function intercept(handle: ExternalObject<Handle>, contextJson: s
 export declare function interceptorNew(manifestPath: string): ExternalObject<Handle>
 
 /**
+ * Build a runtime handle from a manifest path, optionally overriding
+ * the annotator dispatcher, policy dispatcher, telemetry sink, and
+ * perf telemetry level.
+ *
+ * Every callback is optional: absent means keep the zero-config
+ * default for that slot. Callbacks cross the boundary as JSON strings,
+ * mirroring the FFI hook contract, so a host that already sits behind
+ * a JSON schema does not re-model its wire shape for this SDK.
+ *
+ * Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
+ * engine's evaluation. A callback that throws surfaces as a fail-closed
+ * `runtime_error:*` deny (annotator → `annotation_failed`, policy →
+ * `policy_invocation_failed`) rather than silently reading as "no
+ * annotation".
+ */
+export declare function interceptorNewWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null, telemetrySink?: ((arg0: string) => void) | undefined | null, perfTelemetry?: string | undefined | null): ExternalObject<Handle>
+
+/**
+ * Compose a chain of manifest YAML documents (outermost base first)
+ * into one merged manifest, returned as JSON.
+ *
+ * This is the overlay case: a base policy plus deltas an environment
+ * layers on it, resolved the same way the engine resolves `extends`.
+ */
+export declare function mergeManifests(sourcesJson: string): string
+
+/**
+ * Parse manifest YAML into an object (JSON encoded) without
+ * validating cross-references.
+ *
+ * The document is deserialized as-written: a manifest with an
+ * unresolved `extends` chain parses fine, and returning it lets an
+ * authoring tool see the fragment. Use `validate_manifest` or
+ * `validate_manifest_detailed` to judge whether the fragment is
+ * runnable.
+ */
+export declare function parseManifest(source: string): string
+
+/**
  * Activate the manifest at `manifest_path`, readying every policy it
  * binds, against the zero-config dispatchers.
  *
@@ -54,6 +93,19 @@ export declare function policyActivate(manifestPath: string): ExternalObject<Pol
  * left as written.
  */
 export declare function policyActivateFromMemory(manifestYaml: string, bundlesJson: string): ExternalObject<PolicyHandle>
+
+/**
+ * Activate a manifest and its Rego from memory against host-supplied
+ * dispatchers.
+ */
+export declare function policyActivateFromMemoryWithHooks(manifestYaml: string, bundlesJson: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null): ExternalObject<PolicyHandle>
+
+/**
+ * Activate the manifest at `manifest_path` against host-supplied
+ * dispatchers. See `interceptor_new_with_hooks` for the callback
+ * contract.
+ */
+export declare function policyActivateWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null): ExternalObject<PolicyHandle>
 
 /**
  * Evaluate one intervention point against an activated policy and
@@ -185,6 +237,18 @@ export declare function supportedManifestVersions(): Array<string>
  * failures.
  */
 export declare function validateManifest(source: string): string | null
+
+/**
+ * Validate manifest source and return findings as a JSON array.
+ *
+ * An empty array means the manifest is valid. Each entry carries
+ * `code` (`runtime_error:*`), `message` (engine detail), `severity`,
+ * and a best-effort `field` extracted from the message. This is the
+ * shape an authoring tool or CI linter needs; `validate_manifest`
+ * answers yes/no with a single message and cannot be rendered
+ * per-field.
+ */
+export declare function validateManifestDetailed(source: string): string
 
 /**
  * Validate a manifest file, resolving `extends` first.

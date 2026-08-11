@@ -38,6 +38,7 @@ those are host obligations defined by agent-hooks.
 | `policy/` | Cedar and Rego policy libraries |
 | `fixtures/` | Evaluation fixtures |
 | `docs/STREAMING.md` | The incremental stream profile (section 18.1) in every language |
+| `docs/MIGRATION.md` | Porting from `agent-control-specification` 0.3 |
 | `docs/EXTRACTION.md` | Provenance map from the previous tree |
 
 ## Status

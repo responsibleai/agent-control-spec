@@ -26,13 +26,40 @@ import type {
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const native = require("../binding.js") as {
   interceptorNew(manifestPath: string): unknown;
+  interceptorNewWithHooks(
+    manifestPath: string,
+    annotatorDispatcher?:
+      | ((name: string, invocationJson: string, policyInputJson: string) => string)
+      | null,
+    policyDispatcher?: ((invocationJson: string) => string) | null,
+    telemetrySink?: ((eventJson: string) => void) | null,
+    perfTelemetry?: string | null,
+  ): unknown;
   intercept(handle: unknown, contextJson: string): string;
   policyActivate(manifestPath: string): unknown;
   policyActivateFromMemory(manifestYaml: string, bundlesJson: string): unknown;
+  policyActivateWithHooks(
+    manifestPath: string,
+    annotatorDispatcher?:
+      | ((name: string, invocationJson: string, policyInputJson: string) => string)
+      | null,
+    policyDispatcher?: ((invocationJson: string) => string) | null,
+  ): unknown;
+  policyActivateFromMemoryWithHooks(
+    manifestYaml: string,
+    bundlesJson: string,
+    annotatorDispatcher?:
+      | ((name: string, invocationJson: string, policyInputJson: string) => string)
+      | null,
+    policyDispatcher?: ((invocationJson: string) => string) | null,
+  ): unknown;
   policyEvaluate(handle: unknown, point: string, contextJson: string): string;
   policyInterventionPoints(handle: unknown): string[];
   validateManifestFile(path: string): string | null;
   validateManifest(source: string): string | null;
+  validateManifestDetailed(source: string): string;
+  parseManifest(source: string): string;
+  mergeManifests(sourcesJson: string): string;
   supportedManifestVersions(): string[];
   streamSessionNew(configJson: string): unknown;
   streamSessionObserve(handle: unknown, sourceType: string, runes: number): number;
@@ -72,7 +99,192 @@ export type {
   Warning,
 } from "@responsibleai/agent-hooks";
 
-export interface AcsInterceptorOptions {
+// ---------------------------------------------------------------------
+// Host extension surface: annotator dispatcher, policy dispatcher,
+// telemetry sink, perf telemetry level. The zero-config path stays
+// unchanged; a host that supplies any of these hooks gets the same
+// engine construction the Rust and .NET/FFI SDKs already expose.
+//
+// The dispatcher callbacks are called SYNCHRONOUSLY on the JS thread
+// from inside the engine's evaluation, which is legal here because the
+// engine call itself is driven by a napi function running on the JS
+// thread. A dispatcher that throws surfaces as a fail-closed
+// `runtime_error:*` deny; the engine never treats a thrown callback as
+// "no annotation".
+// ---------------------------------------------------------------------
+
+/**
+ * A JSON-compatible value the boundary carries verbatim.
+ *
+ * Named separately from `unknown` so a dispatcher signature can say what
+ * kind of thing it reads and returns without opening the door to values
+ * (functions, symbols, class instances) the engine cannot round-trip.
+ */
+export type JsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | readonly JsonValue[]
+  | { readonly [key: string]: JsonValue };
+
+/**
+ * Fields the engine hands to a host annotator: `type` (`classifier`,
+ * `llm`, `endpoint`), `from` (JSONPath expression), and every extra
+ * key the manifest attached to the annotator or the annotation.
+ */
+export interface AnnotatorInvocation {
+  readonly type: "classifier" | "llm" | "endpoint";
+  readonly from: string;
+  readonly [key: string]: JsonValue;
+}
+
+/**
+ * Fields the engine hands to a host policy dispatcher. A serialized
+ * `PreparedPolicyInvocation` — carrying `policy_id`, `policy_type`,
+ * `intervention_point`, `input`, and the policy-specific configuration
+ * — routed to whichever engine the host runs. The precise shape moves
+ * with the engine; treat it as opaque JSON and let the engine describe
+ * what to key off.
+ */
+export interface PolicyInvocation {
+  readonly policy_id: string;
+  readonly policy_type: string;
+  readonly intervention_point: string;
+  readonly input: JsonValue;
+  readonly [key: string]: JsonValue;
+}
+
+/**
+ * One telemetry event the engine emits. Every field maps 1:1 with the
+ * `TelemetryEvent` the FFI binding surfaces and the Rust engine
+ * declares, so a sink written for another SDK reads the same shape here.
+ */
+export interface TelemetryEvent {
+  readonly event_type: string;
+  readonly intervention_point: string;
+  readonly decision: string | null;
+  readonly reason_code: string | null;
+  readonly error_class: string | null;
+  readonly policy_id: string | null;
+  readonly annotators: readonly string[];
+  readonly enforcement_mode: string | null;
+  readonly duration_ms: number | null;
+  readonly evidence_artefact: string | null;
+  readonly evidence_verification_pointer_keys: readonly string[];
+  readonly action_identity: string | null;
+  readonly metadata: Readonly<Record<string, string>>;
+}
+
+/**
+ * A host annotator dispatcher.
+ *
+ * Called synchronously from inside `intercept`/`evaluate`; return a
+ * value the manifest's `preliminary_policy_input` merge shape expects
+ * (typically a JSON object per the annotator's contract). Throwing
+ * fails the surrounding evaluation closed with a
+ * `runtime_error:annotation_failed` deny.
+ */
+export type AnnotatorDispatcher = (
+  name: string,
+  invocation: AnnotatorInvocation,
+  preliminaryPolicyInput: JsonValue,
+) => JsonValue;
+
+/**
+ * A host policy dispatcher.
+ *
+ * Called synchronously; return the policy output as JSON per the
+ * engine's expected shape (a `decision` string plus any extras). A
+ * throw fails the evaluation closed with a
+ * `runtime_error:policy_invocation_failed` deny.
+ */
+export type PolicyDispatcher = (invocation: PolicyInvocation) => JsonValue;
+
+/**
+ * A telemetry sink.
+ *
+ * Called synchronously with each event the engine emits at the
+ * configured perf level. A sink cannot fail an evaluation; a throw
+ * from the sink is swallowed to preserve that guarantee.
+ */
+export type TelemetrySink = (event: TelemetryEvent) => void;
+
+/**
+ * How much per-evaluation timing to emit.
+ *
+ * - `off` (default): only the final decision event.
+ * - `external`: adds boundary events (annotator dispatch, policy
+ *   evaluation).
+ * - `full`: adds stage timing events for a full performance profile.
+ */
+export type PerfTelemetry = "off" | "external" | "full";
+
+/**
+ * Host extension points. Each is optional; supplying one replaces the
+ * zero-config default for that slot.
+ */
+export interface HostHooks {
+  annotatorDispatcher?: AnnotatorDispatcher;
+  policyDispatcher?: PolicyDispatcher;
+  telemetrySink?: TelemetrySink;
+  perfTelemetry?: PerfTelemetry;
+}
+
+// --- Bridges between the object-oriented TS surface and the JSON --------
+// string wire the native binding uses. Keeping the parse/serialize step
+// here means the native dispatcher signatures stay simple `String →
+// String` and every host callback sees objects, not text.
+
+function wrapAnnotatorDispatcher(
+  dispatcher: AnnotatorDispatcher,
+): (name: string, invocationJson: string, policyInputJson: string) => string {
+  return (name, invocationJson, policyInputJson) => {
+    // A parse or a throwing dispatcher must propagate as a JS exception:
+    // the native binding turns that into a fail-closed
+    // `runtime_error:annotation_failed` deny. Never swallow — a
+    // silently caught error would read as "annotation succeeded with
+    // undefined".
+    const invocation = JSON.parse(invocationJson) as AnnotatorInvocation;
+    const policyInput = JSON.parse(policyInputJson) as JsonValue;
+    const result = dispatcher(name, invocation, policyInput);
+    return JSON.stringify(result ?? null);
+  };
+}
+
+function wrapPolicyDispatcher(
+  dispatcher: PolicyDispatcher,
+): (invocationJson: string) => string {
+  return (invocationJson) => {
+    const invocation = JSON.parse(invocationJson) as PolicyInvocation;
+    const result = dispatcher(invocation);
+    return JSON.stringify(result ?? null);
+  };
+}
+
+function wrapTelemetrySink(sink: TelemetrySink): (eventJson: string) => void {
+  return (eventJson) => {
+    // A sink cannot fail an evaluation, so wrap in try/catch and drop
+    // the throw. Matches the engine contract.
+    try {
+      const event = JSON.parse(eventJson) as TelemetryEvent;
+      sink(event);
+    } catch {
+      // intentionally swallowed
+    }
+  };
+}
+
+function hasHostHooks(options: HostHooks): boolean {
+  return (
+    options.annotatorDispatcher !== undefined ||
+    options.policyDispatcher !== undefined ||
+    options.telemetrySink !== undefined ||
+    options.perfTelemetry !== undefined
+  );
+}
+
+export interface AcsInterceptorOptions extends HostHooks {
   /** Payload-free identifier recorded on the record's `verdicts[].name`. */
   name?: string;
 }
@@ -88,14 +300,36 @@ export class AcsInterceptor implements Interceptor {
   }
 
   /**
-   * Build an interceptor from a manifest path using the zero-config
-   * dispatchers: bundled annotators; Rego policies in process, Cedar
-   * through the built-in evaluator, `test` policies through their
-   * embedded verdict. Custom policies require a host dispatcher and
-   * fail closed under this construction.
+   * Build an interceptor from a manifest path.
+   *
+   * With no `options`, uses the zero-config dispatchers: bundled
+   * annotators; Rego policies in process, Cedar through the built-in
+   * evaluator, `test` policies through their embedded verdict. Custom
+   * policies require a host dispatcher and fail closed under this
+   * construction.
+   *
+   * Supply `annotatorDispatcher`, `policyDispatcher`, `telemetrySink`,
+   * or `perfTelemetry` to override the engine's extension points. Each
+   * callback is called synchronously on the JS thread from inside
+   * `intercept`. A callback that throws surfaces as a fail-closed
+   * `runtime_error:*` deny rather than reading as "no annotation".
    */
   static fromPath(manifestPath: string, options: AcsInterceptorOptions = {}): AcsInterceptor {
-    return new AcsInterceptor(native.interceptorNew(manifestPath), options.name ?? "acs");
+    const name = options.name ?? "acs";
+    const handle = hasHostHooks(options)
+      ? native.interceptorNewWithHooks(
+          manifestPath,
+          options.annotatorDispatcher
+            ? wrapAnnotatorDispatcher(options.annotatorDispatcher)
+            : null,
+          options.policyDispatcher
+            ? wrapPolicyDispatcher(options.policyDispatcher)
+            : null,
+          options.telemetrySink ? wrapTelemetrySink(options.telemetrySink) : null,
+          options.perfTelemetry ?? null,
+        )
+      : native.interceptorNew(manifestPath);
+    return new AcsInterceptor(handle, name);
   }
 
   /**
@@ -132,6 +366,25 @@ export interface RegoBundle {
    */
   modules: Readonly<Record<string, string>>;
   data?: readonly RegoDataDocument[];
+}
+
+/**
+ * Host extension points for {@link ActivatedPolicy}.
+ *
+ * Activation uses the engine's `activate_with` surface, which takes
+ * only the annotator and policy dispatchers; telemetry and perf level
+ * are configured on the interceptor path (see {@link AcsInterceptor})
+ * because activation records no per-evaluation events itself.
+ */
+export interface ActivatedPolicyOptions {
+  annotatorDispatcher?: AnnotatorDispatcher;
+  policyDispatcher?: PolicyDispatcher;
+}
+
+function hasActivationHooks(options: ActivatedPolicyOptions): boolean {
+  return (
+    options.annotatorDispatcher !== undefined || options.policyDispatcher !== undefined
+  );
 }
 
 /**
@@ -175,9 +428,28 @@ export class ActivatedPolicy {
    *
    * A manifest names its bundle relative to itself, so an absolute
    * manifest path is enough and the working directory does not matter.
+   *
+   * Supply `annotatorDispatcher` or `policyDispatcher` in `options` to
+   * override the engine's extension points; each callback is called
+   * synchronously on the JS thread from inside `evaluate` and fails
+   * closed on throw.
    */
-  static activate(manifestPath: string): ActivatedPolicy {
-    return new ActivatedPolicy(native.policyActivate(manifestPath));
+  static activate(
+    manifestPath: string,
+    options: ActivatedPolicyOptions = {},
+  ): ActivatedPolicy {
+    const handle = hasActivationHooks(options)
+      ? native.policyActivateWithHooks(
+          manifestPath,
+          options.annotatorDispatcher
+            ? wrapAnnotatorDispatcher(options.annotatorDispatcher)
+            : null,
+          options.policyDispatcher
+            ? wrapPolicyDispatcher(options.policyDispatcher)
+            : null,
+        )
+      : native.policyActivate(manifestPath);
+    return new ActivatedPolicy(handle);
   }
 
   /**
@@ -205,10 +477,21 @@ export class ActivatedPolicy {
   static activateFromMemory(
     manifestYaml: string,
     bundles: Readonly<Record<string, RegoBundle>>,
+    options: ActivatedPolicyOptions = {},
   ): ActivatedPolicy {
-    return new ActivatedPolicy(
-      native.policyActivateFromMemory(manifestYaml, JSON.stringify(bundles)),
-    );
+    const handle = hasActivationHooks(options)
+      ? native.policyActivateFromMemoryWithHooks(
+          manifestYaml,
+          JSON.stringify(bundles),
+          options.annotatorDispatcher
+            ? wrapAnnotatorDispatcher(options.annotatorDispatcher)
+            : null,
+          options.policyDispatcher
+            ? wrapPolicyDispatcher(options.policyDispatcher)
+            : null,
+        )
+      : native.policyActivateFromMemory(manifestYaml, JSON.stringify(bundles));
+    return new ActivatedPolicy(handle);
   }
 
   /**
@@ -306,6 +589,112 @@ export function validateManifestFile(path: string): void {
 export function supportedManifestVersions(): readonly string[] {
   return Object.freeze(native.supportedManifestVersions());
 }
+
+// ---------------------------------------------------------------------
+// Manifest tooling: parse, chain-compose, and structured diagnostics.
+//
+// The engine ships these APIs on `Manifest`; the wrapper exposes them
+// here so authoring, migration, and CI tools can drive parse, overlay
+// composition, and per-field validation from Node without staging a
+// manifest to disk first.
+// ---------------------------------------------------------------------
+
+/**
+ * A structured description of a manifest that did not pass validation.
+ *
+ * `code` is the reserved `runtime_error:*` reason a diagnostic-consuming
+ * tool keys off; `message` is the engine's human-readable detail;
+ * `field` is a best-effort pointer to the offending manifest field (a
+ * YAML key or an engine-declared identifier) so an editor can render
+ * the problem inline. `field` is absent when the message does not
+ * identify one.
+ */
+export interface ManifestDiagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly severity: "error";
+  readonly field?: string;
+}
+
+/**
+ * Parse manifest YAML into an object without validating references.
+ *
+ * The document is deserialized as-written: a manifest with an
+ * unresolved `extends` chain returns fine. Use {@link validateManifest}
+ * or {@link validateManifestDetailed} to judge whether the fragment is
+ * runnable.
+ *
+ * Throws when the YAML does not parse.
+ */
+export function parseManifest(source: string): Record<string, unknown> {
+  if (typeof source !== "string") {
+    throw new TypeError(`parseManifest expects a string, received ${typeof source}`);
+  }
+  if (UNPAIRED_SURROGATE.test(source)) {
+    throw new TypeError("parseManifest received a string with an unpaired surrogate");
+  }
+  return JSON.parse(native.parseManifest(source)) as Record<string, unknown>;
+}
+
+/**
+ * Compose a chain of manifest YAML documents into one merged manifest.
+ *
+ * `sources` is ordered outermost base first, deltas after. This is the
+ * overlay case, resolved the same way the engine resolves `extends`
+ * when it walks a manifest tree. The returned object is the merged
+ * manifest as JSON.
+ *
+ * Throws when a source does not parse, when the merged result is
+ * invalid, or when `sources` is empty.
+ */
+export function mergeManifests(sources: readonly string[]): Record<string, unknown> {
+  if (!Array.isArray(sources)) {
+    throw new TypeError("mergeManifests expects an array of manifest sources");
+  }
+  for (const source of sources) {
+    if (typeof source !== "string") {
+      throw new TypeError("mergeManifests received a non-string source");
+    }
+    if (UNPAIRED_SURROGATE.test(source)) {
+      throw new TypeError(
+        "mergeManifests received a source with an unpaired surrogate",
+      );
+    }
+  }
+  return JSON.parse(native.mergeManifests(JSON.stringify(sources))) as Record<
+    string,
+    unknown
+  >;
+}
+
+/**
+ * Validate manifest source and return structured findings.
+ *
+ * An empty array means the manifest passed validation. Each finding
+ * carries an engine reason code, the detail message, and where
+ * possible the offending field name so an editor can render the
+ * problem inline. Use this instead of {@link validateManifest} when
+ * you need to render results, not just yes/no.
+ *
+ * Throws only on boundary problems (non-string input, unpaired
+ * surrogate); an invalid manifest returns a non-empty array.
+ */
+export function validateManifestDetailed(source: string): readonly ManifestDiagnostic[] {
+  if (typeof source !== "string") {
+    throw new TypeError(
+      `validateManifestDetailed expects a string, received ${typeof source}`,
+    );
+  }
+  if (UNPAIRED_SURROGATE.test(source)) {
+    throw new TypeError(
+      "validateManifestDetailed received a string with an unpaired surrogate",
+    );
+  }
+  return Object.freeze(
+    JSON.parse(native.validateManifestDetailed(source)) as ManifestDiagnostic[],
+  );
+}
+
 
 // ---------------------------------------------------------------------
 // Streaming: incremental release mediation for stream-shaped tracks

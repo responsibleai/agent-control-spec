@@ -17,18 +17,23 @@
 // every schema-valid context. Errors on that path are boundary
 // problems only (bad UTF-8, non-object context, poisoned handle).
 
+use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
+use agent_control_spec::perf_telemetry::PerfTelemetry;
+use agent_control_spec::policy::PreparedPolicyInvocation;
+use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::stream_session::{
     SafetyLevel, SegmentOutcome, StreamEndReason, StreamSession, StreamSessionConfig,
     StreamSourceType, StreamSpan, StreamTrack,
 };
+use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
 use agent_control_spec::{
     ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
     Verdict, SUPPORTED_VERSIONS,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
@@ -808,6 +813,474 @@ pub unsafe extern "C" fn acs_policy_free(handle: *mut AcsActivatedPolicy) {
         return;
     }
     drop(Box::from_raw(handle));
+}
+
+// ---------------------------------------------------------------------
+// Host extension points and manifest tooling.
+//
+// The engine takes an annotator dispatcher, a policy dispatcher, a
+// telemetry sink and a perf level. The zero-config constructors above
+// pick defaults for all four, which is right for a host that wants a
+// policy decision and nothing else. A host that classifies through its
+// own service, evaluates through its own engine, or records its own
+// audit trail needs to supply them, and before these entry points
+// existed there was no way in from any language but Rust.
+//
+// Callbacks cross the boundary as JSON and answer with JSON. A callback
+// returns NULL and sets its own error string to fail, and the engine
+// turns that into a fail-closed deny rather than treating it as an
+// absent annotation: a classifier that could not be reached must not
+// read as "found nothing".
+//
+// Ownership: a string the host returns is freed by the host, through
+// the `free` callback registered alongside. The engine copies what it
+// needs first. It never calls `acs_free_string` on host memory.
+// ---------------------------------------------------------------------
+
+/// Free a string a host callback returned.
+pub type AcsHookFree = unsafe extern "C" fn(ctx: *mut c_void, value: *mut c_char);
+
+/// Classify one annotation. Returns the annotation value as JSON, or
+/// NULL with `*err_out` set.
+pub type AcsAnnotatorFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    annotator_name: *const c_char,
+    invocation_json: *const c_char,
+    policy_input_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char;
+
+/// Evaluate one prepared policy invocation. Returns the policy output as
+/// JSON, or NULL with `*err_out` set.
+pub type AcsPolicyFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    invocation_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char;
+
+/// Receive one telemetry event as JSON. A sink cannot fail the
+/// evaluation, so it has no error channel.
+pub type AcsTelemetryFn = unsafe extern "C" fn(ctx: *mut c_void, event_json: *const c_char);
+
+// A host context is an opaque pointer the engine only hands back. The
+// engine calls dispatchers from whatever thread is evaluating, so the
+// host is responsible for its context being safe to use from more than
+// one. Stated here because the compiler cannot check it.
+struct HostCtx {
+    ctx: *mut c_void,
+    free: Option<AcsHookFree>,
+}
+
+unsafe impl Send for HostCtx {}
+unsafe impl Sync for HostCtx {}
+
+impl HostCtx {
+    /// Copy a string the host returned, then hand the original back to
+    /// the host's own allocator.
+    unsafe fn take(&self, raw: *mut c_char) -> Option<String> {
+        if raw.is_null() {
+            return None;
+        }
+        let copied = CStr::from_ptr(raw).to_str().ok().map(str::to_string);
+        if let Some(free) = self.free {
+            free(self.ctx, raw);
+        }
+        copied
+    }
+}
+
+fn host_error(what: &str, err_out: *mut *mut c_char) -> RuntimeError {
+    let detail = if err_out.is_null() {
+        None
+    } else {
+        let raw = unsafe { *err_out };
+        if raw.is_null() {
+            None
+        } else {
+            let message = unsafe { CStr::from_ptr(raw) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { acs_free_string(raw) };
+            Some(message)
+        }
+    };
+    RuntimeError::PolicyInvocationFailed(match detail {
+        Some(message) => format!("host {what} failed: {message}"),
+        None => format!("host {what} failed without a message"),
+    })
+}
+
+struct HostAnnotatorDispatcher {
+    host: HostCtx,
+    call: AcsAnnotatorFn,
+}
+
+impl AnnotatorDispatcher for HostAnnotatorDispatcher {
+    fn dispatch(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let name = CString::new(annotator_name).map_err(|_| {
+            RuntimeError::PolicyInvocationFailed("annotator name held a NUL".into())
+        })?;
+        let invocation = CString::new(serde_json::to_string(annotator).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("annotator invocation: {e}"))
+        })?)
+        .map_err(|_| {
+            RuntimeError::PolicyInvocationFailed("annotator invocation held a NUL".into())
+        })?;
+        let input = CString::new(
+            serde_json::to_string(preliminary_policy_input)
+                .map_err(|e| RuntimeError::PolicyInvocationFailed(format!("policy input: {e}")))?,
+        )
+        .map_err(|_| RuntimeError::PolicyInvocationFailed("policy input held a NUL".into()))?;
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe {
+            (self.call)(
+                self.host.ctx,
+                name.as_ptr(),
+                invocation.as_ptr(),
+                input.as_ptr(),
+                &mut err,
+            )
+        };
+        let Some(json) = (unsafe { self.host.take(raw) }) else {
+            return Err(host_error("annotator", &mut err));
+        };
+        serde_json::from_str(&json).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("host annotator returned non JSON: {e}"))
+        })
+    }
+}
+
+struct HostPolicyDispatcher {
+    host: HostCtx,
+    call: AcsPolicyFn,
+}
+
+impl PolicyDispatcher for HostPolicyDispatcher {
+    fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<Value, RuntimeError> {
+        let payload = CString::new(serde_json::to_string(invocation).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("policy invocation: {e}"))
+        })?)
+        .map_err(|_| RuntimeError::PolicyInvocationFailed("policy invocation held a NUL".into()))?;
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe { (self.call)(self.host.ctx, payload.as_ptr(), &mut err) };
+        let Some(json) = (unsafe { self.host.take(raw) }) else {
+            return Err(host_error("policy dispatcher", &mut err));
+        };
+        serde_json::from_str(&json).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("host policy returned non JSON: {e}"))
+        })
+    }
+}
+
+struct HostTelemetrySink {
+    host: HostCtx,
+    call: AcsTelemetryFn,
+}
+
+impl TelemetrySink for HostTelemetrySink {
+    fn emit(&self, event: TelemetryEvent) {
+        // TelemetryEvent is not Serialize, so the wire shape is owned
+        // here rather than derived from the engine's layout. A sink
+        // cannot fail an evaluation, so a problem here drops the event
+        // rather than denying the action it describes.
+        let payload = serde_json::json!({
+            "event_type": event.event_type.as_str(),
+            "intervention_point": format!("{:?}", event.intervention_point).to_lowercase(),
+            "decision": event.decision.map(|d| format!("{d:?}").to_lowercase()),
+            "reason_code": event.reason_code,
+            "error_class": event.error_class,
+            "policy_id": event.policy_id,
+            "annotators": event.annotators,
+            "enforcement_mode": event.enforcement_mode.map(|m| format!("{m:?}").to_lowercase()),
+            "duration_ms": event.duration_ms,
+        });
+        let Ok(json) = serde_json::to_string(&payload) else {
+            return;
+        };
+        let Ok(payload) = CString::new(json) else {
+            return;
+        };
+        unsafe { (self.call)(self.host.ctx, payload.as_ptr()) };
+    }
+}
+
+fn parse_perf(value: *const c_char, err_out: *mut *mut c_char) -> Option<PerfTelemetry> {
+    if value.is_null() {
+        return Some(PerfTelemetry::Off);
+    }
+    let raw = unsafe { read_utf8(value, "perf_telemetry", err_out) }?;
+    match raw {
+        "off" => Some(PerfTelemetry::Off),
+        "external" => Some(PerfTelemetry::External),
+        "full" => Some(PerfTelemetry::Full),
+        other => {
+            set_err(err_out, format!("unknown perf telemetry level '{other}'"));
+            None
+        }
+    }
+}
+
+/// Build an interceptor with host-supplied extension points.
+///
+/// Any callback may be NULL, which keeps the bundled default for that
+/// slot, so a host overrides only what it needs. `perf_telemetry` is
+/// `off`, `external` or `full`, and NULL means `off`.
+///
+/// `annotator_ctx`, `policy_ctx` and `telemetry_ctx` are opaque to the
+/// engine. Dispatch happens on whichever thread evaluates, so a context
+/// shared across threads must be safe to use from all of them.
+///
+/// Returns NULL and sets `*err_out` on failure. Free with
+/// `acs_interceptor_free`.
+///
+/// # Safety
+/// `manifest_path` must point to `manifest_path_len` readable bytes.
+/// Every non-null callback must remain valid, and every context must
+/// stay alive, until the handle is freed.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
+    manifest_path: *const u8,
+    manifest_path_len: usize,
+    annotator_fn: Option<AcsAnnotatorFn>,
+    annotator_ctx: *mut c_void,
+    policy_fn: Option<AcsPolicyFn>,
+    policy_ctx: *mut c_void,
+    telemetry_fn: Option<AcsTelemetryFn>,
+    telemetry_ctx: *mut c_void,
+    hook_free: Option<AcsHookFree>,
+    perf_telemetry: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut AcsInterceptor {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let path = match read_path(manifest_path, manifest_path_len, err_out) {
+            Some(p) => p,
+            None => return std::ptr::null_mut(),
+        };
+        let manifest = match Manifest::from_path(path) {
+            Ok(m) => m,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let Some(perf) = parse_perf(perf_telemetry, err_out) else {
+            return std::ptr::null_mut();
+        };
+
+        let annotations: Arc<dyn AnnotatorDispatcher> = match annotator_fn {
+            Some(call) => Arc::new(HostAnnotatorDispatcher {
+                host: HostCtx {
+                    ctx: annotator_ctx,
+                    free: hook_free,
+                },
+                call,
+            }),
+            None => default_annotator_dispatcher(),
+        };
+        let policy: Arc<dyn PolicyDispatcher> = match policy_fn {
+            Some(call) => Arc::new(HostPolicyDispatcher {
+                host: HostCtx {
+                    ctx: policy_ctx,
+                    free: hook_free,
+                },
+                call,
+            }),
+            None => Arc::new(BindingPolicyDispatcher::new()),
+        };
+        let telemetry: Arc<dyn TelemetrySink> = match telemetry_fn {
+            Some(call) => Arc::new(HostTelemetrySink {
+                host: HostCtx {
+                    ctx: telemetry_ctx,
+                    free: hook_free,
+                },
+                call,
+            }),
+            None => Arc::new(NoopTelemetrySink),
+        };
+
+        match Runtime::with_telemetry_and_perf(manifest, annotations, policy, telemetry, perf) {
+            Ok(runtime) => Box::into_raw(Box::new(AcsInterceptor {
+                runtime,
+                name: "acs".to_string(),
+            })),
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_interceptor_new_with_hooks".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Parse manifest text and return it as JSON.
+///
+/// Parsing is not validation: this answers what the document says, which
+/// an authoring or migration tool needs before the document is
+/// runnable. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `yaml` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_parse(
+    yaml: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(source) = read_utf8(yaml, "yaml", err_out) else {
+            return std::ptr::null_mut();
+        };
+        match Manifest::from_yaml_str(source) {
+            Ok(manifest) => match serde_json::to_string(&manifest) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("manifest serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(err_out, "internal panic in acs_manifest_parse".to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Compose a chain of manifest documents into one and return it as JSON.
+///
+/// `yamls_json` is a JSON array of manifest sources, outermost base
+/// first. This is the overlay case: a base policy plus the deltas an
+/// environment layers on it, resolved the same way the engine resolves
+/// `extends`. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `yamls_json` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_merge(
+    yamls_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(yamls_json, "yamls_json", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let sources: Vec<String> = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(
+                    err_out,
+                    format!("yamls_json must be a JSON array of manifest sources: {e}"),
+                );
+                return std::ptr::null_mut();
+            }
+        };
+        if sources.is_empty() {
+            set_err(err_out, "yamls_json must name at least one source".into());
+            return std::ptr::null_mut();
+        }
+        let borrowed: Vec<&str> = sources.iter().map(String::as_str).collect();
+        match Manifest::from_yaml_chain(&borrowed) {
+            Ok(manifest) => match serde_json::to_string(&manifest) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("manifest serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(err_out, "internal panic in acs_manifest_merge".to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Validate manifest text and return the findings as a JSON array.
+///
+/// An empty array means valid. Each entry carries `code`, `message` and
+/// `severity`. This is the shape an authoring tool or a CI linter needs:
+/// `acs_validate_manifest` answers yes or no through an error string,
+/// which cannot be rendered against a document. Freed with
+/// `acs_free_string`.
+///
+/// # Safety
+/// `yaml` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_diagnostics(
+    yaml: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(source) = read_utf8(yaml, "yaml", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let findings = match Manifest::from_yaml_str(source) {
+            Ok(manifest) => match manifest.validate() {
+                Ok(()) => Vec::new(),
+                Err(e) => vec![diagnostic_json(&e)],
+            },
+            Err(e) => vec![diagnostic_json(&e)],
+        };
+        match serde_json::to_string(&findings) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("diagnostics serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_manifest_diagnostics".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+fn diagnostic_json(error: &RuntimeError) -> Value {
+    serde_json::json!({
+        "code": error.reason(),
+        "message": error.detail(),
+        "severity": "error",
+    })
 }
 
 // ---------------------------------------------------------------------

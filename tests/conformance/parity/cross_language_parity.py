@@ -41,6 +41,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = Path(__file__).resolve().parent / "manifest.yaml"
+HOOKS_MANIFEST = Path(__file__).resolve().parent / "host-hooks-manifest.yaml"
 
 # "hi" plus one astral-plane scalar: 3 runes, 4 UTF-16 code units.
 TEXT = "hi\U0001f600"
@@ -87,6 +88,19 @@ EXPECTED = {
     "transformed": False,
     # Absent, never 0 and never -1. Each language spells it natively.
     "safe_offset_settled": None,
+    # Host extension points. The classifier's answer must decide the
+    # verdict, and a classifier that could not be reached must deny
+    # rather than read as one that found nothing.
+    "hook_benign_decision": "allow",
+    "hook_harmful_decision": "deny",
+    "hook_harmful_reason": "unsafe_content",
+    "hook_failure_decision": "deny",
+    "hook_failure_reason": "runtime_error:annotation_failed",
+    "hook_dispatcher_calls": 1,
+    # Manifest tooling.
+    "parsed_has_points": True,
+    "diagnostics_on_bad": 1,
+    "diagnostics_on_good": 0,
 }
 
 
@@ -101,9 +115,58 @@ use agent_control_spec::stream_session::*;
 use agent_control_spec::{ActivatedPolicy, InterceptionPoint, Manifest, Runtime};
 use std::sync::Arc;
 
+struct Classifier {
+    severity: i64,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl agent_control_spec::annotation::AnnotatorDispatcher for Classifier {
+    fn dispatch(
+        &self,
+        _name: &str,
+        _annotator: &agent_control_spec::annotation::AnnotatorInvocation,
+        _prelim: &serde_json::Value,
+    ) -> Result<serde_json::Value, agent_control_spec::RuntimeError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(serde_json::json!({ "severity": self.severity }))
+    }
+}
+
+struct Broken;
+
+impl agent_control_spec::annotation::AnnotatorDispatcher for Broken {
+    fn dispatch(
+        &self,
+        _name: &str,
+        _annotator: &agent_control_spec::annotation::AnnotatorInvocation,
+        _prelim: &serde_json::Value,
+    ) -> Result<serde_json::Value, agent_control_spec::RuntimeError> {
+        Err(agent_control_spec::RuntimeError::AnnotationFailed(
+            "classifier unreachable".to_string(),
+        ))
+    }
+}
+
+fn hook(
+    hooks_manifest: &str,
+    dispatcher: Arc<dyn agent_control_spec::annotation::AnnotatorDispatcher>,
+) -> (String, Option<String>) {
+    let manifest = Manifest::from_path(hooks_manifest).expect("hooks manifest");
+    let runtime = Runtime::new(manifest, dispatcher, Arc::new(BindingPolicyDispatcher::new()))
+        .expect("hooks runtime");
+    let ctx: serde_json::Value =
+        serde_json::from_str(r#"{"interception_point":"input","input":"hello"}"#).expect("ctx");
+    let verdict = runtime.evaluate(&ctx).verdict;
+    (
+        format!("{:?}", verdict.decision).to_lowercase(),
+        verdict.reason.clone(),
+    )
+}
+
 fn main() {
     let manifest_path = std::env::args().nth(1).expect("manifest path");
     let text = std::env::args().nth(2).expect("text");
+    let hooks_manifest = std::env::args().nth(3).expect("hooks manifest");
 
     let validate_good = match Manifest::from_path(&manifest_path) {
         Ok(_) => "ok",
@@ -162,9 +225,41 @@ fn main() {
     let confirmed = session.watermark(StreamTrack::Response).confirmed();
     let completion = session.finish();
 
+    let benign = Arc::new(Classifier {
+        severity: 1,
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let b = hook(&hooks_manifest, benign.clone());
+    let hh = hook(
+        &hooks_manifest,
+        Arc::new(Classifier {
+            severity: 7,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        }),
+    );
+    let f = hook(&hooks_manifest, Arc::new(Broken));
+    let parsed = Manifest::from_yaml_str(&std::fs::read_to_string(&manifest_path).expect("read"))
+        .expect("parse");
+    let parsed_json = serde_json::to_value(&parsed).expect("parsed json");
+    let bad_diags = usize::from(Manifest::from_yaml_str(BAD_MANIFEST).is_err());
+    let good_diags = usize::from(
+        Manifest::from_yaml_str(&std::fs::read_to_string(&manifest_path).expect("read"))
+            .and_then(|m| m.validate())
+            .is_err(),
+    );
+
     println!(
         "{}",
         serde_json::json!({
+            "hook_benign_decision": b.0,
+            "hook_harmful_decision": hh.0,
+            "hook_harmful_reason": hh.1,
+            "hook_failure_decision": f.0,
+            "hook_failure_reason": f.1,
+            "hook_dispatcher_calls": benign.calls.load(std::sync::atomic::Ordering::SeqCst),
+            "parsed_has_points": parsed_json.get("intervention_points").is_some(),
+            "diagnostics_on_bad": bad_diags,
+            "diagnostics_on_good": good_diags,
             "supported_versions_nonempty": !agent_control_spec::SUPPORTED_VERSIONS.is_empty(),
             "validate_good": validate_good,
             "validate_bad": validate_bad,
@@ -225,6 +320,7 @@ serde_json = "1"
             "--",
             str(MANIFEST),
             TEXT,
+            str(HOOKS_MANIFEST),
         ]
     )
 
@@ -235,6 +331,7 @@ import json
 from agent_control_spec import (
     AcsInterceptor, ActivatedPolicy, StreamSession,
     supported_manifest_versions, validate_manifest,
+    parse_manifest, validate_manifest_detailed,
 )
 
 def check(source):
@@ -266,7 +363,39 @@ def decision(v):
     return str(getattr(d, "value", d)).lower()
 
 
+class _Classifier:
+    def __init__(self, sev): self.sev = sev; self.calls = 0
+    def dispatch(self, name, annotator, prelim):
+        self.calls += 1
+        return {{"severity": self.sev}}
+
+class _Broken:
+    def dispatch(self, *a, **k):
+        raise RuntimeError("classifier unreachable")
+
+def _hook(dispatcher):
+    i = AcsInterceptor({str(HOOKS_MANIFEST)!r}, annotator_dispatcher=dispatcher)
+    v = i.intercept({{"interception_point": "input", "input": "hello"}})
+    return (str(getattr(v.decision, "value", v.decision)).lower(), v.reason)
+
+_benign = _Classifier(1)
+_b = _hook(_benign)
+_h = _hook(_Classifier(7))
+_f = _hook(_Broken())
+_parsed = parse_manifest(open({str(MANIFEST)!r}).read())
+_bad_diags = validate_manifest_detailed({BAD_MANIFEST!r})
+_good_diags = validate_manifest_detailed(open({str(MANIFEST)!r}).read())
+
 print(json.dumps({{
+    "hook_benign_decision": _b[0],
+    "hook_harmful_decision": _h[0],
+    "hook_harmful_reason": _h[1],
+    "hook_failure_decision": _f[0],
+    "hook_failure_reason": _f[1],
+    "hook_dispatcher_calls": _benign.calls,
+    "parsed_has_points": "intervention_points" in _parsed,
+    "diagnostics_on_bad": len(_bad_diags),
+    "diagnostics_on_good": len(_good_diags),
     "supported_versions_nonempty": len(supported_manifest_versions()) > 0,
     "validate_good": check(open({str(MANIFEST)!r}).read()),
     "validate_bad": check({BAD_MANIFEST!r}),
@@ -316,7 +445,29 @@ const after = session.safeOffset('response');
 const confirmed = session.watermark('response').confirmed;
 const completion = session.finish();
 
+function hook(d) {{
+  const i = acs.AcsInterceptor.fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: d }});
+  const v = i.intercept({{ interception_point: 'input', input: 'hello' }});
+  return [String(v.decision).toLowerCase(), v.reason ?? null];
+}}
+let hookCalls = 0;
+const b = hook(() => {{ hookCalls++; return {{ severity: 1 }}; }});
+const hh = hook(() => ({{ severity: 7 }}));
+const f = hook(() => {{ throw new Error('classifier unreachable'); }});
+const parsed = acs.parseManifest(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8'));
+const badDiags = acs.validateManifestDetailed({json.dumps(BAD_MANIFEST)});
+const goodDiags = acs.validateManifestDetailed(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8'));
+
 console.log(JSON.stringify({{
+  hook_benign_decision: b[0],
+  hook_harmful_decision: hh[0],
+  hook_harmful_reason: hh[1],
+  hook_failure_decision: f[0],
+  hook_failure_reason: f[1],
+  hook_dispatcher_calls: hookCalls,
+  parsed_has_points: Object.prototype.hasOwnProperty.call(parsed, 'intervention_points'),
+  diagnostics_on_bad: badDiags.length,
+  diagnostics_on_good: goodDiags.length,
   supported_versions_nonempty: acs.supportedManifestVersions().length > 0,
   validate_good: check(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8')),
   validate_bad: check({json.dumps(BAD_MANIFEST)}),
@@ -370,8 +521,32 @@ var after = session.SafeOffset(StreamTrack.Response);
 var confirmed = session.Watermark(StreamTrack.Response).Confirmed;
 var completion = session.Finish();
 
+static (string, string?) Hook(AnnotatorDispatcher d)
+{
+    using var i = AcsHostInterceptor.FromPath(HOOKS_MANIFEST, annotator: d);
+    var v = i.InterceptAsync(new AgentContext(JsonNode.Parse(ALLOW_JSON)!.AsObject())).AsTask().Result;
+    return (v.Decision.ToString().ToLowerInvariant(), v.Reason);
+}
+
+var hookCalls = 0;
+var b = Hook((_, _, _) => { hookCalls++; return SEV1; });
+var hh = Hook((_, _, _) => SEV7);
+var f = Hook((_, _, _) => throw new InvalidOperationException("classifier unreachable"));
+var parsed = AcsManifestTools.Parse(File.ReadAllText(manifest));
+var badDiags = AcsManifestTools.Diagnostics(BAD_JSON);
+var goodDiags = AcsManifestTools.Diagnostics(File.ReadAllText(manifest));
+
 Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
 {
+    ["hook_benign_decision"] = b.Item1,
+    ["hook_harmful_decision"] = hh.Item1,
+    ["hook_harmful_reason"] = hh.Item2,
+    ["hook_failure_decision"] = f.Item1,
+    ["hook_failure_reason"] = f.Item2,
+    ["hook_dispatcher_calls"] = hookCalls,
+    ["parsed_has_points"] = parsed.Contains("intervention_points"),
+    ["diagnostics_on_bad"] = badDiags.Count,
+    ["diagnostics_on_good"] = goodDiags.Count,
     ["supported_versions_nonempty"] = AcsManifest.SupportedVersions().Count > 0,
     ["validate_good"] = Check(() => AcsManifest.Validate(File.ReadAllText(manifest))),
     ["validate_bad"] = Check(() => AcsManifest.Validate(BAD_JSON)),
@@ -415,6 +590,9 @@ def dotnet() -> dict:
         )
         program = (
             DOTNET_PROGRAM.replace("MANIFEST_PATH", json.dumps(str(MANIFEST)))
+            .replace("HOOKS_MANIFEST", json.dumps(str(HOOKS_MANIFEST)))
+            .replace("SEV1", json.dumps(json.dumps({"severity": 1})))
+            .replace("SEV7", json.dumps(json.dumps({"severity": 7})))
             .replace("ALLOW_JSON", json.dumps(json.dumps(ALLOW_CONTEXT)))
             .replace("DENY_JSON", json.dumps(json.dumps(DENY_CONTEXT)))
             .replace("BAD_JSON", json.dumps(BAD_MANIFEST))

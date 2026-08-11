@@ -465,6 +465,79 @@ internal static partial class Native
         ThrowIfError(err);
         return TakeString(json);
     }
+
+    [LibraryImport(Lib)]
+    private static partial IntPtr acs_interceptor_new_with_hooks(
+        ReadOnlySpan<byte> manifestPath, nuint manifestPathLen,
+        IntPtr annotatorFn, IntPtr annotatorCtx,
+        IntPtr policyFn, IntPtr policyCtx,
+        IntPtr telemetryFn, IntPtr telemetryCtx,
+        IntPtr hookFree,
+        IntPtr perfTelemetry,
+        out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_manifest_parse(string yaml, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_manifest_merge(string yamlsJson, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_manifest_diagnostics(string yaml, out IntPtr errOut);
+
+    internal static IntPtr InterceptorNewWithHooks(
+        string manifestPath,
+        IntPtr annotatorFn, IntPtr annotatorCtx,
+        IntPtr policyFn, IntPtr policyCtx,
+        IntPtr telemetryFn, IntPtr telemetryCtx,
+        IntPtr hookFree,
+        string? perfTelemetry)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(manifestPath);
+        var perf = perfTelemetry is null
+            ? IntPtr.Zero
+            : Marshal.StringToCoTaskMemUTF8(perfTelemetry);
+        try
+        {
+            var handle = acs_interceptor_new_with_hooks(
+                bytes, (nuint)bytes.Length,
+                annotatorFn, annotatorCtx, policyFn, policyCtx,
+                telemetryFn, telemetryCtx, hookFree, perf, out var err);
+            if (handle == IntPtr.Zero)
+            {
+                ThrowIfError(err);
+                throw new AgentControlSpecNativeException("interceptor construction returned no handle");
+            }
+
+            return handle;
+        }
+        finally
+        {
+            if (perf != IntPtr.Zero)
+                Marshal.FreeCoTaskMem(perf);
+        }
+    }
+
+    internal static string ManifestParse(string yaml)
+    {
+        var json = acs_manifest_parse(yaml, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static string ManifestMerge(string yamlsJson)
+    {
+        var json = acs_manifest_merge(yamlsJson, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static string ManifestDiagnostics(string yaml)
+    {
+        var json = acs_manifest_diagnostics(yaml, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
 }
 
 internal sealed class StreamSessionHandle : SafeHandle

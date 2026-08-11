@@ -14,7 +14,7 @@ hosts, per AGENT-HOOKS-0.1 §5/§11).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from agent_hooks import Verdict
@@ -22,14 +22,20 @@ from agent_hooks import Verdict
 from agent_control_spec import _native
 
 __all__ = [
+    "PERF_TELEMETRY_LEVELS",
     "AcsInterceptor",
     "ActivatedPolicy",
     "ManifestInvalidError",
     "RegoBundle",
     "StreamSession",
+    "TelemetryEvent",
+    "ValidationDiagnostic",
     "__version__",
+    "merge_manifests",
+    "parse_manifest",
     "supported_manifest_versions",
     "validate_manifest",
+    "validate_manifest_detailed",
     "validate_manifest_file",
 ]
 
@@ -40,18 +46,118 @@ __version__ = "0.4.0a1"
 #: {...}}]}``. Both keys default to empty and nothing else is accepted.
 RegoBundle = Mapping[str, Any]
 
+#: The `perf_telemetry` levels the runtime accepts. Kept explicit rather
+#: than a Rust-side enum: the constructor argument is a string, so the
+#: allowed values are the vocabulary a Python host reads.
+PERF_TELEMETRY_LEVELS: tuple[str, ...] = ("off", "external", "full")
+
+#: A telemetry event a host-supplied sink receives from the engine.
+#:
+#: The dict is populated by the native layer and mirrors
+#: :class:`agent_control_spec.telemetry.TelemetryEvent` on the Rust side.
+#: Its shape is documented rather than typed as a ``TypedDict`` to keep
+#: the Python surface stable while the engine grows fields, which it has
+#: done twice already in 0.4 (evidence artefacts, transformed-event).
+#: Keys:
+#:
+#: - ``event_type``: one of ``"decision"``, ``"annotator_dispatch"``,
+#:   ``"policy_evaluation"``, ``"evaluation_timing"``,
+#:   ``"intervention_point.transformed"``, ``"annotator_failed"``, or
+#:   ``"policy_failed"``.
+#: - ``intervention_point``: agent-hooks wire name.
+#: - ``decision``: ``"allow"`` / ``"deny"`` / ``"transform"`` or ``None``.
+#: - ``reason_code``: ``str`` or ``None``.
+#: - ``error_class``: ``str`` or ``None``.
+#: - ``policy_id``: ``str`` or ``None``.
+#: - ``annotators``: ``list[str]``.
+#: - ``enforcement_mode``: ``"enforce"`` / ``"evaluate_only"`` or ``None``.
+#: - ``duration_ms``: ``float`` or ``None``.
+#: - ``evidence_artefact``: ``str`` or ``None``.
+#: - ``evidence_verification_pointer_keys``: ``list[str]``.
+#: - ``action_identity``: ``str`` or ``None``.
+#: - ``metadata``: ``dict[str, str]``.
+TelemetryEvent = Mapping[str, Any]
+
+#: One entry produced by :func:`validate_manifest_detailed`. Shape:
+#:
+#: - ``reason_code``: ``str`` (the engine's ``runtime_error:*`` name).
+#: - ``message``: ``str`` (the engine's own message text).
+#: - ``field``: ``str | None`` (best-effort field name extracted from the
+#:   message; ``None`` when the message names no known field).
+#:
+#: Wrapped as a mapping rather than a dataclass to keep it JSON-safe for
+#: tools that shuttle diagnostics through IPC.
+ValidationDiagnostic = Mapping[str, Any]
+
+
+def _normalize_perf_telemetry(value: str | None) -> str:
+    """Reject unknown perf-telemetry levels on the Python side.
+
+    The Rust binding does its own check, but doing this here means the
+    error is raised without paying for a manifest load first, which
+    matches how the rest of the wrapper preserves cheap-to-fail
+    ordering. The engine's own vocabulary is preserved verbatim.
+    """
+    if value is None:
+        return "off"
+    if value not in PERF_TELEMETRY_LEVELS:
+        raise ValueError(
+            f"unknown perf_telemetry level {value!r}; "
+            f"expected one of {PERF_TELEMETRY_LEVELS}"
+        )
+    return value
+
 
 class AcsInterceptor:
     """agent-hooks interceptor over the Agent Control Specification runtime.
 
     Register an instance with any agent-hooks host emitter. The manifest
-    is loaded once at construction with the zero-config dispatchers
-    (bundled annotators; Rego in process, Cedar through the built-in
-    evaluator, ``test`` policies through their embedded verdict).
+    is loaded once at construction.
+
+    Zero-config path (the default): bundled annotators; Rego in process,
+    Cedar through the built-in evaluator, ``test`` policies through
+    their embedded verdict; no-op telemetry.
+
+    Host hooks are supplied by keyword:
+
+    - ``annotator_dispatcher``: object with a ``dispatch(annotator_name,
+      annotator, preliminary_policy_input)`` method or a plain callable
+      with the same signature. Return value is the annotation payload
+      that reaches the policy under ``input.annotations[<name>]``.
+    - ``policy_dispatcher``: object with an ``evaluate(invocation)``
+      method (and optionally a ``warm(invocation)`` method) or a plain
+      callable. Return value is the raw policy output normalized into a
+      verdict by the engine.
+    - ``telemetry_sink``: object with an ``emit(event)`` method
+      (optionally a ``shutdown()`` method) or a plain callable. The
+      engine emits one event per decision plus optional stage events.
+    - ``perf_telemetry``: ``"off"`` (default), ``"external"``, or
+      ``"full"``, gating whether external and per-stage timing events
+      are emitted.
+
+    A dispatcher that raises does not silently no-op: the engine
+    normalizes the failure into a fail-closed ``deny`` verdict with a
+    ``runtime_error:*`` reason.
     """
 
-    def __init__(self, manifest_path: str, name: str = "acs") -> None:
-        self._handle = _native.interceptor_new(manifest_path)
+    def __init__(
+        self,
+        manifest_path: str,
+        name: str = "acs",
+        *,
+        annotator_dispatcher: object | None = None,
+        policy_dispatcher: object | None = None,
+        telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
+        perf_telemetry: str = "off",
+    ) -> None:
+        perf = _normalize_perf_telemetry(perf_telemetry)
+        self._handle = _native.interceptor_new(
+            manifest_path,
+            annotator_dispatcher,
+            policy_dispatcher,
+            telemetry_sink,
+            perf,
+        )
         self._name = name
 
     @property
@@ -92,15 +198,29 @@ class ActivatedPolicy:
     manifest path is enough and the working directory does not matter.
     :meth:`from_memory` is the other source: manifest text and Rego
     sources held by the host, with no file to read.
+
+    Host dispatchers are supplied by the same keyword arguments as
+    :class:`AcsInterceptor`. Passing them here is exactly how the
+    consumer-facing ``AgentControl.from_native(...,
+    annotator_dispatcher=ContentSafetyDispatcher())`` shape composed:
+    activation carries the dispatcher, evaluation calls it, and readying
+    warms it.
     """
 
     __slots__ = ("_handle",)
 
-    def __init__(self, manifest_path: str) -> None:
-        """Activate the manifest at ``manifest_path`` with the
-        zero-config dispatchers (bundled annotators; Rego in process,
-        Cedar through the built-in evaluator, ``test`` policies through
-        their embedded verdict).
+    def __init__(
+        self,
+        manifest_path: str,
+        *,
+        annotator_dispatcher: object | None = None,
+        policy_dispatcher: object | None = None,
+    ) -> None:
+        """Activate the manifest at ``manifest_path``.
+
+        Passing no host arguments preserves the zero-config path (bundled
+        annotators; Rego in process, Cedar through the built-in
+        evaluator, ``test`` policies through their embedded verdict).
 
         Raises :class:`ValueError` when the manifest cannot be read or is
         rejected, and :class:`RuntimeError` when it binds a policy that
@@ -109,19 +229,36 @@ class ActivatedPolicy:
         the deadline surfaces at the first decision instead. A policy that
         merely needs real input to produce a verdict activates fine.
         """
-        self._handle = _native.policy_activate(manifest_path)
+        self._handle = _native.policy_activate(
+            manifest_path, annotator_dispatcher, policy_dispatcher
+        )
 
     @classmethod
-    def activate(cls, manifest_path: str) -> ActivatedPolicy:
+    def activate(
+        cls,
+        manifest_path: str,
+        *,
+        annotator_dispatcher: object | None = None,
+        policy_dispatcher: object | None = None,
+    ) -> ActivatedPolicy:
         """Activate the manifest at ``manifest_path``.
 
         Same as the constructor, named for the lifecycle it belongs to.
         """
-        return cls(manifest_path)
+        return cls(
+            manifest_path,
+            annotator_dispatcher=annotator_dispatcher,
+            policy_dispatcher=policy_dispatcher,
+        )
 
     @classmethod
     def from_memory(
-        cls, manifest_yaml: str, bundles: Mapping[str, RegoBundle]
+        cls,
+        manifest_yaml: str,
+        bundles: Mapping[str, RegoBundle],
+        *,
+        annotator_dispatcher: object | None = None,
+        policy_dispatcher: object | None = None,
     ) -> ActivatedPolicy:
         """Activate a manifest and its Rego supplied as values.
 
@@ -142,7 +279,10 @@ class ActivatedPolicy:
         """
         policy = cls.__new__(cls)
         policy._handle = _native.policy_activate_from_memory(
-            manifest_yaml, json.dumps(bundles, allow_nan=False)
+            manifest_yaml,
+            json.dumps(bundles, allow_nan=False),
+            annotator_dispatcher,
+            policy_dispatcher,
         )
         return policy
 
@@ -207,6 +347,58 @@ def validate_manifest_file(path: str) -> None:
     fetch URL ``extends``, exactly as loading a runtime would.
     """
     _native.validate_manifest_file(path)
+
+
+def validate_manifest_detailed(source: str) -> list[ValidationDiagnostic]:
+    """Return structured validation diagnostics for a manifest source.
+
+    Each diagnostic is ``{"reason_code": str, "message": str, "field":
+    str | None}``. An accepted manifest returns ``[]``. A rejected one
+    returns one entry naming the failed field where the engine's message
+    permits extraction, and ``None`` for ``field`` when it does not: the
+    ``message`` is the engine's own text either way, so a tool that
+    cannot map ``field`` back to a location still has the verbatim
+    reason.
+
+    Use this for authoring tools, migration linting, and CI checks that
+    want per-field feedback. :func:`validate_manifest` is the boolean
+    shortcut for callers that only care whether validation passed.
+    """
+    return json.loads(_native.validate_manifest_diagnostics(source))
+
+
+def parse_manifest(source: str) -> dict[str, Any]:
+    """Parse manifest source into a ``dict`` without validating.
+
+    An authoring tool that needs to inspect a fragment before deciding
+    what to do with it, such as reading an ``extends`` child's
+    ``metadata`` before resolving the chain, calls this. No policy
+    engine is put on-path.
+
+    Raises :class:`ManifestInvalidError` when the source is not
+    well-formed YAML or the manifest grammar rejects it structurally.
+    """
+    return json.loads(_native.parse_manifest(source))
+
+
+def merge_manifests(sources: Iterable[str]) -> dict[str, Any]:
+    """Compose an ordered chain of manifest sources into one ``dict``.
+
+    Later sources overlay earlier ones under the same merge grammar
+    ``extends`` uses on disk. Every entry must be a fully-formed manifest
+    fragment: no chain entry may itself carry unresolved ``extends``.
+    The resulting document is validated before it is returned, so a
+    chain that would fail as an on-disk ``extends`` fails here too.
+
+    Use this when the manifests come from memory (database rows,
+    process-supplied overlays) rather than disk; use ``extends`` in the
+    manifest itself when they come from disk and their layout is fixed.
+
+    Raises :class:`ManifestInvalidError` when the chain is empty or an
+    entry does not parse.
+    """
+    materialized = list(sources)
+    return json.loads(_native.merge_manifests(materialized))
 
 
 def supported_manifest_versions() -> tuple[str, ...]:
