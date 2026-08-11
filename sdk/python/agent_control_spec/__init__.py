@@ -14,7 +14,7 @@ hosts, per AGENT-HOOKS-0.1 §5/§11).
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from agent_hooks import Verdict
@@ -26,6 +26,7 @@ __all__ = [
     "ActivatedPolicy",
     "ManifestInvalidError",
     "RegoBundle",
+    "StreamSession",
     "__version__",
     "supported_manifest_versions",
     "validate_manifest",
@@ -203,3 +204,212 @@ def supported_manifest_versions() -> tuple[str, ...]:
     Read it rather than hardcoding the set; it moves with the engine.
     """
     return tuple(_native.supported_manifest_versions())
+
+
+class StreamSession:
+    """Host side accounting for one streamed policy target.
+
+    A session holds no policy, performs no evaluation, and stores no
+    stream text. The host drives it: it reports how much text arrived,
+    declares the spans its segmenter produced, evaluates those spans
+    through the ordinary interceptor path, records each outcome, and
+    reads :meth:`safe_offset` to see how far it may release the track.
+    This is the incremental profile in specification section 18.1.
+
+    A track with no tasks is unmediated. Payload on such a track fails
+    closed, which matches the behavior of a host guarding only the model
+    stream and receiving text on the wrong track. A configuration that
+    mediates neither track is rejected at construction: it would gate
+    nothing.
+
+    ``safety_level`` is one of ``"blocking"``, ``"complete"``, or
+    ``"deferred"``. ``"blocking"`` and ``"complete"`` hold each span
+    until the watermark covers it. ``"deferred"`` emits payload as it
+    arrives and evaluates behind the stream, and cannot recall what has
+    already been emitted.
+
+    The session settles in two steps. :meth:`end_of_payloads` says no
+    more text is coming while outcomes are still in flight, which is
+    what a ``"deferred"`` host needs so a late denial can still land.
+    :meth:`finish` returns the terminal :class:`dict` and marks the
+    session ended. After :meth:`finish`, :meth:`safe_offset` is
+    ``None``: a terminated session has no offset a host may emit
+    through, whatever the reason. The confirmed offset stays available
+    through :meth:`watermark` for the audit record.
+    """
+
+    __slots__ = ("_handle",)
+
+    def __init__(
+        self,
+        safety_level: str = "blocking",
+        *,
+        request_tasks: Iterable[str] | None = None,
+        response_tasks: Iterable[str] | None = None,
+        request_start_rune_offset: int = 0,
+        response_start_rune_offset: int = 0,
+    ) -> None:
+        request_tasks_list = list(request_tasks) if request_tasks is not None else []
+        response_tasks_list = list(response_tasks) if response_tasks is not None else []
+        self._handle = _native.stream_session_new(
+            safety_level,
+            int(request_start_rune_offset),
+            int(response_start_rune_offset),
+            request_tasks_list,
+            response_tasks_list,
+        )
+
+    def observe(self, source_type: str, runes: int) -> int:
+        """Report that ``runes`` more runes arrived on this role's
+        track. Returns the track's new end offset.
+        """
+        return _native.stream_observe(self._handle, source_type, int(runes))
+
+    def observe_text(self, source_type: str, text: str) -> int:
+        """Report arriving text and let the engine count its runes,
+        so a host does not reach for a length that measures UTF-16 code
+        units or bytes. Neither is interchangeable with a rune offset.
+        The text itself is not retained.
+        """
+        return _native.stream_observe_text(self._handle, source_type, text)
+
+    def record_outcome(
+        self,
+        task: str,
+        source_type: str,
+        start: int,
+        end: int,
+        outcome: str,
+    ) -> None:
+        """Record what a host decided for the half-open rune range
+        ``[start, end)`` on ``source_type``'s track, under ``task``.
+
+        ``outcome`` is one of ``"cleared"``, ``"transformed"``, or
+        ``"denied"``. A denial or transform ends the session. Every
+        engine rejection raises :class:`ValueError` with the engine's
+        own message; nothing silently no-ops.
+        """
+        _native.stream_record_outcome(
+            self._handle,
+            task,
+            source_type,
+            int(start),
+            int(end),
+            outcome,
+        )
+
+    def record_verdict(
+        self,
+        task: str,
+        source_type: str,
+        start: int,
+        end: int,
+        verdict: Verdict | Mapping[str, Any],
+    ) -> None:
+        """Map an agent-hooks verdict onto an outcome and record it.
+
+        ``verdict`` may be a :class:`agent_hooks.Verdict` or the same
+        wire dict :meth:`agent_hooks.Verdict.to_wire` produces. A shape
+        the section 5 contract does not admit fails the stream closed
+        with :class:`ValueError` before its decision is read.
+        """
+        if isinstance(verdict, Verdict):
+            wire = verdict.to_wire()
+        elif isinstance(verdict, Mapping):
+            wire = verdict
+        else:
+            raise TypeError("verdict must be an agent_hooks.Verdict or a wire dict")
+        _native.stream_record_verdict(
+            self._handle,
+            task,
+            source_type,
+            int(start),
+            int(end),
+            json.dumps(wire, allow_nan=False),
+        )
+
+    def advance(self, track: str) -> int | None:
+        """Recompute the watermark for ``track`` and return the new
+        confirmed offset when it advanced. Returns ``None`` when it did
+        not, so a host emits a watermark event only on real progress.
+        Returns ``None`` once the session has ended.
+        """
+        return _native.stream_advance(self._handle, track)
+
+    def safe_offset(self, track: str) -> int | None:
+        """Offset through which the host may emit ``track``, or ``None``
+        once the session has ended.
+
+        A denial withholds every rune the host has not already emitted,
+        including runes a task had cleared, so a terminated session has
+        no offset anyone may emit through. Returning ``None`` says that
+        in the type, which a host cannot read as permission by
+        accident.
+        """
+        return _native.stream_safe_offset(self._handle, track)
+
+    def pending(self, track: str) -> int:
+        """Runes observed but not yet cleared by every task on
+        ``track``, as of the last :meth:`advance`.
+        """
+        return _native.stream_pending(self._handle, track)
+
+    def watermark(self, track: str) -> dict[str, Any]:
+        """Watermark snapshot for one track:
+        ``{"track", "confirmed", "received", "pending", "tasks"}``.
+        Reads without moving anything.
+        """
+        return json.loads(_native.stream_watermark(self._handle, track))
+
+    def end_of_payloads(self) -> None:
+        """Stop accepting payloads while outcomes are still in flight.
+        A ``"deferred"`` host calls this at payload EOF so a classifier
+        running behind the stream can still record a denial before
+        :meth:`finish`.
+        """
+        _native.stream_end_of_payloads(self._handle)
+
+    def finish(self) -> dict[str, Any]:
+        """Settle the session and return the terminal record:
+        ``{"reason": <end_reason>, "transformed": bool, "is_clean":
+        bool}``.
+
+        ``reason`` is one of ``{"kind": "complete"}``, ``{"kind":
+        "denied", "track", "task", "start", "end"}``, ``{"kind":
+        "rewritten", "track", "task", "start", "end"}``, or ``{"kind":
+        "failed", "reason", "message"}``. Any rune no task cleared
+        settles the session ``failed`` under every safety level.
+        """
+        return json.loads(_native.stream_finish(self._handle))
+
+    @property
+    def is_ended(self) -> bool:
+        """Whether the session has reached its terminal state."""
+        return _native.stream_is_ended(self._handle)
+
+    @property
+    def transformed(self) -> bool:
+        """Whether a ``transformed`` outcome ended this session, meaning
+        the host emits a substitute rather than verbatim model output.
+        A transform clears nothing, so this says nothing about what was
+        released.
+        """
+        return _native.stream_transformed(self._handle)
+
+    @property
+    def end_reason(self) -> dict[str, Any] | None:
+        """Terminal reason as a wire dict, or ``None`` when the session
+        has not ended. The same schema :meth:`finish` returns under
+        ``reason``.
+        """
+        raw = _native.stream_end_reason(self._handle)
+        return None if raw is None else json.loads(raw)
+
+    @property
+    def config(self) -> dict[str, Any]:
+        """Streaming parameters this session was opened with:
+        ``{"safety_level", "request_start_rune_offset",
+        "response_start_rune_offset", "request_tasks",
+        "response_tasks"}``.
+        """
+        return json.loads(_native.stream_config(self._handle))

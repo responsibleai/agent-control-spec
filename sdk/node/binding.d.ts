@@ -76,6 +76,97 @@ export declare function policyEvaluate(handle: ExternalObject<PolicyHandle>, poi
  */
 export declare function policyInterventionPoints(handle: ExternalObject<PolicyHandle>): Array<string>
 
+/**
+ * Recompute `track`'s watermark. Returns the new offset when the
+ * watermark advanced, `null` when it did not or the session has ended
+ * (matching the Rust `Option<u32>`).
+ */
+export declare function streamSessionAdvance(handle: ExternalObject<StreamHandle>, track: string): number | null
+
+/** Declare that no further payload will arrive. Idempotent. */
+export declare function streamSessionEndOfPayloads(handle: ExternalObject<StreamHandle>): void
+
+/**
+ * Settle the session and return the completion as JSON, carrying
+ * `reason`, `transformed` and `is_clean`. Settling twice returns the
+ * same completion.
+ */
+export declare function streamSessionFinish(handle: ExternalObject<StreamHandle>): string
+
+/**
+ * Open a session from a config JSON object.
+ *
+ * Matches `acs_stream_session_new`: takes `safety_level` (`blocking`,
+ * `complete` or `deferred`), the per-track start offsets
+ * `request_start_rune_offset` and `response_start_rune_offset`, and
+ * the task name arrays `request_tasks` and `response_tasks`. An empty
+ * task array means that track is unmediated; payload on it fails
+ * closed. A configuration mediating neither track is refused.
+ *
+ * The wrapper takes a JSON string rather than a napi object so the
+ * config surface is identical to the other language SDKs and offset
+ * coercion happens in one place.
+ */
+export declare function streamSessionNew(configJson: string): ExternalObject<StreamHandle>
+
+/**
+ * Report that `runes` more runes of `source_type` arrived and return
+ * the track's new end offset. Boundary failures throw; a streaming
+ * accounting failure throws with the engine's message and puts the
+ * session into its terminal state.
+ */
+export declare function streamSessionObserve(handle: ExternalObject<StreamHandle>, sourceType: string, runes: number): number
+
+/**
+ * Report arriving `text` on `source_type`, counting Unicode scalars so
+ * a host does not have to. Returns the track's new end offset.
+ *
+ * The engine counts runes, not UTF-16 code units. `Utf16String` yields
+ * UTF-16, so the binding decodes to a `String` before delegating to
+ * the engine and rune counting stays consistent with every other SDK.
+ * An astral-plane character is one rune here even though it is two
+ * UTF-16 code units.
+ */
+export declare function streamSessionObserveText(handle: ExternalObject<StreamHandle>, sourceType: string, text: string): number
+
+/** Runes on `track` observed but not yet released. */
+export declare function streamSessionPending(handle: ExternalObject<StreamHandle>, track: string): number
+
+/**
+ * Record what `task` decided about the span `[start, end)` of
+ * `source_type`. `outcome` is `cleared`, `transformed` or `denied`.
+ */
+export declare function streamSessionRecordOutcome(handle: ExternalObject<StreamHandle>, task: string, sourceType: string, start: number, end: number, outcome: string): void
+
+/**
+ * Record an ACS verdict against the span `[start, end)` of
+ * `source_type`, mapping its decision onto an outcome. A host feeds
+ * the JSON returned by `policyEvaluate` straight back without
+ * translating it.
+ */
+export declare function streamSessionRecordVerdict(handle: ExternalObject<StreamHandle>, task: string, sourceType: string, start: number, end: number, verdictJson: string): void
+
+/**
+ * Offset of `track` the host may release through, or `null` once the
+ * session has ended. A settled session has no safe offset, which is
+ * not an error: it means release nothing further.
+ */
+export declare function streamSessionSafeOffset(handle: ExternalObject<StreamHandle>, track: string): number | null
+
+/**
+ * Session state as JSON: `is_ended`, `transformed`, `end_reason`
+ * (null while live) and the effective `config`.
+ */
+export declare function streamSessionState(handle: ExternalObject<StreamHandle>): string
+
+/**
+ * `track`'s watermark as JSON, carrying `track`, `confirmed`,
+ * `received`, `pending` and the `tasks` that must clear it. The
+ * confirmed offset stays readable after settlement, so an audit
+ * record can still say how far the stream got.
+ */
+export declare function streamSessionWatermark(handle: ExternalObject<StreamHandle>, track: string): string
+
 /** The manifest grammar versions this engine accepts. */
 export declare function supportedManifestVersions(): Array<string>
 

@@ -30,10 +30,14 @@ those are host obligations defined by agent-hooks.
 | Path | Contents |
 | --- | --- |
 | `engine/` | Rust evaluation core (`agent-control-spec` crate): manifest, dispatchers, annotators, policy-output normalization, the `AcsInterceptor` |
+| `sdk/ffi/` | C ABI over the engine (`agent-control-spec-ffi`), which the .NET binding calls |
 | `sdk/python/` | Python binding: `agent_control_spec` package wrapping the engine as an `agent_hooks` interceptor |
+| `sdk/node/` | Node binding: `@responsibleai/agent-control-spec` |
+| `sdk/dotnet/` | .NET binding: `ResponsibleAI.AgentControlSpec` |
 | `spec/` | The ACS specification (policy plane) and schemas |
 | `policy/` | Cedar and Rego policy libraries |
 | `fixtures/` | Evaluation fixtures |
+| `docs/STREAMING.md` | The incremental stream profile (section 18.1) in every language |
 | `docs/EXTRACTION.md` | Provenance map from the previous tree |
 
 ## Status

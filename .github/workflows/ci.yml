@@ -151,3 +151,49 @@ jobs:
         working-directory: sdk/dotnet
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+      # The suite above runs with the engine on the loader path, which a
+      # consumer installing from NuGet does not have. Pack and run the
+      # artifact itself so a package that omits the native library fails
+      # here rather than in someone else's process.
+      - name: Verify the packed package works without a local engine build
+        run: |
+          set -euo pipefail
+          mkdir -p sdk/dotnet/native/runtimes/linux-x64/native
+          cp target/release/libagent_control_spec_ffi.so \
+             sdk/dotnet/native/runtimes/linux-x64/native/
+          dotnet pack sdk/dotnet/src/AgentControlSpec -c Release -o "$PWD/ci-feed" \
+            --nologo -p:AcsNativeAssetsRequired=true -p:Version=0.0.0-ci
+          bash scripts/verify-dotnet-package.sh "$PWD/ci-feed" 0.0.0-ci
+
+  # Streaming reaches each language through a different binding
+  # mechanism, so agreement between them is not structural. Run one
+  # scenario in all four and diff.
+  streaming-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: cargo build --release --locked -p agent-control-spec-ffi
+      - name: Build the node binding
+        run: |
+          npm ci
+          npm run build
+        working-directory: sdk/node
+      - name: Build and install the python wheel
+        run: |
+          pip install maturin==1.8.7
+          maturin build --release -m sdk/python/Cargo.toml -o dist
+          pip install dist/*.whl
+      - name: Compare every language against the same stream
+        run: python tests/conformance/streaming/cross_language_parity.py
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release

@@ -8,3 +8,6 @@ __pycache__/
 dist/
 bin/
 obj/
+
+# Per-RID engine binaries staged for the .NET package (built, never committed).
+/sdk/dotnet/native/

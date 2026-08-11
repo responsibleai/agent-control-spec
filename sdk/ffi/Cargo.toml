@@ -11,5 +11,5 @@ name = "agent_control_spec_ffi"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-agent-control-spec = { path = "../../engine", features = ["default-dispatchers"] }
+agent-control-spec = { path = "../../engine", features = ["default-dispatchers", "streaming"] }
 serde_json = "1"

@@ -18,9 +18,13 @@
 // problems only (bad UTF-8, non-object context, poisoned handle).
 
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
+use agent_control_spec::stream_session::{
+    SafetyLevel, SegmentOutcome, StreamEndReason, StreamSession, StreamSessionConfig,
+    StreamSourceType, StreamSpan, StreamTrack,
+};
 use agent_control_spec::{
     ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
-    SUPPORTED_VERSIONS,
+    Verdict, SUPPORTED_VERSIONS,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -804,6 +808,730 @@ pub unsafe extern "C" fn acs_policy_free(handle: *mut AcsActivatedPolicy) {
         return;
     }
     drop(Box::from_raw(handle));
+}
+
+// ---------------------------------------------------------------------
+// Incremental stream mediation (specification section 18.1).
+//
+// A `StreamSession` is stateful, so it follows the handle shape used by
+// `AcsActivatedPolicy`: create once, drive it as payloads arrive, free
+// exactly once. The runtime underneath stays stateless; the session only
+// records what each ordinary evaluation cleared.
+//
+// Scalar queries return `i64` so an absent value needs no allocation:
+// `>= 0` is the value, `-1` is absent (a released offset the caller must
+// treat as "release nothing"), and `-2` means the call failed and
+// `*err_out` carries why. Absent and failed are distinct because a
+// settled session legitimately has no safe offset, which is not an error.
+//
+// Structured queries return JSON, freed with `acs_free_string`, so the
+// wire contract is owned here rather than derived from Rust layout.
+// ---------------------------------------------------------------------
+
+/// Opaque handle to one mediated stream.
+pub struct AcsStreamSession {
+    session: StreamSession,
+}
+
+fn parse_track(value: &str, err_out: *mut *mut c_char) -> Option<StreamTrack> {
+    match value {
+        "request" => Some(StreamTrack::Request),
+        "response" => Some(StreamTrack::Response),
+        other => {
+            set_err(err_out, format!("unknown stream track '{other}'"));
+            None
+        }
+    }
+}
+
+fn parse_outcome(value: &str, err_out: *mut *mut c_char) -> Option<SegmentOutcome> {
+    match value {
+        "cleared" => Some(SegmentOutcome::Cleared),
+        "transformed" => Some(SegmentOutcome::Transformed),
+        "denied" => Some(SegmentOutcome::Denied),
+        other => {
+            set_err(err_out, format!("unknown segment outcome '{other}'"));
+            None
+        }
+    }
+}
+
+fn end_reason_json(reason: &StreamEndReason) -> Value {
+    match reason {
+        StreamEndReason::Complete => serde_json::json!({ "kind": "complete" }),
+        StreamEndReason::Denied { track, task, range } => serde_json::json!({
+            "kind": "denied",
+            "track": track.as_str(),
+            "task": task,
+            "start": range.start,
+            "end": range.end,
+        }),
+        StreamEndReason::Rewritten { track, task, range } => serde_json::json!({
+            "kind": "rewritten",
+            "track": track.as_str(),
+            "task": task,
+            "start": range.start,
+            "end": range.end,
+        }),
+        StreamEndReason::Failed(error) => serde_json::json!({
+            "kind": "failed",
+            "reason": error.reason(),
+            "message": error.to_string(),
+        }),
+    }
+}
+
+/// Open a session from `config_json`.
+///
+/// The object takes `safety_level` (`blocking`, `complete` or
+/// `deferred`), the per track start offsets `request_start_rune_offset`
+/// and `response_start_rune_offset`, and the task name arrays
+/// `request_tasks` and `response_tasks`. An absent field takes its
+/// default; an empty task array means that track is unmediated.
+///
+/// Returns NULL and sets `*err_out` on failure. Free with
+/// `acs_stream_session_free`.
+///
+/// # Safety
+/// `config_json` must be a valid NUL-terminated string. `err_out` must
+/// be null or point to a writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_new(
+    config_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut AcsStreamSession {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(config_json, "config_json", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let parsed: Value = match serde_json::from_str(raw) {
+            Ok(v @ Value::Object(_)) => v,
+            Ok(_) => {
+                set_err(err_out, "config_json must be a JSON object".to_string());
+                return std::ptr::null_mut();
+            }
+            Err(e) => {
+                set_err(err_out, format!("config_json does not parse: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let level_raw = parsed
+            .get("safety_level")
+            .and_then(Value::as_str)
+            .unwrap_or("blocking");
+        let safety_level = match SafetyLevel::parse(level_raw) {
+            Ok(l) => l,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let offset = |key: &str| -> Result<u32, String> {
+            match parsed.get(key) {
+                None | Some(Value::Null) => Ok(0),
+                Some(v) => v
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| format!("{key} must be a rune offset within u32")),
+            }
+        };
+        let request_start_rune_offset = match offset("request_start_rune_offset") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let response_start_rune_offset = match offset("response_start_rune_offset") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let tasks = |key: &str| -> Result<Vec<String>, String> {
+            match parsed.get(key) {
+                None | Some(Value::Null) => Ok(Vec::new()),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|i| {
+                        i.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| format!("{key} must contain only task name strings"))
+                    })
+                    .collect(),
+                Some(_) => Err(format!("{key} must be an array of task names")),
+            }
+        };
+        let request_tasks = match tasks("request_tasks") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let response_tasks = match tasks("response_tasks") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let config = StreamSessionConfig {
+            safety_level,
+            request_start_rune_offset,
+            response_start_rune_offset,
+            request_tasks,
+            response_tasks,
+        };
+        match StreamSession::new(config) {
+            Ok(session) => Box::into_raw(Box::new(AcsStreamSession { session })),
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_new".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Free a session handle. Freeing NULL is a no-op.
+///
+/// # Safety
+/// `handle` must come from `acs_stream_session_new` and be freed once.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_free(handle: *mut AcsStreamSession) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(handle))));
+}
+
+/// Record that `runes` more runes of `source_type` arrived. Returns the
+/// track's received offset, or -2 on failure.
+///
+/// # Safety
+/// `handle` must be live; `source_type` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_observe(
+    handle: *mut AcsStreamSession,
+    source_type: *const c_char,
+    runes: u32,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -2;
+        }
+        let Some(raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -2;
+        };
+        let source = match StreamSourceType::parse(raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -2;
+            }
+        };
+        match (*handle).session.observe(source, runes) {
+            Ok(received) => i64::from(received),
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                -2
+            }
+        }
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_observe".to_string(),
+        );
+        -2
+    })
+}
+
+/// Record an arriving payload by its text, counting runes the way the
+/// engine does so a host never has to count them itself. Returns the
+/// track's received offset, or -2 on failure.
+///
+/// # Safety
+/// `handle` must be live; `source_type` and `text` valid NUL-terminated
+/// strings.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_observe_text(
+    handle: *mut AcsStreamSession,
+    source_type: *const c_char,
+    text: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -2;
+        }
+        let Some(raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -2;
+        };
+        let source = match StreamSourceType::parse(raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -2;
+            }
+        };
+        let Some(body) = read_utf8(text, "text", err_out) else {
+            return -2;
+        };
+        match (*handle).session.observe_text(source, body) {
+            Ok(received) => i64::from(received),
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                -2
+            }
+        }
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_observe_text".to_string(),
+        );
+        -2
+    })
+}
+
+/// Record what `task` decided about the span `[start, end)` of
+/// `source_type`. `outcome` is `cleared`, `transformed` or `denied`.
+/// Returns 0, or -1 on failure.
+///
+/// # Safety
+/// `handle` must be live; `task`, `source_type` and `outcome` valid
+/// NUL-terminated strings.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_record_outcome(
+    handle: *mut AcsStreamSession,
+    task: *const c_char,
+    source_type: *const c_char,
+    start: u32,
+    end: u32,
+    outcome: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i32 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -1;
+        }
+        let Some(task_name) = read_utf8(task, "task", err_out) else {
+            return -1;
+        };
+        let Some(source_raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -1;
+        };
+        let source = match StreamSourceType::parse(source_raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        let Some(outcome_raw) = read_utf8(outcome, "outcome", err_out) else {
+            return -1;
+        };
+        let Some(outcome) = parse_outcome(outcome_raw, err_out) else {
+            return -1;
+        };
+        let span = match StreamSpan::new(source, start, end) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        match (*handle).session.record_outcome(task_name, &span, outcome) {
+            Ok(()) => 0,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                -1
+            }
+        }
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_record_outcome".to_string(),
+        );
+        -1
+    })
+}
+
+/// Record an Agent Control Specification verdict against the span
+/// `[start, end)` of `source_type`, mapping its decision onto an
+/// outcome. `verdict_json` is a verdict as `acs_policy_evaluate`
+/// returns one, so a host feeds a decision straight back without
+/// translating it. Returns 0, or -1 on failure.
+///
+/// # Safety
+/// `handle` must be live; `task`, `source_type` and `verdict_json`
+/// valid NUL-terminated strings.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_record_verdict(
+    handle: *mut AcsStreamSession,
+    task: *const c_char,
+    source_type: *const c_char,
+    start: u32,
+    end: u32,
+    verdict_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i32 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -1;
+        }
+        let Some(task_name) = read_utf8(task, "task", err_out) else {
+            return -1;
+        };
+        let Some(source_raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -1;
+        };
+        let source = match StreamSourceType::parse(source_raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        let Some(raw) = read_utf8(verdict_json, "verdict_json", err_out) else {
+            return -1;
+        };
+        let verdict: Verdict = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, format!("verdict_json does not parse: {e}"));
+                return -1;
+            }
+        };
+        let span = match StreamSpan::new(source, start, end) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        match (*handle).session.record_verdict(task_name, &span, &verdict) {
+            Ok(()) => 0,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                -1
+            }
+        }
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_record_verdict".to_string(),
+        );
+        -1
+    })
+}
+
+/// Recompute `track`'s watermark and return the offset it advanced to,
+/// -1 when it did not advance or the session has ended, -2 on failure.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_advance(
+    handle: *mut AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -2;
+        }
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return -2;
+        };
+        let Some(track) = parse_track(raw, err_out) else {
+            return -2;
+        };
+        match (*handle).session.advance(track) {
+            Some(offset) => i64::from(offset),
+            None => -1,
+        }
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_advance".to_string(),
+        );
+        -2
+    })
+}
+
+/// The offset of `track` safe to release, -1 once the session has ended,
+/// -2 on failure. A settled session has no safe offset, which is not an
+/// error: it means release nothing further.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_safe_offset(
+    handle: *const AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -2;
+        }
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return -2;
+        };
+        let Some(track) = parse_track(raw, err_out) else {
+            return -2;
+        };
+        match (*handle).session.safe_offset(track) {
+            Some(offset) => i64::from(offset),
+            None => -1,
+        }
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_safe_offset".to_string(),
+        );
+        -2
+    })
+}
+
+/// The rune count of `track` observed but not yet released, or -2 on
+/// failure.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_pending(
+    handle: *const AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -2;
+        }
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return -2;
+        };
+        let Some(track) = parse_track(raw, err_out) else {
+            return -2;
+        };
+        i64::from((*handle).session.pending(track))
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_pending".to_string(),
+        );
+        -2
+    })
+}
+
+/// `track`'s watermark as JSON, carrying `track`, `confirmed`,
+/// `received`, `pending` and the `tasks` that must clear it. The
+/// confirmed offset stays readable after settlement, so an audit record
+/// can still say how far the stream got. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_watermark(
+    handle: *const AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return std::ptr::null_mut();
+        }
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let Some(track) = parse_track(raw, err_out) else {
+            return std::ptr::null_mut();
+        };
+        let watermark = (*handle).session.watermark(track);
+        let payload = serde_json::json!({
+            "track": track.as_str(),
+            "confirmed": watermark.confirmed(),
+            "received": watermark.received(),
+            "pending": watermark.pending(),
+            "tasks": watermark.tasks().collect::<Vec<_>>(),
+        });
+        match serde_json::to_string(&payload) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("watermark serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_watermark".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Session state as JSON: `is_ended`, `transformed`, `end_reason` and
+/// the effective `config`. `end_reason` is null while the session is
+/// live. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_stream_session_new`.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_state(
+    handle: *const AcsStreamSession,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return std::ptr::null_mut();
+        }
+        let session = &(*handle).session;
+        let config = session.config();
+        let payload = serde_json::json!({
+            "is_ended": session.is_ended(),
+            "transformed": session.transformed(),
+            "end_reason": session.end_reason().map(end_reason_json),
+            "config": {
+                "safety_level": config.safety_level.as_str(),
+                "request_start_rune_offset": config.request_start_rune_offset,
+                "response_start_rune_offset": config.response_start_rune_offset,
+                "request_tasks": config.request_tasks,
+                "response_tasks": config.response_tasks,
+            },
+        });
+        match serde_json::to_string(&payload) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("state serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_state".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Declare that no further payload will arrive. Returns 0, or -1 on
+/// failure.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_stream_session_new`.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_end_of_payloads(
+    handle: *mut AcsStreamSession,
+    err_out: *mut *mut c_char,
+) -> i32 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return -1;
+        }
+        (*handle).session.end_of_payloads();
+        0
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_end_of_payloads".to_string(),
+        );
+        -1
+    })
+}
+
+/// Settle the session and return the completion as JSON, carrying
+/// `reason`, `transformed` and `is_clean`. Freed with
+/// `acs_free_string`. Settling twice returns the same completion.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_stream_session_new`.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_finish(
+    handle: *mut AcsStreamSession,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if handle.is_null() {
+            set_err(err_out, "handle must not be null".to_string());
+            return std::ptr::null_mut();
+        }
+        let completion = (*handle).session.finish();
+        let payload = serde_json::json!({
+            "reason": end_reason_json(&completion.reason),
+            "transformed": completion.transformed,
+            "is_clean": completion.reason.is_clean(),
+        });
+        match serde_json::to_string(&payload) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("completion serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_finish".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[cfg(test)]

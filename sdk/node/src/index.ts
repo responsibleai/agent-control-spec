@@ -34,6 +34,32 @@ const native = require("../binding.js") as {
   validateManifestFile(path: string): string | null;
   validateManifest(source: string): string | null;
   supportedManifestVersions(): string[];
+  streamSessionNew(configJson: string): unknown;
+  streamSessionObserve(handle: unknown, sourceType: string, runes: number): number;
+  streamSessionObserveText(handle: unknown, sourceType: string, text: string): number;
+  streamSessionRecordOutcome(
+    handle: unknown,
+    task: string,
+    sourceType: string,
+    start: number,
+    end: number,
+    outcome: string,
+  ): void;
+  streamSessionRecordVerdict(
+    handle: unknown,
+    task: string,
+    sourceType: string,
+    start: number,
+    end: number,
+    verdictJson: string,
+  ): void;
+  streamSessionAdvance(handle: unknown, track: string): number | null;
+  streamSessionSafeOffset(handle: unknown, track: string): number | null;
+  streamSessionPending(handle: unknown, track: string): number;
+  streamSessionWatermark(handle: unknown, track: string): string;
+  streamSessionState(handle: unknown): string;
+  streamSessionEndOfPayloads(handle: unknown): void;
+  streamSessionFinish(handle: unknown): string;
 };
 
 export type {
@@ -279,4 +305,383 @@ export function validateManifestFile(path: string): void {
  */
 export function supportedManifestVersions(): readonly string[] {
   return Object.freeze(native.supportedManifestVersions());
+}
+
+// ---------------------------------------------------------------------
+// Streaming: incremental release mediation for stream-shaped tracks
+// (spec §18.1). The engine is stateless everywhere else; this session
+// is the exception, because it accumulates offsets and holds terminal
+// state a host must read across many calls.
+// ---------------------------------------------------------------------
+
+/** How much a host may release ahead of the watermark. */
+export type StreamSafetyLevel = "blocking" | "complete" | "deferred";
+
+/**
+ * Role that produced a span of text.
+ *
+ * Only genuinely rune-addressable roles appear here: tool calls and
+ * tool results are structured values evaluated once per invocation and
+ * flow through the ordinary snapshot path.
+ */
+export type StreamSourceType = "user_request" | "model_generated";
+
+/** Independent offset space within a session. */
+export type StreamTrack = "request" | "response";
+
+/** What the host decided for one span after evaluating it. */
+export type SegmentOutcome = "cleared" | "transformed" | "denied";
+
+/** Parameters a host supplies once, before any payload. */
+export interface StreamSessionConfig {
+  /** How much the host may release ahead of the watermark. */
+  readonly safetyLevel: StreamSafetyLevel;
+  /**
+   * Offset the first rune of the request track occupies. A retry that
+   * resumes a partially delivered stream sets this so offsets stay
+   * comparable with the earlier attempt.
+   */
+  readonly requestStartRuneOffset?: number;
+  /** Same as {@link requestStartRuneOffset}, for the response track. */
+  readonly responseStartRuneOffset?: number;
+  /**
+   * Tasks that gate the request track (matching what the host bound at
+   * `input`). Empty means the request track is not mediated; payload
+   * on it fails closed.
+   */
+  readonly requestTasks?: readonly string[];
+  /**
+   * Tasks that gate the response track (matching what the host bound
+   * at `post_model_call`). Empty means the response track is not
+   * mediated.
+   */
+  readonly responseTasks?: readonly string[];
+}
+
+/** Watermark snapshot for one track. */
+export interface StreamWatermarkSnapshot {
+  readonly track: StreamTrack;
+  /** Highest offset released so far. */
+  readonly confirmed: number;
+  /** End offset of the text the session has been told about. */
+  readonly received: number;
+  /**
+   * Runes observed but not yet cleared by every task, as of the last
+   * advance.
+   */
+  readonly pending: number;
+  /** Task labels this watermark tracks, in deterministic order. */
+  readonly tasks: readonly string[];
+}
+
+/** Terminal reason a session reached its final state. */
+export type StreamEndReason =
+  | { readonly kind: "complete" }
+  | {
+      readonly kind: "denied";
+      readonly track: StreamTrack;
+      readonly task: string;
+      readonly start: number;
+      readonly end: number;
+    }
+  | {
+      readonly kind: "rewritten";
+      readonly track: StreamTrack;
+      readonly task: string;
+      readonly start: number;
+      readonly end: number;
+    }
+  | {
+      readonly kind: "failed";
+      /** The `host_error:*` reason a host records for this failure. */
+      readonly reason: string;
+      readonly message: string;
+    };
+
+/** Terminal settlement of a session. */
+export interface StreamCompletion {
+  readonly reason: StreamEndReason;
+  /**
+   * Whether the host emitted a substitute rather than verbatim model
+   * output. This is exactly `reason.kind === "rewritten"`.
+   */
+  readonly transformed: boolean;
+  /** Whether the stream finished without an enforcement action. */
+  readonly isClean: boolean;
+}
+
+/** Read-only view of a session's effective configuration. */
+export interface StreamSessionConfigSnapshot {
+  readonly safetyLevel: StreamSafetyLevel;
+  readonly requestStartRuneOffset: number;
+  readonly responseStartRuneOffset: number;
+  readonly requestTasks: readonly string[];
+  readonly responseTasks: readonly string[];
+}
+
+/** Snapshot of a session's state, matching the C ABI `session_state`. */
+export interface StreamSessionState {
+  readonly isEnded: boolean;
+  readonly transformed: boolean;
+  /** `null` while the session is still live. */
+  readonly endReason: StreamEndReason | null;
+  readonly config: StreamSessionConfigSnapshot;
+}
+
+/**
+ * Incremental streaming session (spec §18.1).
+ *
+ * ACS is stateless on every other path, so a rune-addressable track a
+ * host emits incrementally cannot ride the ordinary interceptor
+ * pipeline: a `deny` in the middle of a stream needs to catch a
+ * specific range, and a `cleared` prefix needs to release without
+ * waiting for the whole payload. This class is the accounting layer
+ * that makes both possible.
+ *
+ * The session holds no policy and no text. The host drives it:
+ *
+ *  1. Observe arriving text ({@link observe}, {@link observeText}) so
+ *     the session knows how many runes exist on each track.
+ *  2. Segment the text and evaluate each span with the ordinary
+ *     runtime, then record the outcome ({@link recordOutcome}) or
+ *     replay the verdict ({@link recordVerdict}).
+ *  3. Ask which prefix is safe to release ({@link safeOffset}), and
+ *     read {@link watermark} for the per-task frontier when auditing.
+ *  4. Call {@link endOfPayloads} at EOF and settle with {@link finish}.
+ *
+ * A settled session reports `null` from {@link safeOffset} and
+ * {@link advance}: the type says "release nothing further" without any
+ * value a caller could mistake for a permitted offset. The watermark
+ * stays readable so an audit record can still say how far the stream
+ * got.
+ *
+ * Every non-boundary streaming failure (unknown safety level, payload
+ * on an unmediated track, offset past the observed end, transform
+ * after release, uncleared residue at settlement, ...) throws with the
+ * engine's message and puts the session in its terminal `failed`
+ * state. The next call sees the session as ended.
+ */
+export class StreamSession {
+  private readonly handle: unknown;
+
+  /**
+   * Open a session.
+   *
+   * `config.safetyLevel` selects the release rule. `requestTasks` and
+   * `responseTasks` are the task labels a host will pass to
+   * {@link recordOutcome}: matching a task the manifest binds at
+   * `input` / `post_model_call` respectively. An empty task list
+   * leaves that track unmediated; payload on it fails closed.
+   *
+   * Throws when both task lists are empty (the session would gate
+   * nothing) or a start offset overflows.
+   */
+  constructor(config: StreamSessionConfig) {
+    if (config === null || typeof config !== "object") {
+      throw new TypeError("StreamSession config must be an object");
+    }
+    // Only translate camelCase → wire snake_case here; enum VALUES stay
+    // lowercase snake as they arrive.
+    const payload = {
+      safety_level: config.safetyLevel,
+      request_start_rune_offset: config.requestStartRuneOffset ?? 0,
+      response_start_rune_offset: config.responseStartRuneOffset ?? 0,
+      request_tasks: config.requestTasks ? Array.from(config.requestTasks) : [],
+      response_tasks: config.responseTasks ? Array.from(config.responseTasks) : [],
+    };
+    this.handle = native.streamSessionNew(JSON.stringify(payload));
+  }
+
+  /**
+   * Report that `runes` more runes of `sourceType` arrived and return
+   * the track's new end offset.
+   *
+   * This only extends the received bound outcomes are checked against.
+   * It does not release anything and does not decide what the host
+   * evaluates. Prefer {@link observeText} when the text is at hand:
+   * counting runes correctly across surrogate pairs is easy to get
+   * wrong.
+   */
+  observe(sourceType: StreamSourceType, runes: number): number {
+    return native.streamSessionObserve(this.handle, sourceType, runes);
+  }
+
+  /**
+   * Report arriving `text` on `sourceType`, counting Unicode scalars
+   * the way the engine does, and return the track's new end offset.
+   *
+   * The engine counts runes (Unicode scalars), not UTF-16 code units.
+   * An emoji outside the BMP is one rune here even though it is two
+   * UTF-16 code units in a JS string.
+   */
+  observeText(sourceType: StreamSourceType, text: string): number {
+    return native.streamSessionObserveText(this.handle, sourceType, text);
+  }
+
+  /**
+   * Record what `task` decided about the span `[start, end)` of
+   * `sourceType`. `outcome` is `cleared`, `transformed`, or `denied`.
+   *
+   * A `denied` outcome ends the session with `endReason.kind ===
+   * "denied"` on the span it refused, and every later `safeOffset`
+   * returns `null`. A `transformed` outcome is honored only under a
+   * withholding safety level (`blocking` / `complete`) and only while
+   * nothing on the track has been released, and it ends the session
+   * with `endReason.kind === "rewritten"`.
+   */
+  recordOutcome(
+    task: string,
+    sourceType: StreamSourceType,
+    start: number,
+    end: number,
+    outcome: SegmentOutcome,
+  ): void {
+    native.streamSessionRecordOutcome(this.handle, task, sourceType, start, end, outcome);
+  }
+
+  /**
+   * Record an ACS verdict against the span `[start, end)` of
+   * `sourceType`, mapping its decision onto an outcome. A host feeds
+   * the verdict returned by {@link ActivatedPolicy.evaluate} straight
+   * back without translating it.
+   *
+   * A verdict whose shape section 5 does not admit (a `transform`
+   * carrying no transform body, a reserved reason from a policy, ...)
+   * fails the stream closed rather than clearing the span.
+   */
+  recordVerdict(
+    task: string,
+    sourceType: StreamSourceType,
+    start: number,
+    end: number,
+    verdict: Verdict,
+  ): void {
+    native.streamSessionRecordVerdict(
+      this.handle,
+      task,
+      sourceType,
+      start,
+      end,
+      JSON.stringify(verdict),
+    );
+  }
+
+  /**
+   * Recompute `track`'s watermark. Returns the new offset when the
+   * watermark advanced, `null` when it did not or the session has
+   * ended.
+   */
+  advance(track: StreamTrack): number | null {
+    return native.streamSessionAdvance(this.handle, track);
+  }
+
+  /**
+   * Offset of `track` the host may release through, or `null` once
+   * the session has ended.
+   *
+   * A settled session has no safe offset: release nothing further.
+   * The offset the track reached is unaffected and stays available
+   * for an audit record through {@link watermark}.
+   */
+  safeOffset(track: StreamTrack): number | null {
+    return native.streamSessionSafeOffset(this.handle, track);
+  }
+
+  /** Runes on `track` observed but not yet released. */
+  pending(track: StreamTrack): number {
+    return native.streamSessionPending(this.handle, track);
+  }
+
+  /**
+   * `track`'s watermark, carrying `confirmed`, `received`, `pending`
+   * and the `tasks` that must clear it. The confirmed offset stays
+   * readable after settlement.
+   */
+  watermark(track: StreamTrack): StreamWatermarkSnapshot {
+    return JSON.parse(native.streamSessionWatermark(this.handle, track)) as StreamWatermarkSnapshot;
+  }
+
+  /**
+   * Snapshot of session state: `isEnded`, `transformed`, `endReason`
+   * (null while live) and the effective `config`.
+   */
+  state(): StreamSessionState {
+    const raw = JSON.parse(native.streamSessionState(this.handle)) as {
+      is_ended: boolean;
+      transformed: boolean;
+      end_reason: StreamEndReason | null;
+      config: {
+        safety_level: StreamSafetyLevel;
+        request_start_rune_offset: number;
+        response_start_rune_offset: number;
+        request_tasks: string[];
+        response_tasks: string[];
+      };
+    };
+    return {
+      isEnded: raw.is_ended,
+      transformed: raw.transformed,
+      endReason: raw.end_reason,
+      config: {
+        safetyLevel: raw.config.safety_level,
+        requestStartRuneOffset: raw.config.request_start_rune_offset,
+        responseStartRuneOffset: raw.config.response_start_rune_offset,
+        requestTasks: Object.freeze(raw.config.request_tasks),
+        responseTasks: Object.freeze(raw.config.response_tasks),
+      },
+    };
+  }
+
+  /** Whether the session has reached its terminal state. */
+  isEnded(): boolean {
+    return this.state().isEnded;
+  }
+
+  /**
+   * Terminal reason, when the session has ended, or `null` while it
+   * is still live.
+   */
+  endReason(): StreamEndReason | null {
+    return this.state().endReason;
+  }
+
+  /**
+   * Whether a `transformed` outcome ended this session, meaning the
+   * host emits a substitute rather than verbatim model output.
+   */
+  isTransformed(): boolean {
+    return this.state().transformed;
+  }
+
+  /**
+   * Declare that no further payload will arrive. Idempotent.
+   *
+   * A `deferred` host calls this at payload EOF so a classifier
+   * running behind the stream can still record a denial before
+   * {@link finish}.
+   */
+  endOfPayloads(): void {
+    native.streamSessionEndOfPayloads(this.handle);
+  }
+
+  /**
+   * Settle the session and return the completion.
+   *
+   * Recomputes both watermarks first, so a host that recorded every
+   * outcome is not failed closed for having skipped an explicit
+   * {@link advance}. Any rune no task cleared fails the settlement
+   * closed. Settling twice returns the same completion.
+   */
+  finish(): StreamCompletion {
+    const raw = JSON.parse(native.streamSessionFinish(this.handle)) as {
+      reason: StreamEndReason;
+      transformed: boolean;
+      is_clean: boolean;
+    };
+    return {
+      reason: raw.reason,
+      transformed: raw.transformed,
+      isClean: raw.is_clean,
+    };
+  }
 }
