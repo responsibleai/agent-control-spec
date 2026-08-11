@@ -4,18 +4,22 @@
 #
 # Prove a packed ResponsibleAI.AgentControlSpec really works.
 #
-# The managed assembly reaches the engine through agent_control_spec_ffi.
-# A package that omits the native library still restores, still compiles
-# against, and still passes any test run from a repository checkout that
-# happens to have the library on its loader path. It fails only in a
-# consumer's process, on the first call. 0.4.0-alpha.2 shipped that way.
+# The managed assembly reaches the engine through
+# agent_control_spec_ffi. A package that omits the native library still
+# restores, still compiles against, and still passes any test run from a
+# checkout that happens to have the library on its loader path. It fails
+# only in a consumer's process, on the first call.
 #
-# So this builds a throwaway console app outside the repository, restores
-# the packed artifact from a local feed, and calls both a plain entry
-# point and the streaming session. No LD_LIBRARY_PATH, no engine build,
-# nothing from the checkout on the loader path.
+# So this builds a throwaway console app outside the repository,
+# restores the packed artifact from a local feed, and calls both a plain
+# entry point and the streaming session. No LD_LIBRARY_PATH, no engine
+# build, nothing from the checkout on the loader path.
 #
-# Usage: verify-dotnet-package.sh <feed-directory> <package-version>
+# published_artifacts.py covers all four languages. This stays separate
+# because the release workflow runs it against the artifact it is about
+# to push, where the other languages are not in scope.
+#
+# Usage: dotnet_package.sh <feed-directory> <package-version>
 
 set -euo pipefail
 

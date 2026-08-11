@@ -38,6 +38,7 @@ pub mod runtime;
 pub mod stream_session;
 pub mod telemetry;
 pub mod tool_projection;
+pub mod wire;
 
 // The interception contract, re-exported for consumers that want a
 // single dependency.

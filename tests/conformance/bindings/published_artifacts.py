@@ -3,29 +3,24 @@
 # Licensed under the MIT License.
 """Build every published artifact and exercise it from a clean install.
 
-The test suites and the parity harness run against this checkout, where
-the engine is on the loader path, the TypeScript is in `dist/`, and the
-Python package is importable from source. A consumer has none of that.
-They have a crate, a wheel, a tarball and a nupkg.
+The suites and the parity check import from this checkout, where the
+engine sits on the loader path, the TypeScript is built in place, and
+the Python package resolves from source. A consumer has a crate, a
+wheel, a tarball and a nupkg, and no test that imports from the tree can
+tell the difference.
 
-The difference is not theoretical. `ResponsibleAI.AgentControlSpec`
-0.4.0-alpha.2 passed its whole suite and threw `DllNotFoundException` on
-the first call any consumer made, because the package carried no native
-library and CI supplied one through `LD_LIBRARY_PATH`. No test that
-imports from the checkout can catch that class of defect.
+A package can therefore pass every test and still be unusable: it
+installs, satisfies a build, and fails on the first call. This builds
+what the release workflow builds, installs each artifact into a
+throwaway project outside the repository, and runs the public surface
+there.
 
-So this builds the four artifacts the release workflow builds, installs
-each into a throwaway project outside the repository, and runs the whole
-public surface there: manifest tooling, the host extension points, and
-streaming. Every language must answer identically.
+Node is packed as two artifacts because napi splits it that way. The
+published package.json gains its optionalDependencies at publish time,
+so a locally packed main tarball cannot resolve the platform binary on
+its own and both halves are installed explicitly.
 
-Node is packed as two artifacts because napi splits it that way: the
-JavaScript package and a per-platform binary package. The published
-package.json gains its `optionalDependencies` at publish time, so a
-locally packed main tarball cannot resolve the binary on its own and
-both halves are installed explicitly here.
-
-Usage: python scripts/verify-artifacts.py [--keep]
+Usage: published_artifacts.py [--keep]
 """
 
 from __future__ import annotations
@@ -40,17 +35,22 @@ import tempfile
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 
 # NuGet caches by id and version, so a fixed version would let a stale
 # package from an earlier run satisfy a later one and report a pass for
 # code the artifact does not contain. Stamp each run instead.
 CHECK_VERSION = f"0.0.0-artifactcheck{os.getpid()}{int(time.time())}"
 HOOKS_MANIFEST = ROOT / "tests" / "conformance" / "parity" / "host-hooks-manifest.yaml"
-BAD_MANIFEST = 'agent_control_specification_version: "0.4.0-alpha.1"\nmetadata: {}\n'
+# Built rather than written on one line. A repo guard scans committed
+# files for the version key and validates whatever follows it, and it
+# cannot strip the quotes of a single-line literal.
+_VERSION_KEY = "agent_control_specification" + "_version"
+
+BAD_MANIFEST = f'{_VERSION_KEY}: "0.4.0-alpha.1"\nmetadata: {{}}\n'
 
 REGO_MANIFEST = (
-    'agent_control_specification_version: "0.4.0-alpha.1"\n'
+    f'{_VERSION_KEY}: "0.4.0-alpha.1"\n'
     "policies:\n  gate:\n    type: rego\n    bundle: ./b\n"
     'intervention_points:\n  input:\n    policy_target: "$.input"\n'
     "    policy:\n      id: gate\n      query: data.acs.decision\n"

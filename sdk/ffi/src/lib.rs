@@ -19,14 +19,14 @@
 
 use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
-use agent_control_spec::perf_telemetry::PerfTelemetry;
 use agent_control_spec::policy::PreparedPolicyInvocation;
 use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::stream_session::{
-    SafetyLevel, SegmentOutcome, StreamEndReason, StreamSession, StreamSessionConfig,
-    StreamSourceType, StreamSpan, StreamTrack,
+    SafetyLevel, SegmentOutcome, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan,
+    StreamTrack,
 };
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
+use agent_control_spec::wire;
 use agent_control_spec::{
     ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Limits, Manifest, Runtime,
     RuntimeError, Verdict, SUPPORTED_VERSIONS,
@@ -42,6 +42,22 @@ use std::sync::Arc;
 pub struct AcsInterceptor {
     runtime: Runtime,
     name: String,
+}
+
+/// Read an optional NUL-terminated string. NULL means absent, which is
+/// distinct from present and invalid.
+unsafe fn read_optional<'a>(
+    ptr: *const c_char,
+    what: &str,
+    err_out: *mut *mut c_char,
+) -> Result<Option<&'a str>, ()> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    match read_utf8(ptr, what, err_out) {
+        Some(value) => Ok(Some(value)),
+        None => Err(()),
+    }
 }
 
 fn set_err(err_out: *mut *mut c_char, message: String) {
@@ -986,105 +1002,15 @@ struct HostTelemetrySink {
 
 impl TelemetrySink for HostTelemetrySink {
     fn emit(&self, event: TelemetryEvent) {
-        // TelemetryEvent is not Serialize, so the wire shape is owned
-        // here rather than derived from the engine's layout. A sink
-        // cannot fail an evaluation, so a problem here drops the event
-        // rather than denying the action it describes.
-        let payload = serde_json::json!({
-            "event_type": event.event_type.as_str(),
-            "intervention_point": format!("{:?}", event.intervention_point).to_lowercase(),
-            "decision": event.decision.map(|d| format!("{d:?}").to_lowercase()),
-            "reason_code": event.reason_code,
-            "error_class": event.error_class,
-            "policy_id": event.policy_id,
-            "annotators": event.annotators,
-            "enforcement_mode": event.enforcement_mode.map(|m| format!("{m:?}").to_lowercase()),
-            "duration_ms": event.duration_ms,
-        });
-        let Ok(json) = serde_json::to_string(&payload) else {
+        // A sink cannot fail an evaluation, so a problem here drops the
+        // event rather than denying the action it describes.
+        let Ok(json) = serde_json::to_string(&wire::telemetry_event_json(&event)) else {
             return;
         };
         let Ok(payload) = CString::new(json) else {
             return;
         };
         unsafe { (self.call)(self.host.ctx, payload.as_ptr()) };
-    }
-}
-
-/// Read a limits override, treating NULL and empty as "keep the
-/// defaults". Absent fields keep their default individually, so a host
-/// that only needs a bigger snapshot cap does not have to restate the
-/// other nine.
-fn parse_limits(value: *const c_char, err_out: *mut *mut c_char) -> Option<Limits> {
-    let mut limits = Limits::default();
-    if value.is_null() {
-        return Some(limits);
-    }
-    let raw = unsafe { read_utf8(value, "limits_json", err_out) }?;
-    if raw.trim().is_empty() {
-        return Some(limits);
-    }
-    let parsed: Value = match serde_json::from_str(raw) {
-        Ok(v @ Value::Object(_)) => v,
-        Ok(_) => {
-            set_err(err_out, "limits_json must be a JSON object".to_string());
-            return None;
-        }
-        Err(e) => {
-            set_err(err_out, format!("limits_json does not parse: {e}"));
-            return None;
-        }
-    };
-
-    // A cap that does not parse is refused rather than silently kept at
-    // its default. A host that asked for a smaller bound and got the
-    // larger one would believe it was protected when it was not.
-    let read = |key: &str| -> Option<Option<u64>> {
-        match parsed.get(key) {
-            None | Some(Value::Null) => Some(None),
-            Some(v) => match v.as_u64() {
-                Some(n) => Some(Some(n)),
-                None => {
-                    set_err(err_out, format!("{key} must be a non negative integer"));
-                    None
-                }
-            },
-        }
-    };
-
-    macro_rules! apply {
-        ($field:ident, $ty:ty) => {
-            if let Some(v) = read(stringify!($field))? {
-                limits.$field = v as $ty;
-            }
-        };
-    }
-    apply!(max_snapshot_bytes, usize);
-    apply!(max_policy_input_depth, usize);
-    apply!(max_annotators_per_point, usize);
-    apply!(max_annotator_output_bytes, usize);
-    apply!(max_policy_output_bytes, usize);
-    apply!(max_extends_depth, usize);
-    apply!(max_merged_manifest_bytes, usize);
-    apply!(max_manifest_url_bytes, usize);
-    apply!(manifest_url_timeout_ms, u64);
-    apply!(max_manifest_url_redirects, usize);
-    Some(limits)
-}
-
-fn parse_perf(value: *const c_char, err_out: *mut *mut c_char) -> Option<PerfTelemetry> {
-    if value.is_null() {
-        return Some(PerfTelemetry::Off);
-    }
-    let raw = unsafe { read_utf8(value, "perf_telemetry", err_out) }?;
-    match raw {
-        "off" => Some(PerfTelemetry::Off),
-        "external" => Some(PerfTelemetry::External),
-        "full" => Some(PerfTelemetry::Full),
-        other => {
-            set_err(err_out, format!("unknown perf telemetry level '{other}'"));
-            None
-        }
     }
 }
 
@@ -1134,11 +1060,36 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
                 return std::ptr::null_mut();
             }
         };
-        let Some(perf) = parse_perf(perf_telemetry, err_out) else {
-            return std::ptr::null_mut();
+        let perf = match read_optional(perf_telemetry, "perf_telemetry", err_out) {
+            Ok(Some(raw)) => match wire::parse_perf_telemetry(raw) {
+                Ok(level) => level,
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    return std::ptr::null_mut();
+                }
+            },
+            Ok(None) => agent_control_spec::PerfTelemetry::Off,
+            Err(()) => return std::ptr::null_mut(),
         };
-        let Some(limits) = parse_limits(limits_json, err_out) else {
-            return std::ptr::null_mut();
+        let limits = match read_optional(limits_json, "limits_json", err_out) {
+            Ok(Some(raw)) if !raw.trim().is_empty() => {
+                let parsed: Value = match serde_json::from_str(raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        set_err(err_out, format!("limits_json does not parse: {e}"));
+                        return std::ptr::null_mut();
+                    }
+                };
+                match wire::limits_from_json(&parsed) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        set_err(err_out, format!("{e}"));
+                        return std::ptr::null_mut();
+                    }
+                }
+            }
+            Ok(_) => Limits::default(),
+            Err(()) => return std::ptr::null_mut(),
         };
 
         let annotations: Arc<dyn AnnotatorDispatcher> = match annotator_fn {
@@ -1323,9 +1274,9 @@ pub unsafe extern "C" fn acs_manifest_diagnostics(
         let findings = match Manifest::from_yaml_str(source) {
             Ok(manifest) => match manifest.validate() {
                 Ok(()) => Vec::new(),
-                Err(e) => vec![diagnostic_json(&e)],
+                Err(e) => vec![wire::diagnostic_json(&e)],
             },
-            Err(e) => vec![diagnostic_json(&e)],
+            Err(e) => vec![wire::diagnostic_json(&e)],
         };
         match serde_json::to_string(&findings) {
             Ok(json) => to_c_string(json, err_out),
@@ -1385,12 +1336,12 @@ pub unsafe extern "C" fn acs_artifact_diagnostics(
         // does not parse would otherwise be reported as an activation
         // failure, which names the wrong half.
         let findings = match Manifest::from_yaml_str(source) {
-            Err(e) => vec![diagnostic_json(&e)],
+            Err(e) => vec![wire::diagnostic_json(&e)],
             Ok(manifest) => match manifest.validate() {
-                Err(e) => vec![diagnostic_json(&e)],
+                Err(e) => vec![wire::diagnostic_json(&e)],
                 Ok(()) => match ActivatedPolicy::activate_from_memory(source, bundles) {
                     Ok(_) => Vec::new(),
-                    Err(e) => vec![diagnostic_json(&e)],
+                    Err(e) => vec![wire::diagnostic_json(&e)],
                 },
             },
         };
@@ -1415,14 +1366,6 @@ pub unsafe extern "C" fn acs_artifact_diagnostics(
     }
 }
 
-fn diagnostic_json(error: &RuntimeError) -> Value {
-    serde_json::json!({
-        "code": error.reason(),
-        "message": error.detail(),
-        "severity": "error",
-    })
-}
-
 // ---------------------------------------------------------------------
 // Incremental stream mediation (specification section 18.1).
 //
@@ -1441,57 +1384,31 @@ fn diagnostic_json(error: &RuntimeError) -> Value {
 // wire contract is owned here rather than derived from Rust layout.
 // ---------------------------------------------------------------------
 
+/// Parse a wire value through the core, reporting failure the way this
+/// boundary does. The core owns what the names mean.
+fn wire_track(value: &str, err_out: *mut *mut c_char) -> Option<StreamTrack> {
+    match StreamTrack::parse(value) {
+        Ok(track) => Some(track),
+        Err(e) => {
+            set_err(err_out, format!("{e}"));
+            None
+        }
+    }
+}
+
+fn wire_outcome(value: &str, err_out: *mut *mut c_char) -> Option<SegmentOutcome> {
+    match SegmentOutcome::parse(value) {
+        Ok(outcome) => Some(outcome),
+        Err(e) => {
+            set_err(err_out, format!("{e}"));
+            None
+        }
+    }
+}
+
 /// Opaque handle to one mediated stream.
 pub struct AcsStreamSession {
     session: StreamSession,
-}
-
-fn parse_track(value: &str, err_out: *mut *mut c_char) -> Option<StreamTrack> {
-    match value {
-        "request" => Some(StreamTrack::Request),
-        "response" => Some(StreamTrack::Response),
-        other => {
-            set_err(err_out, format!("unknown stream track '{other}'"));
-            None
-        }
-    }
-}
-
-fn parse_outcome(value: &str, err_out: *mut *mut c_char) -> Option<SegmentOutcome> {
-    match value {
-        "cleared" => Some(SegmentOutcome::Cleared),
-        "transformed" => Some(SegmentOutcome::Transformed),
-        "denied" => Some(SegmentOutcome::Denied),
-        other => {
-            set_err(err_out, format!("unknown segment outcome '{other}'"));
-            None
-        }
-    }
-}
-
-fn end_reason_json(reason: &StreamEndReason) -> Value {
-    match reason {
-        StreamEndReason::Complete => serde_json::json!({ "kind": "complete" }),
-        StreamEndReason::Denied { track, task, range } => serde_json::json!({
-            "kind": "denied",
-            "track": track.as_str(),
-            "task": task,
-            "start": range.start,
-            "end": range.end,
-        }),
-        StreamEndReason::Rewritten { track, task, range } => serde_json::json!({
-            "kind": "rewritten",
-            "track": track.as_str(),
-            "task": task,
-            "start": range.start,
-            "end": range.end,
-        }),
-        StreamEndReason::Failed(error) => serde_json::json!({
-            "kind": "failed",
-            "reason": error.reason(),
-            "message": error.to_string(),
-        }),
-    }
 }
 
 /// Open a session from `config_json`.
@@ -1764,7 +1681,7 @@ pub unsafe extern "C" fn acs_stream_session_record_outcome(
         let Some(outcome_raw) = read_utf8(outcome, "outcome", err_out) else {
             return -1;
         };
-        let Some(outcome) = parse_outcome(outcome_raw, err_out) else {
+        let Some(outcome) = wire_outcome(outcome_raw, err_out) else {
             return -1;
         };
         let span = match StreamSpan::new(source, start, end) {
@@ -1883,7 +1800,7 @@ pub unsafe extern "C" fn acs_stream_session_advance(
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return -2;
         };
-        let Some(track) = parse_track(raw, err_out) else {
+        let Some(track) = wire_track(raw, err_out) else {
             return -2;
         };
         match (*handle).session.advance(track) {
@@ -1921,7 +1838,7 @@ pub unsafe extern "C" fn acs_stream_session_safe_offset(
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return -2;
         };
-        let Some(track) = parse_track(raw, err_out) else {
+        let Some(track) = wire_track(raw, err_out) else {
             return -2;
         };
         match (*handle).session.safe_offset(track) {
@@ -1958,7 +1875,7 @@ pub unsafe extern "C" fn acs_stream_session_pending(
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return -2;
         };
-        let Some(track) = parse_track(raw, err_out) else {
+        let Some(track) = wire_track(raw, err_out) else {
             return -2;
         };
         i64::from((*handle).session.pending(track))
@@ -1994,17 +1911,11 @@ pub unsafe extern "C" fn acs_stream_session_watermark(
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return std::ptr::null_mut();
         };
-        let Some(track) = parse_track(raw, err_out) else {
+        let Some(track) = wire_track(raw, err_out) else {
             return std::ptr::null_mut();
         };
         let watermark = (*handle).session.watermark(track);
-        let payload = serde_json::json!({
-            "track": track.as_str(),
-            "confirmed": watermark.confirmed(),
-            "received": watermark.received(),
-            "pending": watermark.pending(),
-            "tasks": watermark.tasks().collect::<Vec<_>>(),
-        });
+        let payload = wire::watermark_json(track, watermark);
         match serde_json::to_string(&payload) {
             Ok(json) => to_c_string(json, err_out),
             Err(e) => {
@@ -2047,14 +1958,8 @@ pub unsafe extern "C" fn acs_stream_session_state(
         let payload = serde_json::json!({
             "is_ended": session.is_ended(),
             "transformed": session.transformed(),
-            "end_reason": session.end_reason().map(end_reason_json),
-            "config": {
-                "safety_level": config.safety_level.as_str(),
-                "request_start_rune_offset": config.request_start_rune_offset,
-                "response_start_rune_offset": config.response_start_rune_offset,
-                "request_tasks": config.request_tasks,
-                "response_tasks": config.response_tasks,
-            },
+            "end_reason": session.end_reason().map(wire::end_reason_json),
+            "config": wire::stream_config_json(config),
         });
         match serde_json::to_string(&payload) {
             Ok(json) => to_c_string(json, err_out),
@@ -2122,11 +2027,7 @@ pub unsafe extern "C" fn acs_stream_session_finish(
             return std::ptr::null_mut();
         }
         let completion = (*handle).session.finish();
-        let payload = serde_json::json!({
-            "reason": end_reason_json(&completion.reason),
-            "transformed": completion.transformed,
-            "is_clean": completion.reason.is_clean(),
-        });
+        let payload = wire::completion_json(&completion);
         match serde_json::to_string(&payload) {
             Ok(json) => to_c_string(json, err_out),
             Err(e) => {

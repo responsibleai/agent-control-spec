@@ -1,22 +1,20 @@
 #!/usr/bin/env python3
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Fail when an engine capability is reachable from fewer than four languages.
+"""Fail when an engine capability is reachable from fewer than four bindings.
 
-The parity harness proves the four bindings agree about the calls it
+Cross-language comparison proves the bindings agree about the calls it
 makes. It cannot notice a capability none of them expose, because a
-surface absent everywhere is consistent everywhere. That blind spot is
-how streaming shipped reachable only from Rust, and how the host
-dispatchers stayed unreachable outside it for a release.
+surface absent everywhere is consistent everywhere.
 
-So this reads the engine's public re-exports and asserts that every one
-carrying host-facing behaviour has an entry point in the C ABI, .NET,
-Python and Node. A capability added to the engine and bound nowhere
-fails here rather than being discovered by a consumer.
+So this reads the engine's public re-exports and requires every one to
+be either a capability with the token each binding exposes, or a
+non-capability with a written reason. A symbol that is neither fails,
+which forces the question to be answered when the symbol is added
+rather than when a consumer cannot find it.
 
-Symbols that are data rather than behaviour are listed explicitly with a
-reason. Writing the reason down is the point: an unexplained omission
-and a deliberate one look identical six months later.
+Writing the reason down is the point. An unexplained omission and a
+deliberate one look identical six months later.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 
 # Symbols that need no entry point, each with why. Anything not listed
 # here and not matched below is treated as an unbound capability.
@@ -216,6 +214,40 @@ BINDINGS = (
 )
 
 
+
+def ffi_entry_points() -> set[str]:
+    """Every `acs_*` function the C ABI exports."""
+    src = (ROOT / "sdk/ffi/src/lib.rs").read_text(encoding="utf-8")
+    return set(re.findall(r"pub unsafe extern \"C\" fn (acs_\w+)", src))
+
+
+def unbound_from_dotnet() -> list[str]:
+    """C ABI entry points the .NET binding never declares.
+
+    .NET is the only binding that goes through the C ABI rather than
+    linking the engine directly, so an entry point added there and not
+    declared here is reachable from every language except .NET. The
+    token scan above cannot see it, because the capability it belongs to
+    may already be covered by a sibling entry point.
+    """
+    declared = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "sdk/dotnet/src/AgentControlSpec").glob("*.cs")
+    )
+    # Freeing and string ownership are called by the SafeHandle and the
+    # marshaller, not declared as separate imports.
+    internal = {"acs_free_string"}
+    # Whole-word, because `acs_interceptor_new` is a substring of
+    # `acs_interceptor_new_ex`: a substring test would call the shorter
+    # one declared on the strength of the longer one.
+    return sorted(
+        name
+        for name in ffi_entry_points()
+        if name not in internal
+        and not re.search(rf"\b{re.escape(name)}\b", declared)
+    )
+
+
 def engine_symbols() -> set[str]:
     src = (ROOT / "engine/src/lib.rs").read_text(encoding="utf-8")
     found: set[str] = set()
@@ -257,6 +289,13 @@ def main() -> int:
         )
         failed = True
 
+    orphans = unbound_from_dotnet()
+    if orphans:
+        print("C ABI entry points the .NET binding does not declare:", file=sys.stderr)
+        for name in orphans:
+            print(f"  {name}", file=sys.stderr)
+        failed = True
+
     for symbol, tokens in sorted(CAPABILITIES.items()):
         missing = [
             lang
@@ -279,6 +318,7 @@ def main() -> int:
     print(
         f"{len(NOT_A_CAPABILITY)} further symbols are data or internals, each with a stated reason"
     )
+    print(f"all {len(ffi_entry_points())} C ABI entry points are declared by the .NET binding")
     return 0
 
 

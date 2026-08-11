@@ -90,7 +90,7 @@ jobs:
       # a surface absent everywhere is consistent everywhere. That blind
       # spot is how streaming shipped reachable only from Rust.
       - name: Every engine capability is reachable from every language
-        run: python3 scripts/check-language-coverage.py
+        run: python3 tests/conformance/bindings/run.py language_coverage
       - name: cargo-audit over example lockfiles (pinned, checksum-verified)
         # Examples are deliberately outside the Dependabot update config,
         # and the coding_agent app's path dependency predates the engine
@@ -169,7 +169,7 @@ jobs:
              sdk/dotnet/native/runtimes/linux-x64/native/
           dotnet pack sdk/dotnet/src/AgentControlSpec -c Release -o "$PWD/ci-feed" \
             --nologo -p:AcsNativeAssetsRequired=true -p:Version=0.0.0-ci
-          bash scripts/verify-dotnet-package.sh "$PWD/ci-feed" 0.0.0-ci
+          bash tests/conformance/bindings/dotnet_package.sh "$PWD/ci-feed" 0.0.0-ci
 
   # Streaming reaches each language through a different binding
   # mechanism, so agreement between them is not structural. Run one
@@ -200,7 +200,7 @@ jobs:
           maturin build --release -m sdk/python/Cargo.toml -o dist
           pip install dist/*.whl
       - name: Compare every language across the whole surface
-        run: python tests/conformance/parity/cross_language_parity.py
+        run: python tests/conformance/bindings/run.py cross_language_parity
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
 
@@ -227,4 +227,4 @@ jobs:
       - run: pip install maturin==1.8.7
       - run: npm ci
         working-directory: sdk/node
-      - run: python scripts/verify-artifacts.py
+      - run: python tests/conformance/bindings/run.py published_artifacts
