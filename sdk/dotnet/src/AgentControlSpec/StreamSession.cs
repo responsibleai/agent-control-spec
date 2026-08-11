@@ -218,8 +218,26 @@ public sealed class StreamSession : IDisposable
     /// occupies two UTF-16 code units in a .NET string.
     /// </summary>
     /// <returns>The track's received offset.</returns>
-    public int ObserveText(StreamSourceType sourceType, string text) =>
-        Native.StreamObserveText(_handle, Wire(sourceType), text);
+    /// <exception cref="ArgumentException">
+    /// The text holds U+0000. The boundary marshals as NUL-terminated
+    /// UTF-8, so an interior NUL would truncate and the engine would
+    /// count fewer runes than arrived, permanently shifting every later
+    /// offset. U+0000 is a scalar a model can emit, and the profile
+    /// obliges a host to report counts that match the text it
+    /// accumulated, so this refuses rather than quietly miscounting.
+    /// </exception>
+    public int ObserveText(StreamSourceType sourceType, string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (text.Contains('\0'))
+        {
+            throw new ArgumentException(
+                "text holds U+0000, which this boundary cannot carry without truncating",
+                nameof(text));
+        }
+
+        return Native.StreamObserveText(_handle, Wire(sourceType), text);
+    }
 
     /// <summary>Record what <paramref name="task"/> decided about a span.</summary>
     public void RecordOutcome(
@@ -294,5 +312,10 @@ public sealed class StreamSession : IDisposable
         ?? throw new AgentControlSpecNativeException("completion did not deserialize");
 
     /// <summary>Release the native session.</summary>
+    /// <remarks>
+    /// This frees the accounting without recording a settlement, so a
+    /// host that owes an outcome calls <see cref="Finish"/> first.
+    /// Disposing an unsettled session loses why it ended.
+    /// </remarks>
     public void Dispose() => _handle.Dispose();
 }

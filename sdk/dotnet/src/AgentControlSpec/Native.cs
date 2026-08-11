@@ -321,40 +321,40 @@ internal static partial class Native
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     private static partial long acs_stream_session_observe(
-        IntPtr handle, string sourceType, uint runes, out IntPtr errOut);
+        StreamSessionHandle handle, string sourceType, uint runes, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     private static partial long acs_stream_session_observe_text(
-        IntPtr handle, string sourceType, string text, out IntPtr errOut);
+        StreamSessionHandle handle, string sourceType, string text, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int acs_stream_session_record_outcome(
-        IntPtr handle, string task, string sourceType, uint start, uint end, string outcome, out IntPtr errOut);
+        StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string outcome, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     private static partial int acs_stream_session_record_verdict(
-        IntPtr handle, string task, string sourceType, uint start, uint end, string verdictJson, out IntPtr errOut);
+        StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string verdictJson, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
-    private static partial long acs_stream_session_advance(IntPtr handle, string track, out IntPtr errOut);
+    private static partial long acs_stream_session_advance(StreamSessionHandle handle, string track, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
-    private static partial long acs_stream_session_safe_offset(IntPtr handle, string track, out IntPtr errOut);
+    private static partial long acs_stream_session_safe_offset(StreamSessionHandle handle, string track, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
-    private static partial long acs_stream_session_pending(IntPtr handle, string track, out IntPtr errOut);
+    private static partial long acs_stream_session_pending(StreamSessionHandle handle, string track, out IntPtr errOut);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
-    private static partial IntPtr acs_stream_session_watermark(IntPtr handle, string track, out IntPtr errOut);
+    private static partial IntPtr acs_stream_session_watermark(StreamSessionHandle handle, string track, out IntPtr errOut);
 
     [LibraryImport(Lib)]
-    private static partial IntPtr acs_stream_session_state(IntPtr handle, out IntPtr errOut);
+    private static partial IntPtr acs_stream_session_state(StreamSessionHandle handle, out IntPtr errOut);
 
     [LibraryImport(Lib)]
-    private static partial int acs_stream_session_end_of_payloads(IntPtr handle, out IntPtr errOut);
+    private static partial int acs_stream_session_end_of_payloads(StreamSessionHandle handle, out IntPtr errOut);
 
     [LibraryImport(Lib)]
-    private static partial IntPtr acs_stream_session_finish(IntPtr handle, out IntPtr errOut);
+    private static partial IntPtr acs_stream_session_finish(StreamSessionHandle handle, out IntPtr errOut);
 
     internal static StreamSessionHandle StreamSessionNew(string configJson)
     {
@@ -386,13 +386,13 @@ internal static partial class Native
 
     internal static int StreamObserve(StreamSessionHandle handle, string sourceType, uint runes)
     {
-        var received = acs_stream_session_observe(handle.DangerousGetHandle(), sourceType, runes, out var err);
+        var received = acs_stream_session_observe(handle, sourceType, runes, out var err);
         return checked((int)Scalar(received, err)!.Value);
     }
 
     internal static int StreamObserveText(StreamSessionHandle handle, string sourceType, string text)
     {
-        var received = acs_stream_session_observe_text(handle.DangerousGetHandle(), sourceType, text, out var err);
+        var received = acs_stream_session_observe_text(handle, sourceType, text, out var err);
         return checked((int)Scalar(received, err)!.Value);
     }
 
@@ -400,7 +400,7 @@ internal static partial class Native
         StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string outcome)
     {
         if (acs_stream_session_record_outcome(
-                handle.DangerousGetHandle(), task, sourceType, start, end, outcome, out var err) != 0)
+                handle, task, sourceType, start, end, outcome, out var err) != 0)
         {
             ThrowIfError(err);
             throw new AgentControlSpecNativeException("recording the outcome failed without a message");
@@ -411,7 +411,7 @@ internal static partial class Native
         StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string verdictJson)
     {
         if (acs_stream_session_record_verdict(
-                handle.DangerousGetHandle(), task, sourceType, start, end, verdictJson, out var err) != 0)
+                handle, task, sourceType, start, end, verdictJson, out var err) != 0)
         {
             ThrowIfError(err);
             throw new AgentControlSpecNativeException("recording the verdict failed without a message");
@@ -420,39 +420,39 @@ internal static partial class Native
 
     internal static int? StreamAdvance(StreamSessionHandle handle, string track)
     {
-        var offset = acs_stream_session_advance(handle.DangerousGetHandle(), track, out var err);
+        var offset = acs_stream_session_advance(handle, track, out var err);
         return (int?)Scalar(offset, err);
     }
 
     internal static int? StreamSafeOffset(StreamSessionHandle handle, string track)
     {
-        var offset = acs_stream_session_safe_offset(handle.DangerousGetHandle(), track, out var err);
+        var offset = acs_stream_session_safe_offset(handle, track, out var err);
         return (int?)Scalar(offset, err);
     }
 
     internal static int StreamPending(StreamSessionHandle handle, string track)
     {
-        var pending = acs_stream_session_pending(handle.DangerousGetHandle(), track, out var err);
+        var pending = acs_stream_session_pending(handle, track, out var err);
         return checked((int)Scalar(pending, err)!.Value);
     }
 
     internal static string StreamWatermark(StreamSessionHandle handle, string track)
     {
-        var json = acs_stream_session_watermark(handle.DangerousGetHandle(), track, out var err);
+        var json = acs_stream_session_watermark(handle, track, out var err);
         ThrowIfError(err);
         return TakeString(json);
     }
 
     internal static string StreamState(StreamSessionHandle handle)
     {
-        var json = acs_stream_session_state(handle.DangerousGetHandle(), out var err);
+        var json = acs_stream_session_state(handle, out var err);
         ThrowIfError(err);
         return TakeString(json);
     }
 
     internal static void StreamEndOfPayloads(StreamSessionHandle handle)
     {
-        if (acs_stream_session_end_of_payloads(handle.DangerousGetHandle(), out var err) != 0)
+        if (acs_stream_session_end_of_payloads(handle, out var err) != 0)
         {
             ThrowIfError(err);
             throw new AgentControlSpecNativeException("closing the payload stream failed without a message");
@@ -461,7 +461,7 @@ internal static partial class Native
 
     internal static string StreamFinish(StreamSessionHandle handle)
     {
-        var json = acs_stream_session_finish(handle.DangerousGetHandle(), out var err);
+        var json = acs_stream_session_finish(handle, out var err);
         ThrowIfError(err);
         return TakeString(json);
     }
@@ -556,6 +556,16 @@ internal static partial class Native
     }
 }
 
+/// <summary>Owns one native stream session.</summary>
+/// <remarks>
+/// Every P/Invoke below takes this type rather than an <see cref="IntPtr"/>,
+/// so the marshaller takes a reference for the duration of the call. That
+/// is what makes a call safe against a racing <c>Dispose</c>: without it a
+/// free during an in-flight call runs under it, and a call after
+/// <c>Dispose</c> hands a stale pointer to native code, which the engine's
+/// null check cannot catch because the pointer is not null, only dead.
+/// A closed handle surfaces as <see cref="ObjectDisposedException"/>.
+/// </remarks>
 internal sealed class StreamSessionHandle : SafeHandle
 {
     internal StreamSessionHandle(IntPtr handle)
@@ -570,6 +580,13 @@ internal sealed class StreamSessionHandle : SafeHandle
     }
 }
 
+/// <summary>Owns one activated policy version.</summary>
+/// <remarks>
+/// Evaluation pairs <c>DangerousGetHandle</c> with
+/// <c>DangerousAddRef</c> and <c>DangerousRelease</c>. That pair is what
+/// makes concurrent evaluation safe against a racing <c>Dispose</c>:
+/// without it the free runs under an in-flight call.
+/// </remarks>
 internal sealed class ActivatedPolicyHandle : SafeHandle
 {
     internal ActivatedPolicyHandle(IntPtr handle)

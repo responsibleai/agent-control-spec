@@ -4,6 +4,7 @@
 // They are the .NET half of a suite that asserts the same scenarios in
 // every supported language.
 
+using System.Linq;
 using AgentControlSpec;
 using Xunit;
 
@@ -179,5 +180,52 @@ public sealed class StreamSessionTests
 
         Assert.Throws<AgentControlSpecNativeException>(() =>
             session.RecordOutcome("pii", StreamSourceType.ModelGenerated, 0, 99, SegmentOutcome.Cleared));
+    }
+
+    [Fact]
+    public void ACallAfterDisposeIsRefusedRatherThanReadingFreedMemory()
+    {
+        var session = new StreamSession(SafetyLevel.Blocking, responseTasks: ["pii"]);
+        session.ObserveText(StreamSourceType.ModelGenerated, "hi");
+        session.Dispose();
+
+        // The engine's null check cannot catch this. The pointer is not
+        // null, only dead, so the handle has to refuse before the call.
+        Assert.Throws<ObjectDisposedException>(
+            () => session.ObserveText(StreamSourceType.ModelGenerated, "more"));
+    }
+
+    [Fact]
+    public void TwoThreadsOnOneSessionDoNotLoseObservedRunes()
+    {
+        using var session = new StreamSession(SafetyLevel.Blocking, responseTasks: ["pii"]);
+        const int Each = 5_000;
+
+        var threads = Enumerable.Range(0, 2).Select(_ => new Thread(() =>
+        {
+            for (var i = 0; i < Each; i++)
+            {
+                session.Observe(StreamSourceType.ModelGenerated, 1);
+            }
+        })).ToList();
+
+        foreach (var thread in threads) thread.Start();
+        foreach (var thread in threads) thread.Join();
+
+        // A lost observe shortens the received offset, which releases
+        // text no task evaluated.
+        Assert.Equal(Each * 2, session.Watermark(StreamTrack.Response).Received);
+    }
+
+    [Fact]
+    public void TextHoldingNulIsRefusedRatherThanTruncated()
+    {
+        using var session = new StreamSession(SafetyLevel.Blocking, responseTasks: ["pii"]);
+
+        // U+0000 is a scalar a model can emit. Marshalled as
+        // NUL-terminated UTF-8 it would truncate, and the engine would
+        // count 1 where 4 runes arrived.
+        Assert.Throws<ArgumentException>(
+            () => session.ObserveText(StreamSourceType.ModelGenerated, "a\0bc"));
     }
 }

@@ -139,7 +139,7 @@ test("observeText counts runes, not UTF-16 code units", () => {
   assert.equal(s2.finish().isClean, true);
 });
 
-test("an unmediated track releases without evaluation", () => {
+test("payload on an unmediated track fails closed", () => {
   // Empty response task set: the response track is not mediated at
   // all, so text on it fails closed while the request track releases
   // as usual. This is the ordinary shape for a host guarding only the
@@ -292,4 +292,111 @@ test("finish twice returns the same completion", () => {
   const first = s.finish();
   const second = s.finish();
   assert.deepEqual(first, second);
+});
+
+// ---------------------------------------------------------------------
+// Rune offsets are `u32` on the wire. N-API converts a JS Number to
+// `u32` with ToUint32, which wraps rather than fails: `2 ** 32`
+// arrives as `0` and `2 ** 32 + 5` as `5`, so an end offset chosen
+// past the boundary would record a *cleared* prefix on text no task
+// evaluated. Python raises OverflowError and .NET throws
+// OverflowException on the same input, so a Node host that fed a
+// deliberately-huge offset would silently emit content the other
+// languages refused. The wrapper is the one place a guard fits before
+// the value reaches napi's converter; pin that on every rune-offset
+// surface so a future refactor cannot re-open it.
+// ---------------------------------------------------------------------
+
+test("observe refuses a rune offset at or past the u32 boundary", () => {
+  const s = new StreamSession({
+    safetyLevel: "blocking",
+    responseTasks: ["pii"],
+  });
+  assert.throws(
+    () => s.observe("model_generated", 2 ** 32),
+    RangeError,
+    "2 ** 32 must be refused, not silently wrapped to 0",
+  );
+  // Session state must be untouched: the throw happened before
+  // reaching the native call.
+  assert.equal(s.watermark("response").received, 0);
+});
+
+test("observe refuses a negative rune offset", () => {
+  const s = new StreamSession({
+    safetyLevel: "blocking",
+    responseTasks: ["pii"],
+  });
+  assert.throws(
+    () => s.observe("model_generated", -1),
+    RangeError,
+    "-1 must be refused, not silently wrapped to 0xFFFFFFFF",
+  );
+  assert.equal(s.watermark("response").received, 0);
+});
+
+test("recordOutcome refuses an end offset past the u32 boundary", () => {
+  const s = new StreamSession({
+    safetyLevel: "blocking",
+    responseTasks: ["pii"],
+  });
+  s.observeText("model_generated", "hello");
+  assert.throws(
+    () => s.recordOutcome("pii", "model_generated", 0, 2 ** 32 + 5, "cleared"),
+    RangeError,
+    "2 ** 32 + 5 must be refused, not silently wrapped to 5 which would clear text no task evaluated",
+  );
+  // Nothing cleared, because the guard fired before the native call.
+  assert.equal(s.safeOffset("response"), 0);
+});
+
+test("recordOutcome refuses a start offset at the u32 boundary too", () => {
+  const s = new StreamSession({
+    safetyLevel: "blocking",
+    responseTasks: ["pii"],
+  });
+  assert.throws(
+    () => s.recordOutcome("pii", "model_generated", 2 ** 32, 5, "cleared"),
+    RangeError,
+  );
+});
+
+test("recordVerdict refuses rune offsets past the u32 boundary", () => {
+  const s = new StreamSession({
+    safetyLevel: "blocking",
+    responseTasks: ["safety"],
+  });
+  s.observeText("model_generated", "hello");
+  const allow = { decision: "allow" };
+  assert.throws(
+    () => s.recordVerdict("safety", "model_generated", 0, 2 ** 32 + 5, allow),
+    RangeError,
+  );
+  assert.throws(
+    () => s.recordVerdict("safety", "model_generated", -1, 5, allow),
+    RangeError,
+  );
+  // The verdict path is another way to enter the same accounting, so
+  // the guard must catch it symmetrically; a bad recordVerdict must
+  // not clear the span either.
+  assert.equal(s.safeOffset("response"), 0);
+});
+
+test("StreamSession refuses a start rune offset in config past the u32 boundary", () => {
+  assert.throws(
+    () => new StreamSession({
+      safetyLevel: "blocking",
+      responseTasks: ["pii"],
+      responseStartRuneOffset: 2 ** 32,
+    }),
+    RangeError,
+  );
+  assert.throws(
+    () => new StreamSession({
+      safetyLevel: "blocking",
+      requestTasks: ["moderation"],
+      requestStartRuneOffset: -1,
+    }),
+    RangeError,
+  );
 });

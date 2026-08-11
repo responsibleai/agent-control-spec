@@ -41,7 +41,8 @@ ROOT = Path(__file__).resolve().parents[3]
 # package from an earlier run satisfy a later one and report a pass for
 # code the artifact does not contain. Stamp each run instead.
 CHECK_VERSION = f"0.0.0-artifactcheck{os.getpid()}{int(time.time())}"
-HOOKS_MANIFEST = ROOT / "tests" / "conformance" / "parity" / "host-hooks-manifest.yaml"
+# Beside this file, so moving the suite cannot strand the fixture.
+HOOKS_MANIFEST = Path(__file__).resolve().parent / "host-hooks-manifest.yaml"
 # Built rather than written on one line. A repo guard scans committed
 # files for the version key and validates whatever follows it, and it
 # cannot strip the quotes of a single-line literal.

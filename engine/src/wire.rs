@@ -134,15 +134,52 @@ pub fn limits_json(limits: &Limits) -> Value {
     })
 }
 
+/// Manifest field names an authoring tool wants surfaced verbatim.
+///
+/// The engine reports validation failures as prose naming the offending
+/// field, so recovering the field means finding it in the message. That
+/// is a heuristic, and it belongs here rather than in each binding: a
+/// heuristic implemented three times is three heuristics.
+const DIAGNOSTIC_FIELDS: &[&str] = &[
+    "agent_control_specification_version",
+    "policy_target_kind",
+    "policy_target",
+    "tool_name_from",
+    "annotations",
+    "annotators",
+    "intervention_points",
+    "intervention point",
+    "extends",
+    "policies",
+    "policy.id",
+    "approval",
+    "metadata",
+    "tools",
+];
+
+/// The manifest field a validation message names, when it names one.
+pub fn diagnostic_field(message: &str) -> Option<&'static str> {
+    // Longest first, because `policy_target` is a prefix of
+    // `policy_target_kind` and would otherwise swallow it.
+    let mut ordered: Vec<&&str> = DIAGNOSTIC_FIELDS.iter().collect();
+    ordered.sort_by_key(|field| std::cmp::Reverse(field.len()));
+    ordered
+        .into_iter()
+        .find(|field| message.contains(**field))
+        .copied()
+}
+
 /// One finding about a manifest or its artifacts.
 ///
 /// `RuntimeError` answers by being returned, which a linter cannot
 /// render against a document. This is the same information as data.
 pub fn diagnostic_json(error: &RuntimeError) -> Value {
+    let message = error.detail();
     json!({
         "code": error.reason(),
-        "message": error.detail(),
+        "message": message,
         "severity": "error",
+        "field": diagnostic_field(message),
     })
 }
 
@@ -209,6 +246,18 @@ pub fn stream_config_json(config: &StreamSessionConfig) -> Value {
         "response_start_rune_offset": config.response_start_rune_offset,
         "request_tasks": config.request_tasks,
         "response_tasks": config.response_tasks,
+    })
+}
+
+/// Live state of a session: whether it ended, whether a rewrite ended
+/// it, why, and the configuration in force.
+#[cfg(feature = "streaming")]
+pub fn stream_session_state_json(session: &crate::stream_session::StreamSession) -> Value {
+    json!({
+        "is_ended": session.is_ended(),
+        "transformed": session.transformed(),
+        "end_reason": session.end_reason().map(end_reason_json),
+        "config": stream_config_json(session.config()),
     })
 }
 
@@ -284,6 +333,10 @@ pub fn telemetry_event_json(event: &crate::telemetry::TelemetryEvent) -> Value {
         "annotators": event.annotators,
         "enforcement_mode": event.enforcement_mode.map(|m| format!("{m:?}").to_lowercase()),
         "duration_ms": event.duration_ms,
+        "evidence_artefact": event.evidence_artefact,
+        "evidence_verification_pointer_keys": event.evidence_verification_pointer_keys,
+        "action_identity": event.action_identity,
+        "metadata": event.metadata,
     })
 }
 
@@ -321,6 +374,29 @@ mod tests {
         }
         let parsed = limits_from_json(&rendered).expect("round trip");
         assert_eq!(parsed, Limits::default());
+    }
+
+    #[test]
+    fn a_diagnostic_names_the_offending_field() {
+        let error = RuntimeError::ManifestInvalid(
+            "at least one intervention point config is required".to_string(),
+        );
+        let rendered = diagnostic_json(&error);
+        assert_eq!(rendered["field"], "intervention point");
+        assert_eq!(rendered["severity"], "error");
+    }
+
+    #[test]
+    fn a_longer_field_name_is_not_swallowed_by_its_prefix() {
+        assert_eq!(
+            diagnostic_field("policy_target_kind must be a known kind"),
+            Some("policy_target_kind")
+        );
+    }
+
+    #[test]
+    fn a_message_naming_no_field_reports_none() {
+        assert_eq!(diagnostic_field("something else went wrong"), None);
     }
 
     #[test]

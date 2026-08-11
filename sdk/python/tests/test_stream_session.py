@@ -339,3 +339,77 @@ def test_record_verdict_accepts_a_wire_dict_from_a_serialized_verdict():
     assert session.advance("response") == 5
     completion = session.finish()
     assert completion["is_clean"] is True
+
+
+# ---------------------------------------------------------------------
+# Rune offsets are `u32` on the wire. pyo3's automatic `u32` conversion
+# raises `OverflowError` on any Python integer outside `[0, 2**32)`,
+# so a bindings-level guard is not needed here — Node's is a workaround
+# for N-API's silent ToUint32 wrap. Pin the guarantee anyway: a future
+# change to accept `i64` and cast later would silently re-open the same
+# hole the Node wrapper is now guarding against, and this test would
+# fail loudly instead.
+# ---------------------------------------------------------------------
+
+
+def test_observe_refuses_a_rune_offset_at_or_past_the_u32_boundary():
+    session = StreamSession(response_tasks=["pii"])
+    with pytest.raises(OverflowError):
+        session.observe("model_generated", 2**32)
+    # Session state must be untouched: the raise happened before any
+    # native accounting ran.
+    assert session.watermark("response")["received"] == 0
+
+
+def test_observe_refuses_a_negative_rune_offset():
+    session = StreamSession(response_tasks=["pii"])
+    with pytest.raises(OverflowError):
+        session.observe("model_generated", -1)
+    assert session.watermark("response")["received"] == 0
+
+
+def test_record_outcome_refuses_an_end_offset_past_the_u32_boundary():
+    # The exact failure mode the Node guard exists to prevent: a wrap
+    # to a small value would mark a *cleared* prefix on text no task
+    # evaluated. Python raises before the native call, so nothing
+    # clears.
+    session = StreamSession(response_tasks=["pii"])
+    session.observe_text("model_generated", "hello")
+    with pytest.raises(OverflowError):
+        session.record_outcome("pii", "model_generated", 0, 2**32 + 5, "cleared")
+    assert session.safe_offset("response") == 0
+
+
+def test_record_outcome_refuses_a_start_offset_at_the_u32_boundary():
+    session = StreamSession(response_tasks=["pii"])
+    with pytest.raises(OverflowError):
+        session.record_outcome("pii", "model_generated", 2**32, 5, "cleared")
+
+
+def test_record_verdict_refuses_rune_offsets_past_the_u32_boundary():
+    # The verdict path enters the same accounting as record_outcome,
+    # so the guarantee must be symmetric.
+    session = StreamSession(response_tasks=["safety"])
+    session.observe_text("model_generated", "hello")
+    with pytest.raises(OverflowError):
+        session.record_verdict(
+            "safety", "model_generated", 0, 2**32 + 5, {"decision": "allow"}
+        )
+    with pytest.raises(OverflowError):
+        session.record_verdict(
+            "safety", "model_generated", -1, 5, {"decision": "allow"}
+        )
+    assert session.safe_offset("response") == 0
+
+
+def test_stream_session_refuses_a_start_rune_offset_in_config_past_the_u32_boundary():
+    with pytest.raises(OverflowError):
+        StreamSession(
+            response_tasks=["pii"],
+            response_start_rune_offset=2**32,
+        )
+    with pytest.raises(OverflowError):
+        StreamSession(
+            request_tasks=["moderation"],
+            request_start_rune_offset=-1,
+        )

@@ -369,7 +369,8 @@ def test_diagnostics_name_the_offending_field_for_an_invalid_manifest():
     diagnostics = validate_manifest_detailed(bad)
     assert diagnostics, "expected the manifest to be rejected"
     entry = diagnostics[0]
-    assert entry["reason_code"] == "runtime_error:manifest_invalid"
+    assert entry["code"] == "runtime_error:manifest_invalid"
+    assert entry["severity"] == "error"
     assert entry["field"] == "policy_target_kind", entry
     # The engine's full message is preserved verbatim, so a tool can
     # surface it in an editor without paraphrasing.
@@ -381,7 +382,8 @@ def test_diagnostics_report_unsupported_version_field():
     diagnostics = validate_manifest_detailed(bad)
     assert len(diagnostics) == 1
     entry = diagnostics[0]
-    assert entry["reason_code"] == "runtime_error:manifest_invalid"
+    assert entry["code"] == "runtime_error:manifest_invalid"
+    assert entry["severity"] == "error"
     assert entry["field"] == "agent_control_specification_version"
     assert "0.3.1-beta" in entry["message"]
 
@@ -394,7 +396,8 @@ def test_diagnostics_flag_manifests_that_use_extends():
     extended = VALID_MANIFEST + "\nextends:\n  - path: ./parent.yaml\n"
     diagnostics = validate_manifest_detailed(extended)
     assert diagnostics
-    assert diagnostics[0]["reason_code"] == "runtime_error:manifest_invalid"
+    assert diagnostics[0]["code"] == "runtime_error:manifest_invalid"
+    assert diagnostics[0]["severity"] == "error"
     assert "extends" in diagnostics[0]["message"]
 
 
@@ -476,10 +479,11 @@ def test_validate_artifacts_reports_unparseable_manifest_as_manifest_problem():
     assert entry["code"] == "runtime_error:manifest_invalid"
     assert entry["severity"] == "error"
     # And the underlying error matches what the manifest-only
-    # validator reports: same problem, different shape.
+    # validator reports: same problem, same shape now.
     manifest_only = validate_manifest_detailed("::not: [valid")
-    assert manifest_only[0]["reason_code"] == entry["code"]
+    assert manifest_only[0]["code"] == entry["code"]
     assert manifest_only[0]["message"] == entry["message"]
+    assert manifest_only[0]["severity"] == entry["severity"]
 
 
 def test_validate_artifacts_without_bundles_equals_manifest_only_result():
@@ -487,14 +491,14 @@ def test_validate_artifacts_without_bundles_equals_manifest_only_result():
     # load) or fails the same way manifest validation does. Either
     # way, the artifact validator must not invent activation errors
     # when the manifest half is what actually reports the problem.
-    # For an unparseable document, both surfaces report the same
-    # underlying RuntimeError message; only the wire keys differ.
+    # Both surfaces now return the same unified diagnostic shape.
     broken = "::not: [valid"
     artifact_findings = validate_artifacts(broken)
     manifest_findings = validate_manifest_detailed(broken)
     assert len(artifact_findings) == len(manifest_findings) == 1
-    assert artifact_findings[0]["code"] == manifest_findings[0]["reason_code"]
+    assert artifact_findings[0]["code"] == manifest_findings[0]["code"]
     assert artifact_findings[0]["message"] == manifest_findings[0]["message"]
+    assert artifact_findings[0]["severity"] == manifest_findings[0]["severity"]
 
     # And for a grammatically invalid document — one that parses but
     # fails validation — the two surfaces report the same underlying
@@ -508,8 +512,9 @@ def test_validate_artifacts_without_bundles_equals_manifest_only_result():
     artifact_findings = validate_artifacts(invalid)
     manifest_findings = validate_manifest_detailed(invalid)
     assert len(artifact_findings) == len(manifest_findings) == 1
-    assert artifact_findings[0]["code"] == manifest_findings[0]["reason_code"]
+    assert artifact_findings[0]["code"] == manifest_findings[0]["code"]
     assert artifact_findings[0]["message"] == manifest_findings[0]["message"]
+    assert artifact_findings[0]["severity"] == manifest_findings[0]["severity"]
 
 
 def test_validate_artifacts_accepts_none_for_bundles():

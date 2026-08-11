@@ -12,12 +12,12 @@ use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
 use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
+use agent_control_spec::wire;
 use agent_control_spec::Verdict;
 use agent_control_spec::{
     ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, JsonValue, Limits, Manifest,
-    PerfTelemetry, PreparedPolicyInvocation, Runtime, RuntimeError, SafetyLevel, SegmentOutcome,
-    StreamEndReason, StreamError, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan,
-    StreamTrack, SUPPORTED_VERSIONS,
+    PreparedPolicyInvocation, Runtime, RuntimeError, SegmentOutcome, StreamError, StreamSession,
+    StreamSourceType, StreamSpan, StreamTrack, SUPPORTED_VERSIONS,
 };
 use napi::bindgen_prelude::{External, FnArgs, FunctionRef, Utf16String};
 use napi::Env;
@@ -219,27 +219,13 @@ struct NodeTelemetrySink {
 
 impl TelemetrySink for NodeTelemetrySink {
     fn emit(&self, event: TelemetryEvent) {
-        // TelemetryEvent is not Serialize, so the wire shape is owned
-        // here (matches the FFI binding). A sink cannot fail an
+        // TelemetryEvent is not Serialize, so the wire shape lives in
+        // `wire::telemetry_event_json`. Every binding then hands the
+        // sink the same JSON, and a sink written for one language reads
+        // the same fields in another. A sink cannot fail an
         // evaluation, so every step drops on error rather than
         // propagating.
-        let payload = serde_json::json!({
-            "event_type": event.event_type.as_str(),
-            "intervention_point": event.intervention_point.as_str(),
-            "decision": event.decision.map(|d| format!("{d:?}").to_lowercase()),
-            "reason_code": event.reason_code,
-            "error_class": event.error_class,
-            "policy_id": event.policy_id,
-            "annotators": event.annotators,
-            "enforcement_mode": event
-                .enforcement_mode
-                .map(|m| format!("{m:?}").to_lowercase()),
-            "duration_ms": event.duration_ms,
-            "evidence_artefact": event.evidence_artefact,
-            "evidence_verification_pointer_keys": event.evidence_verification_pointer_keys,
-            "action_identity": event.action_identity,
-            "metadata": event.metadata,
-        });
+        let payload = wire::telemetry_event_json(&event);
         let Ok(json) = serde_json::to_string(&payload) else {
             return;
         };
@@ -257,20 +243,17 @@ impl TelemetrySink for NodeTelemetrySink {
     }
 }
 
-fn parse_perf(value: Option<Utf16String>) -> napi::Result<PerfTelemetry> {
+fn parse_perf(value: Option<Utf16String>) -> napi::Result<agent_control_spec::PerfTelemetry> {
     let Some(value) = value else {
-        return Ok(PerfTelemetry::Off);
+        return Ok(agent_control_spec::PerfTelemetry::Off);
     };
     let raw = decode("perfTelemetry", &value)?;
-    match raw.as_str() {
-        "off" => Ok(PerfTelemetry::Off),
-        "external" => Ok(PerfTelemetry::External),
-        "full" => Ok(PerfTelemetry::Full),
-        other => Err(err(format!("unknown perf telemetry level '{other}'"))),
-    }
+    // The engine owns what a level name means; this boundary only
+    // decodes UTF-16 and reshapes the error for napi.
+    wire::parse_perf_telemetry(&raw).map_err(|e| err(format!("{e}")))
 }
 
-/// Read a limits override, mirroring the FFI's `parse_limits`:
+/// Read a limits override.
 ///
 /// - Absent / null / empty means keep every default.
 /// - Each field is individually optional; an absent field keeps its own
@@ -278,49 +261,24 @@ fn parse_perf(value: Option<Utf16String>) -> napi::Result<PerfTelemetry> {
 /// - A field present but not a non-negative integer is a hard ERROR, not
 ///   a silently-kept default. A host that asked for a smaller bound and
 ///   got the larger one would believe it was protected when it was not.
+/// - An unknown/misspelled field is refused rather than silently
+///   ignored, so a typo cannot mask a bound the host believes it set
+///   but did not set.
+///
+/// Field-by-field acceptance and the misspelled-key refusal live in
+/// [`wire::limits_from_json`]; this boundary only decodes UTF-16,
+/// parses the JSON, and reshapes the error into a napi error.
 fn parse_limits(value: Option<Utf16String>) -> napi::Result<Limits> {
-    let mut limits = Limits::default();
     let Some(value) = value else {
-        return Ok(limits);
+        return Ok(Limits::default());
     };
     let raw = decode("limits", &value)?;
     if raw.trim().is_empty() {
-        return Ok(limits);
+        return Ok(Limits::default());
     }
-    let parsed: Value = match serde_json::from_str(&raw) {
-        Ok(v @ Value::Object(_)) => v,
-        Ok(_) => return Err(err("limits must be a JSON object".to_string())),
-        Err(e) => return Err(err(format!("limits does not parse: {e}"))),
-    };
-
-    let read = |key: &str| -> napi::Result<Option<u64>> {
-        match parsed.get(key) {
-            None | Some(Value::Null) => Ok(None),
-            Some(v) => match v.as_u64() {
-                Some(n) => Ok(Some(n)),
-                None => Err(err(format!("{key} must be a non negative integer"))),
-            },
-        }
-    };
-
-    macro_rules! apply {
-        ($field:ident, $ty:ty) => {
-            if let Some(v) = read(stringify!($field))? {
-                limits.$field = v as $ty;
-            }
-        };
-    }
-    apply!(max_snapshot_bytes, usize);
-    apply!(max_policy_input_depth, usize);
-    apply!(max_annotators_per_point, usize);
-    apply!(max_annotator_output_bytes, usize);
-    apply!(max_policy_output_bytes, usize);
-    apply!(max_extends_depth, usize);
-    apply!(max_merged_manifest_bytes, usize);
-    apply!(max_manifest_url_bytes, usize);
-    apply!(manifest_url_timeout_ms, u64);
-    apply!(max_manifest_url_redirects, usize);
-    Ok(limits)
+    let parsed: Value =
+        serde_json::from_str(&raw).map_err(|e| err(format!("limits does not parse: {e}")))?;
+    wire::limits_from_json(&parsed).map_err(|e| err(format!("{e}")))
 }
 
 /// The engine's default resource caps as a JSON object string. A host
@@ -329,20 +287,7 @@ fn parse_limits(value: Option<Utf16String>) -> napi::Result<Limits> {
 /// stale mapping.
 #[napi]
 pub fn default_limits() -> napi::Result<String> {
-    let defaults = Limits::default();
-    let value = serde_json::json!({
-        "max_snapshot_bytes": defaults.max_snapshot_bytes,
-        "max_policy_input_depth": defaults.max_policy_input_depth,
-        "max_annotators_per_point": defaults.max_annotators_per_point,
-        "max_annotator_output_bytes": defaults.max_annotator_output_bytes,
-        "max_policy_output_bytes": defaults.max_policy_output_bytes,
-        "max_extends_depth": defaults.max_extends_depth,
-        "max_merged_manifest_bytes": defaults.max_merged_manifest_bytes,
-        "max_manifest_url_bytes": defaults.max_manifest_url_bytes,
-        "manifest_url_timeout_ms": defaults.manifest_url_timeout_ms,
-        "max_manifest_url_redirects": defaults.max_manifest_url_redirects,
-    });
-    serde_json::to_string(&value).map_err(|e| err(format!("{e}")))
+    serde_json::to_string(&wire::limits_json(&Limits::default())).map_err(|e| err(format!("{e}")))
 }
 
 // Type aliases for the FunctionRef signatures the JS↔Rust wire uses.
@@ -745,7 +690,7 @@ pub fn validate_manifest_detailed(source: Utf16String) -> napi::Result<String> {
                 // document references. Report that as a single
                 // finding rather than silently blaming references
                 // the fragment does not own.
-                vec![diagnostic_json(&RuntimeError::ManifestInvalid(
+                vec![wire::diagnostic_json(&RuntimeError::ManifestInvalid(
                     "manifest extends other manifests; validation needs the merged document. \
                      Use validate_manifest_file, which resolves the chain."
                         .to_string(),
@@ -753,41 +698,14 @@ pub fn validate_manifest_detailed(source: Utf16String) -> napi::Result<String> {
             } else {
                 match manifest.validate() {
                     Ok(()) => Vec::new(),
-                    Err(e) => vec![diagnostic_json(&e)],
+                    Err(e) => vec![wire::diagnostic_json(&e)],
                 }
             }
         }
-        Err(e) => vec![diagnostic_json(&e)],
+        Err(e) => vec![wire::diagnostic_json(&e)],
     };
     serde_json::to_string(&findings)
         .map_err(|e| err(format!("diagnostics serialization failed: {e}")))
-}
-
-fn diagnostic_json(error: &RuntimeError) -> Value {
-    let detail = error.detail();
-    let field = extract_field(detail);
-    serde_json::json!({
-        "code": error.reason(),
-        "message": detail,
-        "severity": "error",
-        "field": field,
-    })
-}
-
-/// Wire shape for artifact diagnostics: `code`, `message`, `severity`.
-///
-/// Mirrors the C ABI's `acs_artifact_diagnostics` byte-for-byte.
-/// Unlike [`diagnostic_json`] this omits the best-effort `field`
-/// pointer: `validate_artifacts_detailed` surfaces activation-half
-/// failures whose message is the Rego compiler's own diagnostic, not
-/// a manifest field, and inventing a field for it would mislead a
-/// tool trying to render the pointer inline.
-fn artifact_diagnostic_json(error: &RuntimeError) -> Value {
-    serde_json::json!({
-        "code": error.reason(),
-        "message": error.detail(),
-        "severity": "error",
-    })
 }
 
 /// Validate a manifest together with the Rego it names, and return
@@ -824,14 +742,16 @@ pub fn validate_artifacts_detailed(
     // Mirror the C ABI's ordering exactly: parse first, validate
     // second, activate third. Each step's failure short-circuits so a
     // manifest that does not parse is never reported as an activation
-    // failure — that would name the wrong half.
+    // failure — that would name the wrong half. The diagnostic shape
+    // is owned by the core so every binding renders artifact findings
+    // the same way.
     let findings = match Manifest::from_yaml_str(&manifest_yaml) {
-        Err(e) => vec![artifact_diagnostic_json(&e)],
+        Err(e) => vec![wire::diagnostic_json(&e)],
         Ok(manifest) => match manifest.validate() {
-            Err(e) => vec![artifact_diagnostic_json(&e)],
+            Err(e) => vec![wire::diagnostic_json(&e)],
             Ok(()) => match ActivatedPolicy::activate_from_memory(&manifest_yaml, bundles) {
                 Ok(_) => Vec::new(),
-                Err(e) => vec![artifact_diagnostic_json(&e)],
+                Err(e) => vec![wire::diagnostic_json(&e)],
             },
         },
     };
@@ -839,41 +759,9 @@ pub fn validate_artifacts_detailed(
         .map_err(|e| err(format!("diagnostics serialization failed: {e}")))
 }
 
-/// Best-effort extraction of the offending field name from a
-/// RuntimeError detail. Returns `None` when the message does not name a
-/// field the caller can point at, so the wrapper reports the raw
-/// message and the field slot stays absent (not empty).
-fn extract_field(detail: &str) -> Option<String> {
-    // serde_yaml: "missing field `X` at line ..." or
-    //             "unknown field `X`, expected ..."
-    if let Some(start) = detail.find("field `") {
-        let after = &detail[start + "field `".len()..];
-        if let Some(end) = after.find('`') {
-            let name = after[..end].trim();
-            if !name.is_empty() {
-                return Some(name.to_string());
-            }
-        }
-    }
-    // Engine: "unsupported agent_control_specification_version '...'"
-    if let Some(rest) = detail.strip_prefix("unsupported ") {
-        let name: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if !name.is_empty() {
-            return Some(name);
-        }
-    }
-    // Engine: "X is required"
-    if let Some((head, _)) = detail.split_once(" is required") {
-        let name = head.trim();
-        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Some(name.to_string());
-        }
-    }
-    None
-}
+// Note: the field pointer that used to be built here now lives with the
+// diagnostic shape in `wire::diagnostic_field`, so a manifest diagnostic
+// reads the same across the FFI, the Python binding, and this binding.
 
 // ---------------------------------------------------------------------
 // Streaming: incremental release accounting for stream-shaped tracks
@@ -894,78 +782,21 @@ pub struct StreamHandle {
 }
 
 fn parse_track_wire(raw: &str) -> napi::Result<StreamTrack> {
-    match raw {
-        "request" => Ok(StreamTrack::Request),
-        "response" => Ok(StreamTrack::Response),
-        other => Err(err(format!("unknown stream track '{other}'"))),
-    }
+    // Like the FFI's `wire_track`: the core owns what the wire name
+    // means; this boundary only reshapes the error for napi.
+    StreamTrack::parse(raw).map_err(stream_err)
 }
 
 fn parse_outcome_wire(raw: &str) -> napi::Result<SegmentOutcome> {
-    match raw {
-        "cleared" => Ok(SegmentOutcome::Cleared),
-        "transformed" => Ok(SegmentOutcome::Transformed),
-        "denied" => Ok(SegmentOutcome::Denied),
-        other => Err(err(format!("unknown segment outcome '{other}'"))),
-    }
+    SegmentOutcome::parse(raw).map_err(stream_err)
 }
 
 fn parse_source_wire(raw: &str) -> napi::Result<StreamSourceType> {
-    StreamSourceType::parse(raw).map_err(|e| err(format!("{e}")))
-}
-
-fn end_reason_json(reason: &StreamEndReason) -> Value {
-    match reason {
-        StreamEndReason::Complete => serde_json::json!({ "kind": "complete" }),
-        StreamEndReason::Denied { track, task, range } => serde_json::json!({
-            "kind": "denied",
-            "track": track.as_str(),
-            "task": task,
-            "start": range.start,
-            "end": range.end,
-        }),
-        StreamEndReason::Rewritten { track, task, range } => serde_json::json!({
-            "kind": "rewritten",
-            "track": track.as_str(),
-            "task": task,
-            "start": range.start,
-            "end": range.end,
-        }),
-        StreamEndReason::Failed(error) => serde_json::json!({
-            "kind": "failed",
-            "reason": error.reason(),
-            "message": error.to_string(),
-        }),
-    }
+    StreamSourceType::parse(raw).map_err(stream_err)
 }
 
 fn stream_err(e: StreamError) -> napi::Error {
     err(format!("{e}"))
-}
-
-fn read_offset(parsed: &Value, key: &str) -> napi::Result<u32> {
-    match parsed.get(key) {
-        None | Some(Value::Null) => Ok(0),
-        Some(v) => v
-            .as_u64()
-            .and_then(|n| u32::try_from(n).ok())
-            .ok_or_else(|| err(format!("{key} must be a rune offset within u32"))),
-    }
-}
-
-fn read_tasks(parsed: &Value, key: &str) -> napi::Result<Vec<String>> {
-    match parsed.get(key) {
-        None | Some(Value::Null) => Ok(Vec::new()),
-        Some(Value::Array(items)) => items
-            .iter()
-            .map(|i| {
-                i.as_str()
-                    .map(str::to_string)
-                    .ok_or_else(|| err(format!("{key} must contain only task name strings")))
-            })
-            .collect(),
-        Some(_) => Err(err(format!("{key} must be an array of task names"))),
-    }
 }
 
 /// Open a session from a config JSON object.
@@ -988,22 +819,10 @@ pub fn stream_session_new(config_json: Utf16String) -> napi::Result<External<Str
     if !parsed.is_object() {
         return Err(err("config_json must be a JSON object".to_string()));
     }
-    let level_raw = parsed
-        .get("safety_level")
-        .and_then(Value::as_str)
-        .unwrap_or("blocking");
-    let safety_level = SafetyLevel::parse(level_raw).map_err(|e| err(format!("{e}")))?;
-    let request_start_rune_offset = read_offset(&parsed, "request_start_rune_offset")?;
-    let response_start_rune_offset = read_offset(&parsed, "response_start_rune_offset")?;
-    let request_tasks = read_tasks(&parsed, "request_tasks")?;
-    let response_tasks = read_tasks(&parsed, "response_tasks")?;
-    let config = StreamSessionConfig {
-        safety_level,
-        request_start_rune_offset,
-        response_start_rune_offset,
-        request_tasks,
-        response_tasks,
-    };
+    // Field acceptance, absent-field defaults and the safety-level
+    // vocabulary live in the core so every binding builds the same
+    // configuration from the same JSON.
+    let config = wire::stream_config_from_json(&parsed).map_err(stream_err)?;
     let session = StreamSession::new(config).map_err(stream_err)?;
     Ok(External::new(StreamHandle {
         session: Mutex::new(session),
@@ -1158,13 +977,7 @@ pub fn stream_session_watermark(
     let track = parse_track_wire(&raw)?;
     let session = lock(handle)?;
     let watermark = session.watermark(track);
-    let payload = serde_json::json!({
-        "track": track.as_str(),
-        "confirmed": watermark.confirmed(),
-        "received": watermark.received(),
-        "pending": watermark.pending(),
-        "tasks": watermark.tasks().collect::<Vec<_>>(),
-    });
+    let payload = wire::watermark_json(track, watermark);
     serde_json::to_string(&payload).map_err(|e| err(format!("watermark serialization failed: {e}")))
 }
 
@@ -1173,19 +986,7 @@ pub fn stream_session_watermark(
 #[napi]
 pub fn stream_session_state(handle: &External<StreamHandle>) -> napi::Result<String> {
     let session = lock(handle)?;
-    let config = session.config();
-    let payload = serde_json::json!({
-        "is_ended": session.is_ended(),
-        "transformed": session.transformed(),
-        "end_reason": session.end_reason().map(end_reason_json),
-        "config": {
-            "safety_level": config.safety_level.as_str(),
-            "request_start_rune_offset": config.request_start_rune_offset,
-            "response_start_rune_offset": config.response_start_rune_offset,
-            "request_tasks": config.request_tasks,
-            "response_tasks": config.response_tasks,
-        },
-    });
+    let payload = wire::stream_session_state_json(&session);
     serde_json::to_string(&payload).map_err(|e| err(format!("state serialization failed: {e}")))
 }
 
@@ -1204,11 +1005,7 @@ pub fn stream_session_end_of_payloads(handle: &External<StreamHandle>) -> napi::
 pub fn stream_session_finish(handle: &External<StreamHandle>) -> napi::Result<String> {
     let mut session = lock(handle)?;
     let completion = session.finish();
-    let payload = serde_json::json!({
-        "reason": end_reason_json(&completion.reason),
-        "transformed": completion.transformed,
-        "is_clean": completion.reason.is_clean(),
-    });
+    let payload = wire::completion_json(&completion);
     serde_json::to_string(&payload)
         .map_err(|e| err(format!("completion serialization failed: {e}")))
 }

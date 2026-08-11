@@ -33,10 +33,15 @@ public enum PerfTelemetry
 /// <param name="Code">The engine's reason code.</param>
 /// <param name="Message">What is wrong, in the engine's words.</param>
 /// <param name="Severity">How bad it is.</param>
+/// <param name="Field">
+/// The manifest field the message names, or null when it names none.
+/// An authoring tool renders the finding against this.
+/// </param>
 public sealed record ManifestDiagnostic(
     [property: JsonPropertyName("code")] string Code,
     [property: JsonPropertyName("message")] string Message,
-    [property: JsonPropertyName("severity")] string Severity);
+    [property: JsonPropertyName("severity")] string Severity,
+    [property: JsonPropertyName("field")] string? Field = null);
 
 /// <summary>
 /// Classifies one annotation on the host's behalf.

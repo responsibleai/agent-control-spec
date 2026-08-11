@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable, Mapping
 from types import MappingProxyType as _MappingProxyType
-from typing import Any
+from typing import Any, Self
 
 from agent_hooks import Verdict
 
@@ -102,13 +102,16 @@ TelemetryEvent = Mapping[str, Any]
 
 #: One entry produced by :func:`validate_manifest_detailed`. Shape:
 #:
-#: - ``reason_code``: ``str`` (the engine's ``runtime_error:*`` name).
+#: - ``code``: ``str`` (the engine's ``runtime_error:*`` reason).
 #: - ``message``: ``str`` (the engine's own message text).
-#: - ``field``: ``str | None`` (best-effort field name extracted from the
-#:   message; ``None`` when the message names no known field).
+#: - ``severity``: always ``"error"``.
+#: - ``field``: ``str | None`` (best-effort field name extracted from
+#:   the message; ``None`` when the message names no known field).
 #:
-#: Wrapped as a mapping rather than a dataclass to keep it JSON-safe for
-#: tools that shuttle diagnostics through IPC.
+#: Matches :data:`ArtifactDiagnostic` on ``code``, ``message``, and
+#: ``severity``, so a diagnostic-consuming tool can key off ``code``
+#: across surfaces. Wrapped as a mapping rather than a dataclass to
+#: keep it JSON-safe for tools that shuttle diagnostics through IPC.
 ValidationDiagnostic = Mapping[str, Any]
 
 #: One entry produced by :func:`validate_artifacts`. Shape:
@@ -394,10 +397,12 @@ def validate_manifest_file(path: str) -> None:
 def validate_manifest_detailed(source: str) -> list[ValidationDiagnostic]:
     """Return structured validation diagnostics for a manifest source.
 
-    Each diagnostic is ``{"reason_code": str, "message": str, "field":
-    str | None}``. An accepted manifest returns ``[]``. A rejected one
-    returns one entry naming the failed field where the engine's message
-    permits extraction, and ``None`` for ``field`` when it does not: the
+    Each diagnostic is ``{"code": str, "message": str, "severity":
+    "error", "field": str | None}`` — the same wire shape
+    :func:`validate_artifacts` and every other binding return. An
+    accepted manifest returns ``[]``. A rejected one returns one entry
+    naming the failed field where the engine's message permits
+    extraction, and ``None`` for ``field`` when it does not: the
     ``message`` is the engine's own text either way, so a tool that
     cannot map ``field`` back to a location still has the verbatim
     reason.
@@ -643,6 +648,20 @@ class StreamSession:
         :meth:`finish`.
         """
         _native.stream_end_of_payloads(self._handle)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Settle on the way out.
+
+        A host owes an outcome for every session it opens, including one
+        it abandons, and nothing can make that automatic. A context
+        manager makes it the shape of least resistance instead. Settling
+        twice returns the same completion, so an explicit ``finish``
+        inside the block stays correct.
+        """
+        self.finish()
 
     def finish(self) -> dict[str, Any]:
         """Settle the session and return the terminal record:

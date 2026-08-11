@@ -664,16 +664,16 @@ export function supportedManifestVersions(): readonly string[] {
  *
  * `code` is the reserved `runtime_error:*` reason a diagnostic-consuming
  * tool keys off; `message` is the engine's human-readable detail;
- * `field` is a best-effort pointer to the offending manifest field (a
- * YAML key or an engine-declared identifier) so an editor can render
- * the problem inline. `field` is absent when the message does not
- * identify one.
+ * `severity` is always `"error"`; `field` is a best-effort pointer to
+ * the offending manifest field (a YAML key or an engine-declared
+ * identifier) so an editor can render the problem inline. `field` is
+ * `null` when the message does not identify one.
  */
 export interface ManifestDiagnostic {
   readonly code: string;
   readonly message: string;
   readonly severity: "error";
-  readonly field?: string;
+  readonly field: string | null;
 }
 
 /**
@@ -964,6 +964,23 @@ export interface StreamSessionState {
  * engine's message and puts the session in its terminal `failed`
  * state. The next call sees the session as ended.
  */
+/**
+ * Refuse a rune offset N-API would silently reshape.
+ *
+ * N-API converts to `u32` with ToUint32, which wraps rather than fails:
+ * `2 ** 32` arrives as `0`, and an end offset of `2 ** 32 + 5` records a
+ * *cleared* span of `[0, 5)`, releasing text no task evaluated. Python
+ * raises OverflowError and .NET throws OverflowException on the same
+ * input, so this is the one language doing modular arithmetic on
+ * release accounting.
+ */
+function runeOffset(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > 0x7fffffff) {
+    throw new RangeError(`${name} must be a rune offset between 0 and 2147483647, got ${value}`);
+  }
+  return value;
+}
+
 export class StreamSession {
   private readonly handle: unknown;
 
@@ -983,12 +1000,16 @@ export class StreamSession {
     if (config === null || typeof config !== "object") {
       throw new TypeError("StreamSession config must be an object");
     }
+    const requestStart = config.requestStartRuneOffset ?? 0;
+    const responseStart = config.responseStartRuneOffset ?? 0;
+    runeOffset(requestStart, 'requestStartRuneOffset');
+    runeOffset(responseStart, 'responseStartRuneOffset');
     // Only translate camelCase → wire snake_case here; enum VALUES stay
     // lowercase snake as they arrive.
     const payload = {
       safety_level: config.safetyLevel,
-      request_start_rune_offset: config.requestStartRuneOffset ?? 0,
-      response_start_rune_offset: config.responseStartRuneOffset ?? 0,
+      request_start_rune_offset: requestStart,
+      response_start_rune_offset: responseStart,
       request_tasks: config.requestTasks ? Array.from(config.requestTasks) : [],
       response_tasks: config.responseTasks ? Array.from(config.responseTasks) : [],
     };
@@ -1006,6 +1027,7 @@ export class StreamSession {
    * wrong.
    */
   observe(sourceType: StreamSourceType, runes: number): number {
+    runeOffset(runes, 'runes');
     return native.streamSessionObserve(this.handle, sourceType, runes);
   }
 
@@ -1039,6 +1061,8 @@ export class StreamSession {
     end: number,
     outcome: SegmentOutcome,
   ): void {
+    runeOffset(start, 'start');
+    runeOffset(end, 'end');
     native.streamSessionRecordOutcome(this.handle, task, sourceType, start, end, outcome);
   }
 
@@ -1059,6 +1083,8 @@ export class StreamSession {
     end: number,
     verdict: Verdict,
   ): void {
+    runeOffset(start, 'start');
+    runeOffset(end, 'end');
     native.streamSessionRecordVerdict(
       this.handle,
       task,

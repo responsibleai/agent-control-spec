@@ -114,6 +114,17 @@ EXPECTED = {
     "parsed_has_points": True,
     "diagnostics_on_bad": 1,
     "diagnostics_on_good": 0,
+    # The shape, not only the count. Asserting the count alone let three
+    # bindings return three different diagnostic shapes for one call.
+    "diagnostic_keys": ["code", "field", "message", "severity"],
+    "diagnostic_code": "runtime_error:manifest_invalid",
+    "diagnostic_field": "intervention point",
+    # Settlement with uncleared residue, the fail-closed core of the
+    # profile. Every scenario above settles clean, so without this no
+    # binding is pinned to refusing text nothing evaluated.
+    "residue_kind": "failed",
+    "residue_reason": "host_error:streaming_unsupported",
+    "residue_clean": False,
     # Artifact validation. The manifest is sound either way, so only
     # compiling the Rego tells the two bundles apart.
     #
@@ -283,6 +294,20 @@ fn main() {
             Err(e) => (1, Some(e.reason().to_string())),
         }
     };
+    let mut residue = StreamSession::new(StreamSessionConfig {
+        safety_level: SafetyLevel::Blocking,
+        request_start_rune_offset: 0,
+        response_start_rune_offset: 0,
+        request_tasks: vec![],
+        response_tasks: vec!["pii".into()],
+    })
+    .expect("residue session");
+    residue
+        .observe_text(StreamSourceType::ModelGenerated, "hello")
+        .expect("observe");
+    let residue_done = residue.finish();
+    let residue_json = agent_control_spec::wire::completion_json(&residue_done);
+
     let big_ctx: serde_json::Value =
         serde_json::from_str(BIG_CTX).expect("big ctx");
     let lim = |limits: Limits| -> (String, Option<String>) {
@@ -303,7 +328,27 @@ fn main() {
     let art_only = art("{}");
     let art_good = art(GOOD_BUNDLES);
     let art_bad = art(BAD_BUNDLES);
-    let bad_diags = usize::from(Manifest::from_yaml_str(BAD_MANIFEST).is_err());
+    let bad_diag_value = match Manifest::from_yaml_str(BAD_MANIFEST) {
+        Err(e) => Some(agent_control_spec::wire::diagnostic_json(&e)),
+        Ok(m) => m.validate().err().map(|e| agent_control_spec::wire::diagnostic_json(&e)),
+    };
+    let mut bad_diag_keys: Vec<String> = bad_diag_value
+        .as_ref()
+        .and_then(|v| v.as_object())
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    bad_diag_keys.sort();
+    let bad_diag_code = bad_diag_value
+        .as_ref()
+        .and_then(|v| v.get("code"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let bad_diag_field = bad_diag_value
+        .as_ref()
+        .and_then(|v| v.get("field"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let bad_diags = usize::from(bad_diag_value.is_some());
     let good_diags = usize::from(
         Manifest::from_yaml_str(&std::fs::read_to_string(&manifest_path).expect("read"))
             .and_then(|m| m.validate())
@@ -321,6 +366,9 @@ fn main() {
             "hook_dispatcher_calls": benign.calls.load(std::sync::atomic::Ordering::SeqCst),
             "parsed_has_points": parsed_json.get("intervention_points").is_some(),
             "diagnostics_on_bad": bad_diags,
+            "diagnostic_keys": bad_diag_keys,
+            "diagnostic_code": bad_diag_code,
+            "diagnostic_field": bad_diag_field,
             "diagnostics_on_good": good_diags,
             "artifacts_manifest_only": art_only.0,
             "artifacts_good_rego": art_good.0,
@@ -329,6 +377,9 @@ fn main() {
             "limits_default_decision": lim_default.0,
             "limits_capped_decision": lim_capped.0,
             "limits_capped_reason": lim_capped.1,
+            "residue_kind": residue_json["reason"]["kind"],
+            "residue_reason": residue_json["reason"]["reason"],
+            "residue_clean": residue_json["is_clean"],
             "supported_versions_nonempty": !agent_control_spec::SUPPORTED_VERSIONS.is_empty(),
             "validate_good": validate_good,
             "validate_bad": validate_bad,
@@ -467,6 +518,10 @@ _art_bad = validate_artifacts({REGO_MANIFEST!r}, {BAD_BUNDLES!r})
 
 _big_ctx = {{"interception_point": "input", "input": {BIG_INPUT!r}}}
 _lim_default = AcsInterceptor({str(HOOKS_MANIFEST)!r}, annotator_dispatcher=_Classifier(1)).intercept(_big_ctx)
+_res = StreamSession(safety_level="blocking", response_tasks=["pii"])
+_res.observe_text("model_generated", "hello")
+_res_done = _res.finish()
+
 _lim_capped = AcsInterceptor(
     {str(HOOKS_MANIFEST)!r}, annotator_dispatcher=_Classifier(1), limits={SMALL_CAP!r}
 ).intercept(_big_ctx)
@@ -480,6 +535,9 @@ print(json.dumps({{
     "hook_dispatcher_calls": _benign.calls,
     "parsed_has_points": "intervention_points" in _parsed,
     "diagnostics_on_bad": len(_bad_diags),
+    "diagnostic_keys": sorted(_bad_diags[0]) if _bad_diags else [],
+    "diagnostic_code": _bad_diags[0].get("code") if _bad_diags else None,
+    "diagnostic_field": _bad_diags[0].get("field") if _bad_diags else None,
     "diagnostics_on_good": len(_good_diags),
     "artifacts_manifest_only": len(_art_only),
     "artifacts_good_rego": len(_art_good),
@@ -488,6 +546,9 @@ print(json.dumps({{
     "limits_default_decision": decision(_lim_default),
     "limits_capped_decision": decision(_lim_capped),
     "limits_capped_reason": _lim_capped.reason,
+    "residue_kind": _res_done["reason"]["kind"],
+    "residue_reason": _res_done["reason"].get("reason"),
+    "residue_clean": _res_done["is_clean"],
     "supported_versions_nonempty": len(supported_manifest_versions()) > 0,
     "validate_good": check(open({str(MANIFEST)!r}).read()),
     "validate_bad": check({BAD_MANIFEST!r}),
@@ -553,6 +614,10 @@ const artOnly = acs.validateArtifacts({json.dumps(REGO_MANIFEST)});
 const artGood = acs.validateArtifacts({json.dumps(REGO_MANIFEST)}, {json.dumps(GOOD_BUNDLES)});
 const artBad = acs.validateArtifacts({json.dumps(REGO_MANIFEST)}, {json.dumps(BAD_BUNDLES)});
 
+const res = new acs.StreamSession({{ safetyLevel: 'blocking', responseTasks: ['pii'] }});
+res.observeText('model_generated', 'hello');
+const resDone = res.finish();
+
 const bigCtx = {{ interception_point: 'input', input: {json.dumps(BIG_INPUT)} }};
 const limDefault = acs.AcsInterceptor
   .fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: () => ({{ severity: 1 }}) }})
@@ -570,6 +635,9 @@ console.log(JSON.stringify({{
   hook_dispatcher_calls: hookCalls,
   parsed_has_points: Object.prototype.hasOwnProperty.call(parsed, 'intervention_points'),
   diagnostics_on_bad: badDiags.length,
+  diagnostic_keys: badDiags.length ? Object.keys(badDiags[0]).sort() : [],
+  diagnostic_code: badDiags.length ? badDiags[0].code : null,
+  diagnostic_field: badDiags.length ? badDiags[0].field : null,
   diagnostics_on_good: goodDiags.length,
   artifacts_manifest_only: artOnly.length,
   artifacts_good_rego: artGood.length,
@@ -578,6 +646,9 @@ console.log(JSON.stringify({{
   limits_default_decision: String(limDefault.decision).toLowerCase(),
   limits_capped_decision: String(limCapped.decision).toLowerCase(),
   limits_capped_reason: limCapped.reason ?? null,
+  residue_kind: resDone.reason.kind,
+  residue_reason: resDone.reason.reason ?? null,
+  residue_clean: resDone.isClean,
   supported_versions_nonempty: acs.supportedManifestVersions().length > 0,
   validate_good: check(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8')),
   validate_bad: check({json.dumps(BAD_MANIFEST)}),
@@ -649,6 +720,10 @@ var artOnly = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, null);
 var artGood = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, GOOD_BUNDLES);
 var artBad = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, BAD_BUNDLES);
 
+using var residue = new StreamSession(SafetyLevel.Blocking, responseTasks: ["pii"]);
+residue.ObserveText(StreamSourceType.ModelGenerated, "hello");
+var residueDone = residue.Finish();
+
 var bigCtx = new AgentContext(JsonNode.Parse(BIG_CTX)!.AsObject());
 using var limDefault = AcsHostInterceptor.FromPath(HOOKS_MANIFEST, annotator: (_, _, _) => SEV1);
 using var limCapped = AcsHostInterceptor.FromPath(
@@ -666,6 +741,12 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
     ["hook_dispatcher_calls"] = hookCalls,
     ["parsed_has_points"] = parsed.Contains("intervention_points"),
     ["diagnostics_on_bad"] = badDiags.Count,
+    ["diagnostic_keys"] = badDiags.Count > 0
+        ? JsonSerializer.Deserialize<Dictionary<string, object?>>(
+            JsonSerializer.Serialize(badDiags[0]))!.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList()
+        : new List<string>(),
+    ["diagnostic_code"] = badDiags.Count > 0 ? badDiags[0].Code : null,
+    ["diagnostic_field"] = badDiags.Count > 0 ? badDiags[0].Field : null,
     ["diagnostics_on_good"] = goodDiags.Count,
     ["artifacts_manifest_only"] = artOnly.Count,
     ["artifacts_good_rego"] = artGood.Count,
@@ -674,6 +755,9 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
     ["limits_default_decision"] = limDefaultVerdict.Decision.ToString().ToLowerInvariant(),
     ["limits_capped_decision"] = limCappedVerdict.Decision.ToString().ToLowerInvariant(),
     ["limits_capped_reason"] = limCappedVerdict.Reason,
+    ["residue_kind"] = residueDone.Reason.Kind,
+    ["residue_reason"] = residueDone.Reason.Reason,
+    ["residue_clean"] = residueDone.IsClean,
     ["supported_versions_nonempty"] = AcsManifest.SupportedVersions().Count > 0,
     ["validate_good"] = Check(() => AcsManifest.Validate(File.ReadAllText(manifest))),
     ["validate_bad"] = Check(() => AcsManifest.Validate(BAD_JSON)),

@@ -214,7 +214,6 @@ BINDINGS = (
 )
 
 
-
 def ffi_entry_points() -> set[str]:
     """Every `acs_*` function the C ABI exports."""
     src = (ROOT / "sdk/ffi/src/lib.rs").read_text(encoding="utf-8")
@@ -243,8 +242,7 @@ def unbound_from_dotnet() -> list[str]:
     return sorted(
         name
         for name in ffi_entry_points()
-        if name not in internal
-        and not re.search(rf"\b{re.escape(name)}\b", declared)
+        if name not in internal and not re.search(rf"\b{re.escape(name)}\b", declared)
     )
 
 
@@ -318,7 +316,9 @@ def main() -> int:
     print(
         f"{len(NOT_A_CAPABILITY)} further symbols are data or internals, each with a stated reason"
     )
-    print(f"all {len(ffi_entry_points())} C ABI entry points are declared by the .NET binding")
+    print(
+        f"all {len(ffi_entry_points())} C ABI entry points are declared by the .NET binding"
+    )
     return 0
 
 

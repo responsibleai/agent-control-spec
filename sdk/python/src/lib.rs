@@ -13,17 +13,17 @@ use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolic
 use agent_control_spec::policy::PreparedPolicyInvocation;
 use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
+use agent_control_spec::wire;
 use agent_control_spec::{
-    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Limits, Manifest, PerfTelemetry,
-    Runtime, RuntimeError, SafetyLevel, SegmentOutcome, StreamEndReason, StreamError,
-    StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan, StreamTrack, Verdict,
-    SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Limits, Manifest, Runtime,
+    RuntimeError, SafetyLevel, SegmentOutcome, StreamError, StreamSession, StreamSessionConfig,
+    StreamSourceType, StreamSpan, StreamTrack, Verdict, SUPPORTED_VERSIONS,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyMapping, PyString};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------
@@ -276,43 +276,6 @@ struct PyTelemetrySink {
     callback: Py<PyAny>,
 }
 
-impl PyTelemetrySink {
-    fn event_to_py<'py>(
-        &self,
-        py: Python<'py>,
-        event: &TelemetryEvent,
-    ) -> PyResult<Bound<'py, PyAny>> {
-        let dict = PyDict::new(py);
-        dict.set_item("event_type", event.event_type.as_str())?;
-        dict.set_item("intervention_point", event.intervention_point.as_str())?;
-        dict.set_item("decision", event.decision.map(|d| d.as_str().to_string()))?;
-        dict.set_item("reason_code", event.reason_code.clone())?;
-        dict.set_item("error_class", event.error_class.clone())?;
-        dict.set_item("policy_id", event.policy_id.clone())?;
-        dict.set_item("annotators", event.annotators.clone())?;
-        dict.set_item(
-            "enforcement_mode",
-            event.enforcement_mode.map(|m| match m {
-                agent_control_spec::EnforcementMode::Enforce => "enforce".to_string(),
-                agent_control_spec::EnforcementMode::EvaluateOnly => "evaluate_only".to_string(),
-            }),
-        )?;
-        dict.set_item("duration_ms", event.duration_ms)?;
-        dict.set_item("evidence_artefact", event.evidence_artefact.clone())?;
-        dict.set_item(
-            "evidence_verification_pointer_keys",
-            event.evidence_verification_pointer_keys.clone(),
-        )?;
-        dict.set_item("action_identity", event.action_identity.clone())?;
-        let metadata = PyDict::new(py);
-        for (k, v) in &event.metadata {
-            metadata.set_item(k, v)?;
-        }
-        dict.set_item("metadata", metadata)?;
-        Ok(dict.into_any())
-    }
-}
-
 impl TelemetrySink for PyTelemetrySink {
     fn emit(&self, event: TelemetryEvent) {
         // `emit` returns `()` in the trait, so a Python-side raise is
@@ -320,8 +283,14 @@ impl TelemetrySink for PyTelemetrySink {
         // telemetry is out-of-band by design and must not corrupt a
         // decision that already succeeded. The engine calls `emit` after
         // it has settled a verdict.
+        //
+        // The wire shape lives in `wire::telemetry_event_json`, so a
+        // sink written for another SDK sees the same fields. The
+        // binding only translates the JSON into plain Python
+        // containers.
         Python::attach(|py| {
-            let event_py = match self.event_to_py(py, &event) {
+            let event_json = wire::telemetry_event_json(&event);
+            let event_py = match json_to_py(py, &event_json) {
                 Ok(value) => value,
                 Err(err) => {
                     err.write_unraisable(py, Some(self.callback.bind(py).as_any()));
@@ -344,17 +313,6 @@ impl TelemetrySink for PyTelemetrySink {
                 }
             }
         });
-    }
-}
-
-fn parse_perf_telemetry(value: &str) -> PyResult<PerfTelemetry> {
-    match value {
-        "off" => Ok(PerfTelemetry::Off),
-        "external" => Ok(PerfTelemetry::External),
-        "full" => Ok(PerfTelemetry::Full),
-        other => Err(PyValueError::new_err(format!(
-            "unknown perf_telemetry level '{other}'; expected 'off', 'external', or 'full'"
-        ))),
     }
 }
 
@@ -384,34 +342,22 @@ fn resolve_telemetry_sink(sink: Option<Py<PyAny>>) -> Option<Arc<dyn TelemetrySi
 /// overriding, so a shipping change to another default cannot be
 /// silently absorbed.
 fn limits_defaults_map<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-    let defaults = Limits::default();
-    let d = PyDict::new(py);
-    d.set_item("max_snapshot_bytes", defaults.max_snapshot_bytes)?;
-    d.set_item("max_policy_input_depth", defaults.max_policy_input_depth)?;
-    d.set_item(
-        "max_annotators_per_point",
-        defaults.max_annotators_per_point,
-    )?;
-    d.set_item(
-        "max_annotator_output_bytes",
-        defaults.max_annotator_output_bytes,
-    )?;
-    d.set_item("max_policy_output_bytes", defaults.max_policy_output_bytes)?;
-    d.set_item("max_extends_depth", defaults.max_extends_depth)?;
-    d.set_item(
-        "max_merged_manifest_bytes",
-        defaults.max_merged_manifest_bytes,
-    )?;
-    d.set_item("max_manifest_url_bytes", defaults.max_manifest_url_bytes)?;
-    d.set_item("manifest_url_timeout_ms", defaults.manifest_url_timeout_ms)?;
-    d.set_item(
-        "max_manifest_url_redirects",
-        defaults.max_manifest_url_redirects,
-    )?;
-    Ok(d)
+    let rendered = wire::limits_json(&Limits::default());
+    let dict = PyDict::new(py);
+    // `wire::limits_json` returns a JSON object with every documented
+    // field. Iterate it into a PyDict so the surface stays in one place.
+    let Value::Object(fields) = rendered else {
+        return Err(PyRuntimeError::new_err(
+            "wire::limits_json returned a non-object value",
+        ));
+    };
+    for (key, value) in fields {
+        dict.set_item(key, json_to_py(py, &value)?)?;
+    }
+    Ok(dict)
 }
 
-/// Read a limits override, mirroring the FFI's `parse_limits`:
+/// Read a limits override:
 ///
 /// - `None` (absent) means keep every default.
 /// - Each field is individually optional; an absent field keeps its own
@@ -419,71 +365,57 @@ fn limits_defaults_map<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
 /// - A field present but not a non-negative integer is a hard ERROR, not
 ///   a silently-kept default. A host that asked for a smaller bound and
 ///   got the larger one would believe it was protected when it was not.
+/// - An unknown/misspelled field is refused rather than silently
+///   ignored: a cap the host believes it set but did not set is the
+///   same defect as one silently widened.
+///
+/// Field-by-field acceptance and the misspelled-key refusal live in the
+/// core (`wire::limits_from_json`); this function's only job is to turn
+/// a Python mapping into `serde_json::Value` and translate the error
+/// back into `PyErr`.
 fn resolve_limits(limits: Option<Py<PyAny>>) -> PyResult<Limits> {
-    let mut out = Limits::default();
     let Some(value) = limits else {
-        return Ok(out);
+        return Ok(Limits::default());
     };
 
-    Python::attach(|py| -> PyResult<()> {
+    Python::attach(|py| -> PyResult<Limits> {
         let bound = value.bind(py);
         if bound.is_none() {
-            return Ok(());
+            return Ok(Limits::default());
         }
         // Accept any Mapping (dict, MappingProxyType, custom mapping).
         // Reject non-mappings loudly rather than silently ignoring the
-        // caller's intent.
+        // caller's intent; that is a TypeError, not a manifest verdict.
         let mapping: Bound<'_, PyMapping> = bound
             .cast::<PyMapping>()
             .map_err(|_| PyTypeError::new_err("limits must be a Mapping[str, int] or None"))?
             .clone();
 
-        let read = |key: &str| -> PyResult<Option<u64>> {
-            if !mapping.contains(key)? {
-                return Ok(None);
-            }
-            let raw = mapping.get_item(key)?;
-            if raw.is_none() {
-                return Ok(None);
-            }
-            // Booleans are ints in Python. Refuse them: a host that meant
-            // `True` for a cap almost certainly meant something else, and
-            // a silently-accepted `1` masks a bug.
-            if raw.cast::<PyBool>().is_ok() {
-                return Err(PyValueError::new_err(format!(
-                    "limits[{key:?}] must be a non-negative integer"
-                )));
-            }
-            let extracted: Result<u64, _> = raw.extract();
-            match extracted {
-                Ok(n) => Ok(Some(n)),
-                Err(_) => Err(PyValueError::new_err(format!(
-                    "limits[{key:?}] must be a non-negative integer"
-                ))),
-            }
-        };
-
-        macro_rules! apply {
-            ($field:ident, $ty:ty) => {
-                if let Some(v) = read(stringify!($field))? {
-                    out.$field = v as $ty;
-                }
-            };
+        // Convert the mapping into a serde_json Object and hand it to
+        // the core. Only string keys are admitted here (limits fields
+        // are named strings); any other key type is a boundary error.
+        let mut object = Map::new();
+        let items = mapping.items()?;
+        for entry in items.iter() {
+            let pair: Bound<'_, PyAny> = entry;
+            let key_any = pair.get_item(0)?;
+            let val_any = pair.get_item(1)?;
+            let key_str = key_any
+                .cast::<PyString>()
+                .map_err(|_| PyTypeError::new_err("limits key must be a string identifying a cap"))?
+                .to_string_lossy()
+                .into_owned();
+            // `py_to_json` refuses non-JSON-shaped values and is what
+            // dispatchers already round-trip through, so a `True`
+            // becomes `Value::Bool(true)`, which the core then refuses
+            // as non-integer.
+            let val_json = py_to_json(&val_any)?;
+            object.insert(key_str, val_json);
         }
-        apply!(max_snapshot_bytes, usize);
-        apply!(max_policy_input_depth, usize);
-        apply!(max_annotators_per_point, usize);
-        apply!(max_annotator_output_bytes, usize);
-        apply!(max_policy_output_bytes, usize);
-        apply!(max_extends_depth, usize);
-        apply!(max_merged_manifest_bytes, usize);
-        apply!(max_manifest_url_bytes, usize);
-        apply!(manifest_url_timeout_ms, u64);
-        apply!(max_manifest_url_redirects, usize);
-        Ok(())
-    })?;
 
-    Ok(out)
+        wire::limits_from_json(&Value::Object(object))
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })
 }
 
 #[pyclass(frozen)]
@@ -519,7 +451,8 @@ fn interceptor_new(
         Manifest::from_path(manifest_path).map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let annotations = resolve_annotator_dispatcher(annotator_dispatcher);
     let policy = resolve_policy_dispatcher(policy_dispatcher);
-    let perf = parse_perf_telemetry(perf_telemetry)?;
+    let perf = wire::parse_perf_telemetry(perf_telemetry)
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let telemetry = resolve_telemetry_sink(telemetry_sink);
     let limits = resolve_limits(limits)?;
     let telemetry_arc: Arc<dyn TelemetrySink> =
@@ -652,44 +585,11 @@ fn merge_manifests(sources: Vec<String>) -> PyResult<String> {
         .map_err(|e| PyRuntimeError::new_err(format!("merged manifest serialization failed: {e}")))
 }
 
-/// Field names an authoring tool wants surfaced verbatim. The engine's
-/// validation error messages contain them, so a heuristic search picks
-/// the first occurrence and returns it as the diagnostic's `field`.
-const DIAGNOSTIC_FIELDS: &[&str] = &[
-    "agent_control_specification_version",
-    "policy_target_kind",
-    "policy_target",
-    "tool_name_from",
-    "annotations",
-    "annotators",
-    "intervention_points",
-    "intervention point",
-    "extends",
-    "policies",
-    "policy.id",
-    "approval",
-    "metadata",
-    "tools",
-];
-
-fn guess_field(message: &str) -> Option<String> {
-    // Longest match first: `policy_target_kind` is a superstring of
-    // `policy_target`, so ordering `DIAGNOSTIC_FIELDS` by length keeps
-    // `policy_target` from swallowing a `policy_target_kind` message.
-    let mut ordered: Vec<&&str> = DIAGNOSTIC_FIELDS.iter().collect();
-    ordered.sort_by_key(|f| std::cmp::Reverse(f.len()));
-    for field in ordered {
-        if message.contains(*field) {
-            return Some((*field).to_string());
-        }
-    }
-    None
-}
-
 /// Structured validation diagnostics as a JSON array string.
 ///
-/// Returned entries have shape
-/// `{"reason_code": str, "message": str, "field": str | null}`. The
+/// Returned entries have the unified wire shape
+/// `{"code": str, "message": str, "severity": "error", "field": str |
+/// None}`, owned by `agent_control_spec::wire::diagnostic_json`. The
 /// engine's validation surface reports one failure at a time, so a
 /// successful validation returns `[]` and every failed one returns a
 /// single-entry list. Wrapping in a list leaves room for a batch
@@ -699,45 +599,32 @@ fn guess_field(message: &str) -> Option<String> {
 /// the caller at file-based validation, matching `validate_manifest`.
 #[pyfunction]
 fn validate_manifest_diagnostics(source: &str) -> PyResult<String> {
-    fn diagnostic(reason: &str, message: &str) -> Value {
-        json!({
-            "reason_code": reason,
-            "message": message,
-            "field": guess_field(message),
-        })
-    }
-    let parsed = match Manifest::parse_yaml_str(source) {
-        Ok(manifest) => manifest,
-        Err(RuntimeError::ManifestInvalid(detail)) => {
-            return serde_json::to_string(&json!([diagnostic(
-                "runtime_error:manifest_invalid",
-                &detail
-            )]))
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("diagnostics serialization failed: {e}"))
-            });
+    let findings: Vec<Value> = match Manifest::parse_yaml_str(source) {
+        Ok(manifest) => {
+            if !manifest.extends.is_empty() {
+                let msg = "manifest extends other manifests; validation needs the merged \
+                           document. Use validate_manifest_file or merge_manifests, both of \
+                           which resolve the chain.";
+                vec![wire::diagnostic_json(&RuntimeError::ManifestInvalid(
+                    msg.to_string(),
+                ))]
+            } else {
+                match manifest.validate() {
+                    Ok(()) => Vec::new(),
+                    Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+                    Err(other) => {
+                        return Err(PyValueError::new_err(format!("{other}")));
+                    }
+                }
+            }
         }
+        Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
         Err(other) => {
             return Err(PyValueError::new_err(format!("{other}")));
         }
     };
-    if !parsed.extends.is_empty() {
-        let msg = "manifest extends other manifests; validation needs the merged document. Use \
-                   validate_manifest_file or merge_manifests, both of which resolve the chain.";
-        return serde_json::to_string(&json!([diagnostic("runtime_error:manifest_invalid", msg)]))
-            .map_err(|e| {
-                PyRuntimeError::new_err(format!("diagnostics serialization failed: {e}"))
-            });
-    }
-    match parsed.validate() {
-        Ok(()) => Ok("[]".to_string()),
-        Err(RuntimeError::ManifestInvalid(detail)) => serde_json::to_string(&json!([diagnostic(
-            "runtime_error:manifest_invalid",
-            &detail
-        )]))
-        .map_err(|e| PyRuntimeError::new_err(format!("diagnostics serialization failed: {e}"))),
-        Err(other) => Err(PyValueError::new_err(format!("{other}"))),
-    }
+    serde_json::to_string(&findings)
+        .map_err(|e| PyRuntimeError::new_err(format!("diagnostics serialization failed: {e}")))
 }
 
 /// Structured artifact diagnostics as a JSON array string.
@@ -761,13 +648,6 @@ fn validate_manifest_diagnostics(source: &str) -> PyResult<String> {
 /// `validate_manifest_diagnostics` returns.
 #[pyfunction]
 fn validate_artifacts_diagnostics(manifest_yaml: &str, bundles_json: &str) -> PyResult<String> {
-    fn diagnostic(error: &RuntimeError) -> Value {
-        json!({
-            "code": error.reason(),
-            "message": error.detail(),
-            "severity": "error",
-        })
-    }
     let bundles: std::collections::BTreeMap<String, InMemoryRegoBundle> =
         if bundles_json.trim().is_empty() {
             std::collections::BTreeMap::new()
@@ -778,14 +658,15 @@ fn validate_artifacts_diagnostics(manifest_yaml: &str, bundles_json: &str) -> Py
     // Mirror the C ABI's ordering exactly: parse first, validate
     // second, activate third. Each step's failure short-circuits so a
     // manifest that does not parse is never reported as an activation
-    // failure.
+    // failure. The diagnostic shape is owned by the core so every
+    // binding renders artifact findings the same way.
     let findings = match Manifest::from_yaml_str(manifest_yaml) {
-        Err(e) => vec![diagnostic(&e)],
+        Err(e) => vec![wire::diagnostic_json(&e)],
         Ok(manifest) => match manifest.validate() {
-            Err(e) => vec![diagnostic(&e)],
+            Err(e) => vec![wire::diagnostic_json(&e)],
             Ok(()) => match ActivatedPolicy::activate_from_memory(manifest_yaml, bundles) {
                 Ok(_) => Vec::new(),
-                Err(e) => vec![diagnostic(&e)],
+                Err(e) => vec![wire::diagnostic_json(&e)],
             },
         },
     };
@@ -980,59 +861,16 @@ fn locked<T>(guard: std::sync::LockResult<T>) -> PyResult<T> {
     guard.map_err(|_| PyRuntimeError::new_err("streaming session mutex was poisoned"))
 }
 
-fn parse_track(value: &str) -> PyResult<StreamTrack> {
-    match value {
-        "request" => Ok(StreamTrack::Request),
-        "response" => Ok(StreamTrack::Response),
-        other => Err(PyValueError::new_err(format!(
-            "unknown stream track '{other}'"
-        ))),
-    }
-}
-
-fn parse_outcome(value: &str) -> PyResult<SegmentOutcome> {
-    match value {
-        "cleared" => Ok(SegmentOutcome::Cleared),
-        "transformed" => Ok(SegmentOutcome::Transformed),
-        "denied" => Ok(SegmentOutcome::Denied),
-        other => Err(PyValueError::new_err(format!(
-            "unknown segment outcome '{other}'"
-        ))),
-    }
-}
-
 // A `StreamError` from the engine is always a boundary rejection: the
 // host handed a value the contract does not admit, or asked for an
-// operation the session cannot honor. `ValueError` is the same mapping
-// the parse-side errors above receive, so the boundary reports one
-// exception class regardless of which check caught it.
+// operation the session cannot honor. `ValueError` is the mapping the
+// binding uses, so the boundary reports one exception class regardless
+// of which check caught it. This is the sole streaming adapter kept
+// here: like the FFI's `wire_track` / `wire_outcome`, it translates the
+// error type across the boundary rather than reimplementing what a
+// wire value means.
 fn stream_err(error: StreamError) -> PyErr {
     PyValueError::new_err(format!("{error}"))
-}
-
-fn end_reason_to_json(reason: &StreamEndReason) -> Value {
-    match reason {
-        StreamEndReason::Complete => json!({ "kind": "complete" }),
-        StreamEndReason::Denied { track, task, range } => json!({
-            "kind": "denied",
-            "track": track.as_str(),
-            "task": task,
-            "start": range.start,
-            "end": range.end,
-        }),
-        StreamEndReason::Rewritten { track, task, range } => json!({
-            "kind": "rewritten",
-            "track": track.as_str(),
-            "task": task,
-            "start": range.start,
-            "end": range.end,
-        }),
-        StreamEndReason::Failed(error) => json!({
-            "kind": "failed",
-            "reason": error.reason(),
-            "message": format!("{error}"),
-        }),
-    }
 }
 
 fn json_string(value: &Value) -> PyResult<String> {
@@ -1106,7 +944,7 @@ fn stream_record_outcome(
     outcome: &str,
 ) -> PyResult<()> {
     let source_type = StreamSourceType::parse(source_type).map_err(stream_err)?;
-    let outcome = parse_outcome(outcome)?;
+    let outcome = SegmentOutcome::parse(outcome).map_err(stream_err)?;
     let span = StreamSpan::new(source_type, start, end).map_err(stream_err)?;
     let mut session = locked(handle.inner.lock())?;
     session
@@ -1141,7 +979,7 @@ fn stream_record_verdict(
 /// offset when it advanced.
 #[pyfunction]
 fn stream_advance(handle: &StreamSessionHandle, track: &str) -> PyResult<Option<u32>> {
-    let track = parse_track(track)?;
+    let track = StreamTrack::parse(track).map_err(stream_err)?;
     let mut session = locked(handle.inner.lock())?;
     Ok(session.advance(track))
 }
@@ -1150,7 +988,7 @@ fn stream_advance(handle: &StreamSessionHandle, track: &str) -> PyResult<Option<
 /// the session has ended.
 #[pyfunction]
 fn stream_safe_offset(handle: &StreamSessionHandle, track: &str) -> PyResult<Option<u32>> {
-    let track = parse_track(track)?;
+    let track = StreamTrack::parse(track).map_err(stream_err)?;
     let session = locked(handle.inner.lock())?;
     Ok(session.safe_offset(track))
 }
@@ -1158,7 +996,7 @@ fn stream_safe_offset(handle: &StreamSessionHandle, track: &str) -> PyResult<Opt
 /// Runes observed but not yet cleared by every task on this track.
 #[pyfunction]
 fn stream_pending(handle: &StreamSessionHandle, track: &str) -> PyResult<u32> {
-    let track = parse_track(track)?;
+    let track = StreamTrack::parse(track).map_err(stream_err)?;
     let session = locked(handle.inner.lock())?;
     Ok(session.pending(track))
 }
@@ -1166,18 +1004,10 @@ fn stream_pending(handle: &StreamSessionHandle, track: &str) -> PyResult<u32> {
 /// Watermark snapshot for one track, as wire JSON.
 #[pyfunction]
 fn stream_watermark(handle: &StreamSessionHandle, track: &str) -> PyResult<String> {
-    let track_kind = parse_track(track)?;
+    let track_kind = StreamTrack::parse(track).map_err(stream_err)?;
     let session = locked(handle.inner.lock())?;
     let watermark = session.watermark(track_kind);
-    let tasks: Vec<&str> = watermark.tasks().collect();
-    let value = json!({
-        "track": track_kind.as_str(),
-        "confirmed": watermark.confirmed(),
-        "received": watermark.received(),
-        "pending": watermark.pending(),
-        "tasks": tasks,
-    });
-    json_string(&value)
+    json_string(&wire::watermark_json(track_kind, watermark))
 }
 
 /// Stop accepting payloads while outcomes are still in flight. A
@@ -1196,12 +1026,7 @@ fn stream_end_of_payloads(handle: &StreamSessionHandle) -> PyResult<()> {
 fn stream_finish(handle: &StreamSessionHandle) -> PyResult<String> {
     let mut session = locked(handle.inner.lock())?;
     let completion = session.finish();
-    let value = json!({
-        "reason": end_reason_to_json(&completion.reason),
-        "transformed": completion.transformed,
-        "is_clean": completion.reason.is_clean(),
-    });
-    json_string(&value)
+    json_string(&wire::completion_json(&completion))
 }
 
 /// Whether the session has reached its terminal state.
@@ -1225,7 +1050,7 @@ fn stream_transformed(handle: &StreamSessionHandle) -> PyResult<bool> {
 fn stream_end_reason(handle: &StreamSessionHandle) -> PyResult<Option<String>> {
     let session = locked(handle.inner.lock())?;
     match session.end_reason() {
-        Some(reason) => json_string(&end_reason_to_json(reason)).map(Some),
+        Some(reason) => json_string(&wire::end_reason_json(reason)).map(Some),
         None => Ok(None),
     }
 }
@@ -1235,14 +1060,7 @@ fn stream_end_reason(handle: &StreamSessionHandle) -> PyResult<Option<String>> {
 fn stream_config(handle: &StreamSessionHandle) -> PyResult<String> {
     let session = locked(handle.inner.lock())?;
     let config = session.config();
-    let value = json!({
-        "safety_level": config.safety_level.as_str(),
-        "request_start_rune_offset": config.request_start_rune_offset,
-        "response_start_rune_offset": config.response_start_rune_offset,
-        "request_tasks": config.request_tasks,
-        "response_tasks": config.response_tasks,
-    });
-    json_string(&value)
+    json_string(&wire::stream_config_json(config))
 }
 
 /// The engine's default resource caps as a `dict[str, int]`. A host

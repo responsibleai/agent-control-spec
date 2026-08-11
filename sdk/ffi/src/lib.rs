@@ -35,7 +35,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Opaque interceptor handle: the runtime plus the payload-free name
 /// recorded on `verdicts[].name`.
@@ -1407,8 +1407,45 @@ fn wire_outcome(value: &str, err_out: *mut *mut c_char) -> Option<SegmentOutcome
 }
 
 /// Opaque handle to one mediated stream.
+///
+/// The session is behind a lock because its methods take `&mut self`,
+/// unlike `AcsActivatedPolicy`, whose evaluation takes `&self` and is
+/// `Send + Sync`. Without one, two host threads driving one stream race
+/// in the engine, and a lost `observe` silently shortens the received
+/// offset, which releases text no task evaluated. The lock costs
+/// nothing next to the JSON on either side of this boundary, and it
+/// means every C consumer gets the guarantee rather than each binding
+/// having to rediscover it.
 pub struct AcsStreamSession {
-    session: StreamSession,
+    session: Mutex<StreamSession>,
+}
+
+/// Run `body` against the session, reporting a poisoned lock rather
+/// than panicking across the C boundary.
+///
+/// A poisoned lock means a previous call panicked while holding it, so
+/// the accounting may be half-applied. Refusing is the only safe answer:
+/// the alternative is releasing against state nobody can vouch for.
+unsafe fn with_session<T>(
+    handle: *const AcsStreamSession,
+    err_out: *mut *mut c_char,
+    failure: T,
+    body: impl FnOnce(&mut StreamSession) -> T,
+) -> T {
+    if handle.is_null() {
+        set_err(err_out, "handle must not be null".to_string());
+        return failure;
+    }
+    match (*handle).session.lock() {
+        Ok(mut guard) => body(&mut guard),
+        Err(_) => {
+            set_err(
+                err_out,
+                "stream session lock is poisoned by an earlier panic".to_string(),
+            );
+            failure
+        }
+    }
 }
 
 /// Open a session from `config_json`.
@@ -1516,7 +1553,9 @@ pub unsafe extern "C" fn acs_stream_session_new(
             response_tasks,
         };
         match StreamSession::new(config) {
-            Ok(session) => Box::into_raw(Box::new(AcsStreamSession { session })),
+            Ok(session) => Box::into_raw(Box::new(AcsStreamSession {
+                session: Mutex::new(session),
+            })),
             Err(e) => {
                 set_err(err_out, format!("{e}"));
                 std::ptr::null_mut()
@@ -1561,10 +1600,6 @@ pub unsafe extern "C" fn acs_stream_session_observe(
 ) -> i64 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -2;
-        }
         let Some(raw) = read_utf8(source_type, "source_type", err_out) else {
             return -2;
         };
@@ -1575,13 +1610,13 @@ pub unsafe extern "C" fn acs_stream_session_observe(
                 return -2;
             }
         };
-        match (*handle).session.observe(source, runes) {
+        with_session(handle, err_out, -2, |s| match s.observe(source, runes) {
             Ok(received) => i64::from(received),
             Err(e) => {
                 set_err(err_out, format!("{e}"));
                 -2
             }
-        }
+        })
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -1608,10 +1643,6 @@ pub unsafe extern "C" fn acs_stream_session_observe_text(
 ) -> i64 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -2;
-        }
         let Some(raw) = read_utf8(source_type, "source_type", err_out) else {
             return -2;
         };
@@ -1625,13 +1656,15 @@ pub unsafe extern "C" fn acs_stream_session_observe_text(
         let Some(body) = read_utf8(text, "text", err_out) else {
             return -2;
         };
-        match (*handle).session.observe_text(source, body) {
-            Ok(received) => i64::from(received),
-            Err(e) => {
-                set_err(err_out, format!("{e}"));
-                -2
+        with_session(handle, err_out, -2, |s| {
+            match s.observe_text(source, body) {
+                Ok(received) => i64::from(received),
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    -2
+                }
             }
-        }
+        })
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -1661,10 +1694,6 @@ pub unsafe extern "C" fn acs_stream_session_record_outcome(
 ) -> i32 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -1;
-        }
         let Some(task_name) = read_utf8(task, "task", err_out) else {
             return -1;
         };
@@ -1691,13 +1720,15 @@ pub unsafe extern "C" fn acs_stream_session_record_outcome(
                 return -1;
             }
         };
-        match (*handle).session.record_outcome(task_name, &span, outcome) {
-            Ok(()) => 0,
-            Err(e) => {
-                set_err(err_out, format!("{e}"));
-                -1
+        with_session(handle, err_out, -1, |s| {
+            match s.record_outcome(task_name, &span, outcome) {
+                Ok(()) => 0,
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    -1
+                }
             }
-        }
+        })
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -1729,10 +1760,6 @@ pub unsafe extern "C" fn acs_stream_session_record_verdict(
 ) -> i32 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -1;
-        }
         let Some(task_name) = read_utf8(task, "task", err_out) else {
             return -1;
         };
@@ -1763,13 +1790,15 @@ pub unsafe extern "C" fn acs_stream_session_record_verdict(
                 return -1;
             }
         };
-        match (*handle).session.record_verdict(task_name, &span, &verdict) {
-            Ok(()) => 0,
-            Err(e) => {
-                set_err(err_out, format!("{e}"));
-                -1
+        with_session(handle, err_out, -1, |s| {
+            match s.record_verdict(task_name, &span, &verdict) {
+                Ok(()) => 0,
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    -1
+                }
             }
-        }
+        })
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -1793,20 +1822,16 @@ pub unsafe extern "C" fn acs_stream_session_advance(
 ) -> i64 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -2;
-        }
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return -2;
         };
         let Some(track) = wire_track(raw, err_out) else {
             return -2;
         };
-        match (*handle).session.advance(track) {
+        with_session(handle, err_out, -2, |s| match s.advance(track) {
             Some(offset) => i64::from(offset),
             None => -1,
-        }
+        })
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -1831,20 +1856,16 @@ pub unsafe extern "C" fn acs_stream_session_safe_offset(
 ) -> i64 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -2;
-        }
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return -2;
         };
         let Some(track) = wire_track(raw, err_out) else {
             return -2;
         };
-        match (*handle).session.safe_offset(track) {
+        with_session(handle, err_out, -2, |s| match s.safe_offset(track) {
             Some(offset) => i64::from(offset),
             None => -1,
-        }
+        })
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -1868,17 +1889,13 @@ pub unsafe extern "C" fn acs_stream_session_pending(
 ) -> i64 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -2;
-        }
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return -2;
         };
         let Some(track) = wire_track(raw, err_out) else {
             return -2;
         };
-        i64::from((*handle).session.pending(track))
+        with_session(handle, err_out, -2, |s| i64::from(s.pending(track)))
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -1904,25 +1921,23 @@ pub unsafe extern "C" fn acs_stream_session_watermark(
 ) -> *mut c_char {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return std::ptr::null_mut();
-        }
         let Some(raw) = read_utf8(track, "track", err_out) else {
             return std::ptr::null_mut();
         };
         let Some(track) = wire_track(raw, err_out) else {
             return std::ptr::null_mut();
         };
-        let watermark = (*handle).session.watermark(track);
-        let payload = wire::watermark_json(track, watermark);
-        match serde_json::to_string(&payload) {
-            Ok(json) => to_c_string(json, err_out),
-            Err(e) => {
-                set_err(err_out, format!("watermark serialization failed: {e}"));
-                std::ptr::null_mut()
+        with_session(handle, err_out, std::ptr::null_mut(), |s| {
+            let watermark = s.watermark(track);
+            let payload = wire::watermark_json(track, watermark);
+            match serde_json::to_string(&payload) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("watermark serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
             }
-        }
+        })
     }));
     match result {
         Ok(ptr) => ptr,
@@ -1949,25 +1964,16 @@ pub unsafe extern "C" fn acs_stream_session_state(
 ) -> *mut c_char {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return std::ptr::null_mut();
-        }
-        let session = &(*handle).session;
-        let config = session.config();
-        let payload = serde_json::json!({
-            "is_ended": session.is_ended(),
-            "transformed": session.transformed(),
-            "end_reason": session.end_reason().map(wire::end_reason_json),
-            "config": wire::stream_config_json(config),
-        });
-        match serde_json::to_string(&payload) {
-            Ok(json) => to_c_string(json, err_out),
-            Err(e) => {
-                set_err(err_out, format!("state serialization failed: {e}"));
-                std::ptr::null_mut()
+        with_session(handle, err_out, std::ptr::null_mut(), |s| {
+            let payload = wire::stream_session_state_json(s);
+            match serde_json::to_string(&payload) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("state serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
             }
-        }
+        })
     }));
     match result {
         Ok(ptr) => ptr,
@@ -1993,12 +1999,10 @@ pub unsafe extern "C" fn acs_stream_session_end_of_payloads(
 ) -> i32 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return -1;
-        }
-        (*handle).session.end_of_payloads();
-        0
+        with_session(handle, err_out, -1, |s| {
+            s.end_of_payloads();
+            0
+        })
     }));
     result.unwrap_or_else(|_| {
         set_err(
@@ -2022,19 +2026,17 @@ pub unsafe extern "C" fn acs_stream_session_finish(
 ) -> *mut c_char {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        if handle.is_null() {
-            set_err(err_out, "handle must not be null".to_string());
-            return std::ptr::null_mut();
-        }
-        let completion = (*handle).session.finish();
-        let payload = wire::completion_json(&completion);
-        match serde_json::to_string(&payload) {
-            Ok(json) => to_c_string(json, err_out),
-            Err(e) => {
-                set_err(err_out, format!("completion serialization failed: {e}"));
-                std::ptr::null_mut()
+        with_session(handle, err_out, std::ptr::null_mut(), |s| {
+            let completion = s.finish();
+            let payload = wire::completion_json(&completion);
+            match serde_json::to_string(&payload) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("completion serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
             }
-        }
+        })
     }));
     match result {
         Ok(ptr) => ptr,
