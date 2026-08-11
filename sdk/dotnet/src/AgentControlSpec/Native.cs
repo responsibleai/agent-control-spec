@@ -485,6 +485,10 @@ internal static partial class Native
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     private static partial IntPtr acs_manifest_diagnostics(string yaml, out IntPtr errOut);
 
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_artifact_diagnostics(
+        string manifestYaml, string? bundlesJson, out IntPtr errOut);
+
     internal static IntPtr InterceptorNewWithHooks(
         string manifestPath,
         IntPtr annotatorFn, IntPtr annotatorCtx,
@@ -535,6 +539,13 @@ internal static partial class Native
     internal static string ManifestDiagnostics(string yaml)
     {
         var json = acs_manifest_diagnostics(yaml, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static string ArtifactDiagnostics(string manifestYaml, string? bundlesJson)
+    {
+        var json = acs_artifact_diagnostics(manifestYaml, bundlesJson, out var err);
         ThrowIfError(err);
         return TakeString(json);
     }

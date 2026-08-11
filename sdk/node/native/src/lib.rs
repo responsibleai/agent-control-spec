@@ -681,6 +681,71 @@ fn diagnostic_json(error: &RuntimeError) -> Value {
     })
 }
 
+/// Wire shape for artifact diagnostics: `code`, `message`, `severity`.
+///
+/// Mirrors the C ABI's `acs_artifact_diagnostics` byte-for-byte.
+/// Unlike [`diagnostic_json`] this omits the best-effort `field`
+/// pointer: `validate_artifacts_detailed` surfaces activation-half
+/// failures whose message is the Rego compiler's own diagnostic, not
+/// a manifest field, and inventing a field for it would mislead a
+/// tool trying to render the pointer inline.
+fn artifact_diagnostic_json(error: &RuntimeError) -> Value {
+    serde_json::json!({
+        "code": error.reason(),
+        "message": error.detail(),
+        "severity": "error",
+    })
+}
+
+/// Validate a manifest together with the Rego it names, and return
+/// findings as a JSON array.
+///
+/// An empty array means both halves are sound. Each entry has wire
+/// shape `{"code": str, "message": str, "severity": "error"}`, matching
+/// the C ABI's `acs_artifact_diagnostics`.
+///
+/// `validate_manifest_detailed` answers only for the document: a
+/// manifest can name a bundle, satisfy the grammar, and still fail at
+/// activation because the Rego does not compile. Compilation happens
+/// at activation, so this activates against the supplied bundles in
+/// memory and reports what that surfaced, which moves the failure from
+/// a host's first agent action to its CI.
+///
+/// `bundles_json` maps policy id to an in-memory bundle, the same
+/// shape `policy_activate_from_memory` takes. An empty document means
+/// the manifest names no Rego, and the answer then equals what
+/// `validate_manifest_detailed` reports for the manifest half.
+#[napi]
+pub fn validate_artifacts_detailed(
+    manifest_yaml: Utf16String,
+    bundles_json: Utf16String,
+) -> napi::Result<String> {
+    let manifest_yaml = decode("manifest_yaml", &manifest_yaml)?;
+    let bundles_json = decode("bundles_json", &bundles_json)?;
+    let bundles: BTreeMap<String, InMemoryRegoBundle> = if bundles_json.trim().is_empty() {
+        BTreeMap::new()
+    } else {
+        serde_json::from_str(&bundles_json)
+            .map_err(|e| err(format!("bundles_json does not parse: {e}")))?
+    };
+    // Mirror the C ABI's ordering exactly: parse first, validate
+    // second, activate third. Each step's failure short-circuits so a
+    // manifest that does not parse is never reported as an activation
+    // failure — that would name the wrong half.
+    let findings = match Manifest::from_yaml_str(&manifest_yaml) {
+        Err(e) => vec![artifact_diagnostic_json(&e)],
+        Ok(manifest) => match manifest.validate() {
+            Err(e) => vec![artifact_diagnostic_json(&e)],
+            Ok(()) => match ActivatedPolicy::activate_from_memory(&manifest_yaml, bundles) {
+                Ok(_) => Vec::new(),
+                Err(e) => vec![artifact_diagnostic_json(&e)],
+            },
+        },
+    };
+    serde_json::to_string(&findings)
+        .map_err(|e| err(format!("diagnostics serialization failed: {e}")))
+}
+
 /// Best-effort extraction of the offending field name from a
 /// RuntimeError detail. Returns `None` when the message does not name a
 /// field the caller can point at, so the wrapper reports the raw

@@ -58,6 +58,7 @@ const native = require("../binding.js") as {
   validateManifestFile(path: string): string | null;
   validateManifest(source: string): string | null;
   validateManifestDetailed(source: string): string;
+  validateArtifactsDetailed(manifestYaml: string, bundlesJson: string): string;
   parseManifest(source: string): string;
   mergeManifests(sourcesJson: string): string;
   supportedManifestVersions(): string[];
@@ -692,6 +693,60 @@ export function validateManifestDetailed(source: string): readonly ManifestDiagn
   }
   return Object.freeze(
     JSON.parse(native.validateManifestDetailed(source)) as ManifestDiagnostic[],
+  );
+}
+
+/**
+ * Validate a manifest AND the Rego it names, returning findings.
+ *
+ * An empty array means both halves are sound. Each entry has wire
+ * shape `{"code","message","severity":"error"}`, matching the C ABI's
+ * `acs_artifact_diagnostics`.
+ *
+ * {@link validateManifestDetailed} answers only for the document. A
+ * manifest can satisfy the grammar, name a Rego bundle, and still fail
+ * at activation because the Rego does not compile — compilation
+ * happens at activation, so a validator that stops at the manifest
+ * turns that failure into a host's first agent action. This function
+ * activates against `bundles` in memory and reports what the pair
+ * surfaced.
+ *
+ * `bundles` has the same shape {@link ActivatedPolicy.activateFromMemory}
+ * takes: a mapping from policy id to a {@link RegoBundle}. Omitting it
+ * or passing an empty object means the manifest names no Rego, and the
+ * answer then equals what {@link validateManifestDetailed} reports for
+ * the manifest half: a document that does not parse is reported as a
+ * manifest problem, not an activation problem, because that would name
+ * the wrong half.
+ *
+ * Throws only on boundary problems (non-string manifest, unpaired
+ * surrogate, non-object bundles); a broken manifest or Rego module
+ * returns a non-empty array.
+ */
+export function validateArtifacts(
+  manifestSource: string,
+  bundles?: Readonly<Record<string, RegoBundle>>,
+): readonly ManifestDiagnostic[] {
+  if (typeof manifestSource !== "string") {
+    throw new TypeError(
+      `validateArtifacts expects a string manifest, received ${typeof manifestSource}`,
+    );
+  }
+  if (UNPAIRED_SURROGATE.test(manifestSource)) {
+    throw new TypeError(
+      "validateArtifacts received a manifest with an unpaired surrogate",
+    );
+  }
+  if (bundles !== undefined && (bundles === null || typeof bundles !== "object")) {
+    throw new TypeError(
+      `validateArtifacts expects bundles to be an object, received ${typeof bundles}`,
+    );
+  }
+  const payload = bundles === undefined ? "" : JSON.stringify(bundles);
+  return Object.freeze(
+    JSON.parse(
+      native.validateArtifactsDetailed(manifestSource, payload),
+    ) as ManifestDiagnostic[],
   );
 }
 

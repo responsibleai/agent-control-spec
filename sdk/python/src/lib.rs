@@ -623,6 +623,59 @@ fn validate_manifest_diagnostics(source: &str) -> PyResult<String> {
     }
 }
 
+/// Structured artifact diagnostics as a JSON array string.
+///
+/// Validates the manifest AND compiles the Rego it names against
+/// `bundles_json` — the same shape `policy_activate_from_memory`
+/// takes — and reports every failure the pair surfaced. Each entry
+/// has the wire shape
+/// `{"code": str, "message": str, "severity": "error"}`, matching the
+/// C ABI's `acs_artifact_diagnostics`. `validate_manifest_diagnostics`
+/// answers only for the document: a manifest can name a bundle,
+/// satisfy the grammar, and still fail at activation because the Rego
+/// does not compile. This activates in memory and reports what that
+/// surfaced, which moves the failure from a host's first agent action
+/// to its CI.
+///
+/// The manifest is checked first and on its own: a document that
+/// does not parse would otherwise be reported as an activation
+/// failure, which names the wrong half. NULL/empty `bundles_json`
+/// means the manifest names no Rego, so the answer then equals what
+/// `validate_manifest_diagnostics` returns.
+#[pyfunction]
+fn validate_artifacts_diagnostics(manifest_yaml: &str, bundles_json: &str) -> PyResult<String> {
+    fn diagnostic(error: &RuntimeError) -> Value {
+        json!({
+            "code": error.reason(),
+            "message": error.detail(),
+            "severity": "error",
+        })
+    }
+    let bundles: std::collections::BTreeMap<String, InMemoryRegoBundle> =
+        if bundles_json.trim().is_empty() {
+            std::collections::BTreeMap::new()
+        } else {
+            serde_json::from_str(bundles_json)
+                .map_err(|e| PyValueError::new_err(format!("bundles do not parse: {e}")))?
+        };
+    // Mirror the C ABI's ordering exactly: parse first, validate
+    // second, activate third. Each step's failure short-circuits so a
+    // manifest that does not parse is never reported as an activation
+    // failure.
+    let findings = match Manifest::from_yaml_str(manifest_yaml) {
+        Err(e) => vec![diagnostic(&e)],
+        Ok(manifest) => match manifest.validate() {
+            Err(e) => vec![diagnostic(&e)],
+            Ok(()) => match ActivatedPolicy::activate_from_memory(manifest_yaml, bundles) {
+                Ok(_) => Vec::new(),
+                Err(e) => vec![diagnostic(&e)],
+            },
+        },
+    };
+    serde_json::to_string(&findings)
+        .map_err(|e| PyRuntimeError::new_err(format!("diagnostics serialization failed: {e}")))
+}
+
 // ---------------------------------------------------------------------
 // Activated policy: one policy version, readied once, evaluated many
 // times.
@@ -1105,6 +1158,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(validate_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(validate_manifest_file, m)?)?;
     m.add_function(wrap_pyfunction!(validate_manifest_diagnostics, m)?)?;
+    m.add_function(wrap_pyfunction!(validate_artifacts_diagnostics, m)?)?;
     m.add_function(wrap_pyfunction!(parse_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(merge_manifests, m)?)?;
     m.add_function(wrap_pyfunction!(supported_manifest_versions, m)?)?;

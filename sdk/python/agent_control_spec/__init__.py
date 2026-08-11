@@ -25,6 +25,7 @@ __all__ = [
     "PERF_TELEMETRY_LEVELS",
     "AcsInterceptor",
     "ActivatedPolicy",
+    "ArtifactDiagnostic",
     "ManifestInvalidError",
     "RegoBundle",
     "StreamSession",
@@ -34,6 +35,7 @@ __all__ = [
     "merge_manifests",
     "parse_manifest",
     "supported_manifest_versions",
+    "validate_artifacts",
     "validate_manifest",
     "validate_manifest_detailed",
     "validate_manifest_file",
@@ -88,6 +90,16 @@ TelemetryEvent = Mapping[str, Any]
 #: Wrapped as a mapping rather than a dataclass to keep it JSON-safe for
 #: tools that shuttle diagnostics through IPC.
 ValidationDiagnostic = Mapping[str, Any]
+
+#: One entry produced by :func:`validate_artifacts`. Shape:
+#:
+#: - ``code``: ``str`` (the engine's ``runtime_error:*`` reason).
+#: - ``message``: ``str`` (the engine's own detail text).
+#: - ``severity``: always ``"error"``.
+#:
+#: Matches the C ABI's ``acs_artifact_diagnostics`` wire shape, so a
+#: diagnostic-consuming tool can key off ``code`` across languages.
+ArtifactDiagnostic = Mapping[str, Any]
 
 
 def _normalize_perf_telemetry(value: str | None) -> str:
@@ -365,6 +377,36 @@ def validate_manifest_detailed(source: str) -> list[ValidationDiagnostic]:
     shortcut for callers that only care whether validation passed.
     """
     return json.loads(_native.validate_manifest_diagnostics(source))
+
+
+def validate_artifacts(
+    manifest_source: str,
+    bundles: Mapping[str, RegoBundle] | None = None,
+) -> list[ArtifactDiagnostic]:
+    """Validate a manifest AND the Rego it names, returning findings.
+
+    Each diagnostic is ``{"code": str, "message": str, "severity":
+    "error"}`` and matches the C ABI's ``acs_artifact_diagnostics``
+    wire shape. An empty list means both halves are sound.
+
+    :func:`validate_manifest_detailed` answers only for the document.
+    A manifest can satisfy the grammar, name a Rego bundle, and still
+    fail at activation because the Rego does not compile — compilation
+    happens at activation time, so a validation surface that stops at
+    the document turns that failure into a host's first agent action
+    rather than a CI signal. This activates against the supplied
+    bundles in memory and reports what that surfaced, closing the gap.
+
+    ``bundles`` has the same shape :meth:`ActivatedPolicy.from_memory`
+    takes: a mapping from policy id to a ``{"modules": {...}, "data":
+    [...]}`` object. ``None`` or an empty mapping means the manifest
+    names no Rego, and the result then equals the manifest-only
+    diagnostics: a document that does not parse is reported as a
+    manifest problem, not an activation problem, because that names
+    the wrong half.
+    """
+    payload = "" if bundles is None else json.dumps(bundles, allow_nan=False)
+    return json.loads(_native.validate_artifacts_diagnostics(manifest_source, payload))
 
 
 def parse_manifest(source: str) -> dict[str, Any]:

@@ -65,6 +65,19 @@ _VERSION_KEY = "agent_control_specification_version"
 # so the grammar refuses it. Every language must fail rather than return.
 BAD_MANIFEST = f'{_VERSION_KEY}: "0.4.0-alpha.1"\nmetadata: {{}}\n'
 
+# A sound manifest that names Rego. The document check passes it whatever
+# the Rego says, so it is the only way to see artifact validation work.
+REGO_MANIFEST = (
+    f'{_VERSION_KEY}: "0.4.0-alpha.1"\n'
+    "policies:\n  gate:\n    type: rego\n    bundle: ./b\n"
+    'intervention_points:\n  input:\n    policy_target: "$.input"\n'
+    "    policy:\n      id: gate\n      query: data.acs.decision\n"
+)
+GOOD_BUNDLES = {
+    "gate": {"modules": {"p.rego": 'package acs\ndecision := {"decision":"allow"}\n'}}
+}
+BAD_BUNDLES = {"gate": {"modules": {"p.rego": "package acs\nthis is not rego ***\n"}}}
+
 EXPECTED = {
     # Manifest surface
     "supported_versions_nonempty": True,
@@ -101,6 +114,17 @@ EXPECTED = {
     "parsed_has_points": True,
     "diagnostics_on_bad": 1,
     "diagnostics_on_good": 0,
+    # Artifact validation. The manifest is sound either way, so only
+    # compiling the Rego tells the two bundles apart.
+    #
+    # With no bundles the manifest still names ./b, which is not on disk,
+    # so activation reports the missing bundle. That is the answer a host
+    # wants: validating a manifest that names Rego without supplying the
+    # Rego cannot be a pass.
+    "artifacts_manifest_only": 1,
+    "artifacts_good_rego": 0,
+    "artifacts_bad_rego": 1,
+    "artifacts_bad_rego_code": "runtime_error:policy_invocation_failed",
 }
 
 
@@ -241,6 +265,17 @@ fn main() {
     let parsed = Manifest::from_yaml_str(&std::fs::read_to_string(&manifest_path).expect("read"))
         .expect("parse");
     let parsed_json = serde_json::to_value(&parsed).expect("parsed json");
+    let art = |bundles: &str| -> (usize, Option<String>) {
+        let parsed: std::collections::BTreeMap<String, agent_control_spec::InMemoryRegoBundle> =
+            serde_json::from_str(bundles).expect("bundles");
+        match ActivatedPolicy::activate_from_memory(REGO_MANIFEST, parsed) {
+            Ok(_) => (0, None),
+            Err(e) => (1, Some(e.reason().to_string())),
+        }
+    };
+    let art_only = art("{}");
+    let art_good = art(GOOD_BUNDLES);
+    let art_bad = art(BAD_BUNDLES);
     let bad_diags = usize::from(Manifest::from_yaml_str(BAD_MANIFEST).is_err());
     let good_diags = usize::from(
         Manifest::from_yaml_str(&std::fs::read_to_string(&manifest_path).expect("read"))
@@ -260,6 +295,10 @@ fn main() {
             "parsed_has_points": parsed_json.get("intervention_points").is_some(),
             "diagnostics_on_bad": bad_diags,
             "diagnostics_on_good": good_diags,
+            "artifacts_manifest_only": art_only.0,
+            "artifacts_good_rego": art_good.0,
+            "artifacts_bad_rego": art_bad.0,
+            "artifacts_bad_rego_code": art_bad.1,
             "supported_versions_nonempty": !agent_control_spec::SUPPORTED_VERSIONS.is_empty(),
             "validate_good": validate_good,
             "validate_bad": validate_bad,
@@ -290,6 +329,9 @@ def rust() -> dict:
         RUST_MAIN.replace("BAD_MANIFEST", json.dumps(BAD_MANIFEST))
         .replace("ALLOW_CONTEXT", json.dumps(json.dumps(ALLOW_CONTEXT)))
         .replace("DENY_CONTEXT", json.dumps(json.dumps(DENY_CONTEXT)))
+        .replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST))
+        .replace("GOOD_BUNDLES", json.dumps(json.dumps(GOOD_BUNDLES)))
+        .replace("BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES)))
     )
     (work / "Cargo.toml").write_text(
         f"""
@@ -331,7 +373,7 @@ import json
 from agent_control_spec import (
     AcsInterceptor, ActivatedPolicy, StreamSession,
     supported_manifest_versions, validate_manifest,
-    parse_manifest, validate_manifest_detailed,
+    parse_manifest, validate_manifest_detailed, validate_artifacts,
 )
 
 def check(source):
@@ -385,6 +427,9 @@ _f = _hook(_Broken())
 _parsed = parse_manifest(open({str(MANIFEST)!r}).read())
 _bad_diags = validate_manifest_detailed({BAD_MANIFEST!r})
 _good_diags = validate_manifest_detailed(open({str(MANIFEST)!r}).read())
+_art_only = validate_artifacts({REGO_MANIFEST!r})
+_art_good = validate_artifacts({REGO_MANIFEST!r}, {GOOD_BUNDLES!r})
+_art_bad = validate_artifacts({REGO_MANIFEST!r}, {BAD_BUNDLES!r})
 
 print(json.dumps({{
     "hook_benign_decision": _b[0],
@@ -396,6 +441,10 @@ print(json.dumps({{
     "parsed_has_points": "intervention_points" in _parsed,
     "diagnostics_on_bad": len(_bad_diags),
     "diagnostics_on_good": len(_good_diags),
+    "artifacts_manifest_only": len(_art_only),
+    "artifacts_good_rego": len(_art_good),
+    "artifacts_bad_rego": len(_art_bad),
+    "artifacts_bad_rego_code": _art_bad[0]["code"] if _art_bad else None,
     "supported_versions_nonempty": len(supported_manifest_versions()) > 0,
     "validate_good": check(open({str(MANIFEST)!r}).read()),
     "validate_bad": check({BAD_MANIFEST!r}),
@@ -457,6 +506,9 @@ const f = hook(() => {{ throw new Error('classifier unreachable'); }});
 const parsed = acs.parseManifest(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8'));
 const badDiags = acs.validateManifestDetailed({json.dumps(BAD_MANIFEST)});
 const goodDiags = acs.validateManifestDetailed(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8'));
+const artOnly = acs.validateArtifacts({json.dumps(REGO_MANIFEST)});
+const artGood = acs.validateArtifacts({json.dumps(REGO_MANIFEST)}, {json.dumps(GOOD_BUNDLES)});
+const artBad = acs.validateArtifacts({json.dumps(REGO_MANIFEST)}, {json.dumps(BAD_BUNDLES)});
 
 console.log(JSON.stringify({{
   hook_benign_decision: b[0],
@@ -468,6 +520,10 @@ console.log(JSON.stringify({{
   parsed_has_points: Object.prototype.hasOwnProperty.call(parsed, 'intervention_points'),
   diagnostics_on_bad: badDiags.length,
   diagnostics_on_good: goodDiags.length,
+  artifacts_manifest_only: artOnly.length,
+  artifacts_good_rego: artGood.length,
+  artifacts_bad_rego: artBad.length,
+  artifacts_bad_rego_code: artBad.length ? artBad[0].code : null,
   supported_versions_nonempty: acs.supportedManifestVersions().length > 0,
   validate_good: check(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8')),
   validate_bad: check({json.dumps(BAD_MANIFEST)}),
@@ -535,6 +591,9 @@ var f = Hook((_, _, _) => throw new InvalidOperationException("classifier unreac
 var parsed = AcsManifestTools.Parse(File.ReadAllText(manifest));
 var badDiags = AcsManifestTools.Diagnostics(BAD_JSON);
 var goodDiags = AcsManifestTools.Diagnostics(File.ReadAllText(manifest));
+var artOnly = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, null);
+var artGood = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, GOOD_BUNDLES);
+var artBad = AcsManifestTools.ValidateArtifacts(REGO_MANIFEST, BAD_BUNDLES);
 
 Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
 {
@@ -547,6 +606,10 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
     ["parsed_has_points"] = parsed.Contains("intervention_points"),
     ["diagnostics_on_bad"] = badDiags.Count,
     ["diagnostics_on_good"] = goodDiags.Count,
+    ["artifacts_manifest_only"] = artOnly.Count,
+    ["artifacts_good_rego"] = artGood.Count,
+    ["artifacts_bad_rego"] = artBad.Count,
+    ["artifacts_bad_rego_code"] = artBad.Count > 0 ? artBad[0].Code : null,
     ["supported_versions_nonempty"] = AcsManifest.SupportedVersions().Count > 0,
     ["validate_good"] = Check(() => AcsManifest.Validate(File.ReadAllText(manifest))),
     ["validate_bad"] = Check(() => AcsManifest.Validate(BAD_JSON)),
@@ -593,6 +656,9 @@ def dotnet() -> dict:
             .replace("HOOKS_MANIFEST", json.dumps(str(HOOKS_MANIFEST)))
             .replace("SEV1", json.dumps(json.dumps({"severity": 1})))
             .replace("SEV7", json.dumps(json.dumps({"severity": 7})))
+            .replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST))
+            .replace("GOOD_BUNDLES", json.dumps(json.dumps(GOOD_BUNDLES)))
+            .replace("BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES)))
             .replace("ALLOW_JSON", json.dumps(json.dumps(ALLOW_CONTEXT)))
             .replace("DENY_JSON", json.dumps(json.dumps(DENY_CONTEXT)))
             .replace("BAD_JSON", json.dumps(BAD_MANIFEST))

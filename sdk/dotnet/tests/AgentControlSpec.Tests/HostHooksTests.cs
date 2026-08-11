@@ -216,5 +216,68 @@ public sealed class HostHooksTests : IDisposable
         Assert.Contains("overlay-applied", merged);
     }
 
+
+    private const string RegoManifest = """
+        agent_control_specification_version: "0.4.0-alpha.1"
+        policies:
+          gate:
+            type: rego
+            bundle: ./b
+        intervention_points:
+          input:
+            policy_target: "$.input"
+            policy:
+              id: gate
+              query: data.acs.decision
+        """;
+
+    [Fact]
+    public void ArtifactValidationClearsAManifestWhoseRegoCompiles()
+    {
+        var bundles = """
+            {"gate":{"modules":{"p.rego":"package acs\ndecision := {\"decision\":\"allow\"}\n"}}}
+            """;
+
+        Assert.Empty(AcsManifestTools.ValidateArtifacts(RegoManifest, bundles));
+    }
+
+    [Fact]
+    public void ArtifactValidationCatchesRegoTheManifestCheckCannot()
+    {
+        var broken = """
+            {"gate":{"modules":{"p.rego":"package acs\nthis is not rego at all ***\n"}}}
+            """;
+
+        // The manifest itself is sound, so the document check passes it.
+        Assert.Empty(AcsManifestTools.Diagnostics(RegoManifest));
+
+        // The Rego is not, and only activation finds that out.
+        var finding = Assert.Single(AcsManifestTools.ValidateArtifacts(RegoManifest, broken));
+        Assert.StartsWith("runtime_error:", finding.Code);
+        Assert.Contains("p.rego", finding.Message);
+    }
+
+    [Fact]
+    public void AManifestThatDoesNotParseIsReportedAsAManifestProblem()
+    {
+        var finding = Assert.Single(AcsManifestTools.ValidateArtifacts("this: [is not", null));
+
+        // Naming this an activation failure would blame the wrong half.
+        Assert.Contains("manifest", finding.Code);
+    }
+
+    [Fact]
+    public void WithNoBundlesArtifactValidationAgreesWithTheManifestCheck()
+    {
+        const string Bad = """
+            agent_control_specification_version: "0.4.0-alpha.1"
+            metadata: {}
+            """;
+
+        Assert.Equal(
+            AcsManifestTools.Diagnostics(Bad).Count,
+            AcsManifestTools.ValidateArtifacts(Bad, null).Count);
+    }
+
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 }

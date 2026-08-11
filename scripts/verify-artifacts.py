@@ -32,15 +32,30 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# NuGet caches by id and version, so a fixed version would let a stale
+# package from an earlier run satisfy a later one and report a pass for
+# code the artifact does not contain. Stamp each run instead.
+CHECK_VERSION = f"0.0.0-artifactcheck{os.getpid()}{int(time.time())}"
 HOOKS_MANIFEST = ROOT / "tests" / "conformance" / "parity" / "host-hooks-manifest.yaml"
 BAD_MANIFEST = 'agent_control_specification_version: "0.4.0-alpha.1"\nmetadata: {}\n'
+
+REGO_MANIFEST = (
+    'agent_control_specification_version: "0.4.0-alpha.1"\n'
+    "policies:\n  gate:\n    type: rego\n    bundle: ./b\n"
+    'intervention_points:\n  input:\n    policy_target: "$.input"\n'
+    "    policy:\n      id: gate\n      query: data.acs.decision\n"
+)
+BAD_BUNDLES = {"gate": {"modules": {"p.rego": "package acs\nthis is not rego ***\n"}}}
 
 EXPECTED = {
     "non_streaming": True,
@@ -54,6 +69,8 @@ EXPECTED = {
     "streaming_offset": 5,
     "streaming_clean": True,
     "streaming_settled": None,
+    # A manifest the document check passes whose Rego does not compile.
+    "artifacts_bad_rego": 1,
 }
 
 
@@ -127,7 +144,7 @@ def build(stage: Path) -> dict[str, Path]:
             str(art / "nuget"),
             "--nologo",
             "-p:AcsNativeAssetsRequired=true",
-            "-p:Version=0.0.0-artifactcheck",
+            f"-p:Version={CHECK_VERSION}",
         ]
     )
 
@@ -162,7 +179,7 @@ PY_PROGRAM = """
 import json
 from agent_control_spec import (
     AcsInterceptor, StreamSession, supported_manifest_versions,
-    parse_manifest, validate_manifest_detailed,
+    parse_manifest, validate_manifest_detailed, validate_artifacts,
 )
 M = {manifest!r}
 class C:
@@ -186,6 +203,7 @@ print(json.dumps({{
     "parse_ok": "intervention_points" in parse_manifest(open(M).read()),
     "streaming_offset": off, "streaming_clean": clean,
     "streaming_settled": s.safe_offset("response"),
+    "artifacts_bad_rego": len(validate_artifacts({rego!r}, {bad!r})),
 }}))
 """
 
@@ -198,7 +216,9 @@ def check_python(art: dict, stage: Path) -> dict:
         [
             str(venv / "bin/python"),
             "-c",
-            PY_PROGRAM.format(manifest=str(HOOKS_MANIFEST)),
+            PY_PROGRAM.format(
+                manifest=str(HOOKS_MANIFEST), rego=REGO_MANIFEST, bad=BAD_BUNDLES
+            ),
         ]
     )
     return last_json(out.stdout)
@@ -231,6 +251,7 @@ console.log(JSON.stringify({
       acs.parseManifest(fs.readFileSync(M, 'utf8')), 'intervention_points'),
   streaming_offset: off, streaming_clean: clean,
   streaming_settled: s.safeOffset('response'),
+  artifacts_bad_rego: acs.validateArtifacts(%s, %s).length,
 }));
 """
 
@@ -244,7 +265,16 @@ def check_node(art: dict, stage: Path) -> dict:
         cwd=app,
     )
     out = run(
-        ["node", "-e", NODE_PROGRAM % json.dumps(str(HOOKS_MANIFEST))],
+        [
+            "node",
+            "-e",
+            NODE_PROGRAM
+            % (
+                json.dumps(str(HOOKS_MANIFEST)),
+                json.dumps(REGO_MANIFEST),
+                json.dumps(BAD_BUNDLES),
+            ),
+        ],
         cwd=app,
     )
     return last_json(out.stdout)
@@ -256,7 +286,7 @@ using AgentHooks;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-var M = MANIFEST;
+var M = __MANIFEST__;
 AgentContext Ctx() => new(JsonNode.Parse(CTX_JSON)!.AsObject());
 async Task<(string, string?)> Hook(AnnotatorDispatcher d)
 {
@@ -287,6 +317,7 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
     ["streaming_offset"] = off,
     ["streaming_clean"] = clean,
     ["streaming_settled"] = s.SafeOffset(StreamTrack.Response),
+    ["artifacts_bad_rego"] = AcsManifestTools.ValidateArtifacts(__REGO__, __BADB__).Count,
 }));
 """
 
@@ -314,17 +345,19 @@ def check_dotnet(art: dict, stage: Path) -> dict:
             "package",
             "ResponsibleAI.AgentControlSpec",
             "--version",
-            "0.0.0-artifactcheck",
+            CHECK_VERSION,
         ]
     )
     program = (
-        DOTNET_PROGRAM.replace("MANIFEST", json.dumps(str(HOOKS_MANIFEST)))
+        DOTNET_PROGRAM.replace("__MANIFEST__", json.dumps(str(HOOKS_MANIFEST)))
         .replace(
             "CTX_JSON",
             json.dumps(json.dumps({"interception_point": "input", "input": "hi"})),
         )
         .replace("SEV1", json.dumps(json.dumps({"severity": 1})))
         .replace("SEV7", json.dumps(json.dumps({"severity": 7})))
+        .replace("__REGO__", json.dumps(REGO_MANIFEST))
+        .replace("__BADB__", json.dumps(json.dumps(BAD_BUNDLES)))
     )
     (app / "Program.cs").write_text(program)
     out = run(["dotnet", "run", "--project", str(app), "--nologo"])
@@ -380,6 +413,12 @@ fn main() {
     s.advance(StreamTrack::Response);
     let off = s.safe_offset(StreamTrack::Response);
     let clean = s.finish().reason.is_clean();
+    let bad_bundles: std::collections::BTreeMap<String, agent_control_spec::InMemoryRegoBundle> =
+        serde_json::from_str(BAD_BUNDLES).expect("bundles");
+    let artifacts_bad_rego = usize::from(
+        agent_control_spec::ActivatedPolicy::activate_from_memory(REGO_MANIFEST, bad_bundles)
+            .is_err(),
+    );
     println!("{}", serde_json::json!({
         "non_streaming": !agent_control_spec::SUPPORTED_VERSIONS.is_empty(),
         "hook_benign": b.0, "hook_harmful": h.0, "hook_harmful_reason": h.1,
@@ -388,6 +427,7 @@ fn main() {
         "parse_ok": Manifest::from_yaml_str(&std::fs::read_to_string(&m).unwrap()).is_ok(),
         "streaming_offset": off, "streaming_clean": clean,
         "streaming_settled": s.safe_offset(StreamTrack::Response),
+        "artifacts_bad_rego": artifacts_bad_rego,
     }));
 }
 """
@@ -409,7 +449,11 @@ serde_json = "1"
 [workspace]
 """
     )
-    (app / "src/main.rs").write_text(RUST_MAIN)
+    (app / "src/main.rs").write_text(
+        RUST_MAIN.replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST)).replace(
+            "BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES))
+        )
+    )
     out = run(
         ["cargo", "run", "--quiet", "--release", "--", str(HOOKS_MANIFEST)], cwd=app
     )

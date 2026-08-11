@@ -223,6 +223,28 @@ export declare function streamSessionWatermark(handle: ExternalObject<StreamHand
 export declare function supportedManifestVersions(): Array<string>
 
 /**
+ * Validate a manifest together with the Rego it names, and return
+ * findings as a JSON array.
+ *
+ * An empty array means both halves are sound. Each entry has wire
+ * shape `{"code": str, "message": str, "severity": "error"}`, matching
+ * the C ABI's `acs_artifact_diagnostics`.
+ *
+ * `validate_manifest_detailed` answers only for the document: a
+ * manifest can name a bundle, satisfy the grammar, and still fail at
+ * activation because the Rego does not compile. Compilation happens
+ * at activation, so this activates against the supplied bundles in
+ * memory and reports what that surfaced, which moves the failure from
+ * a host's first agent action to its CI.
+ *
+ * `bundles_json` maps policy id to an in-memory bundle, the same
+ * shape `policy_activate_from_memory` takes. An empty document means
+ * the manifest names no Rego, and the answer then equals what
+ * `validate_manifest_detailed` reports for the manifest half.
+ */
+export declare function validateArtifactsDetailed(manifestYaml: string, bundlesJson: string): string
+
+/**
  * Validate manifest source against the grammar, without building a
  * runtime.
  *

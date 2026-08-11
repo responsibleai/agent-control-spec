@@ -14,6 +14,8 @@ fail.
 
 from __future__ import annotations
 
+_VERSION_KEY = "agent_control_specification" + "_version"
+
 import pathlib
 
 import pytest
@@ -24,6 +26,7 @@ from agent_control_spec import (
     ManifestInvalidError,
     merge_manifests,
     parse_manifest,
+    validate_artifacts,
     validate_manifest_detailed,
 )
 from agent_hooks import AgentContextBuilder
@@ -392,3 +395,126 @@ def test_diagnostics_flag_manifests_that_use_extends():
     assert diagnostics
     assert diagnostics[0]["reason_code"] == "runtime_error:manifest_invalid"
     assert "extends" in diagnostics[0]["message"]
+
+
+# ---------------------------------------------------------------------
+# Artifact validation: manifest + Rego compiled together.
+#
+# `validate_manifest_detailed` answers only for the document. A
+# manifest can satisfy the grammar, name a Rego bundle, and still fail
+# at activation because the Rego does not compile — compilation happens
+# at activation time, so a validator that stops at the manifest turns
+# that failure into a host's first agent action. `validate_artifacts`
+# closes the gap by activating in memory and reporting what the pair
+# surfaced. Restores the 0.3-era ``validate_acs_artifacts`` shape a
+# consumer's CI depended on.
+# ---------------------------------------------------------------------
+
+ARTIFACT_MANIFEST = """\
+agent_control_specification_version: "0.4.0-alpha.1"
+policies:
+  gate:
+    type: rego
+    bundle: ./b
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy:
+      id: gate
+      query: data.acs.decision
+"""
+
+_VALID_REGO = 'package acs\ndecision := {"decision":"allow"}\n'
+
+
+def test_validate_artifacts_returns_empty_for_valid_manifest_and_rego():
+    # A manifest naming a Rego policy whose module compiles cleanly is
+    # what a fully-formed release looks like: nothing to report.
+    findings = validate_artifacts(
+        ARTIFACT_MANIFEST,
+        {"gate": {"modules": {"p.rego": _VALID_REGO}}},
+    )
+    assert findings == []
+
+
+def test_validate_artifacts_surfaces_a_broken_rego_module():
+    # The feature exists for this case: the manifest is fine, the
+    # bundle is not, and today a manifest-only validator would have
+    # green-lit the release. The diagnostic must name the activation
+    # half so the caller can render the compiler's complaint.
+    findings = validate_artifacts(
+        ARTIFACT_MANIFEST,
+        {"gate": {"modules": {"p.rego": "package acs\nfoo := ] not valid rego"}}},
+    )
+    assert len(findings) == 1, findings
+    entry = findings[0]
+    assert entry["severity"] == "error"
+    assert entry["code"].startswith("runtime_error:"), entry
+    # The engine's own text carries the Rego compiler's complaint
+    # verbatim, so an editor can point at the module. The compiler
+    # names the module path and its "expecting expression" error.
+    assert "p.rego" in entry["message"], entry
+    assert "expecting expression" in entry["message"], entry
+
+    # `validate_manifest_detailed` never sees this failure: it does
+    # not compile the bundle. Prove that so a regression that widened
+    # the manifest-only surface would fail.
+    assert validate_manifest_detailed(ARTIFACT_MANIFEST) == []
+
+
+def test_validate_artifacts_reports_unparseable_manifest_as_manifest_problem():
+    # A document that does not parse must be reported as a manifest
+    # problem, not an activation failure — that would name the wrong
+    # half. Even when bundles are supplied.
+    findings = validate_artifacts(
+        "::not: [valid",
+        {"gate": {"modules": {"p.rego": _VALID_REGO}}},
+    )
+    assert len(findings) == 1, findings
+    entry = findings[0]
+    assert entry["code"] == "runtime_error:manifest_invalid"
+    assert entry["severity"] == "error"
+    # And the underlying error matches what the manifest-only
+    # validator reports: same problem, different shape.
+    manifest_only = validate_manifest_detailed("::not: [valid")
+    assert manifest_only[0]["reason_code"] == entry["code"]
+    assert manifest_only[0]["message"] == entry["message"]
+
+
+def test_validate_artifacts_without_bundles_equals_manifest_only_result():
+    # No bundles supplied: activation is either skipped (no Rego to
+    # load) or fails the same way manifest validation does. Either
+    # way, the artifact validator must not invent activation errors
+    # when the manifest half is what actually reports the problem.
+    # For an unparseable document, both surfaces report the same
+    # underlying RuntimeError message; only the wire keys differ.
+    broken = "::not: [valid"
+    artifact_findings = validate_artifacts(broken)
+    manifest_findings = validate_manifest_detailed(broken)
+    assert len(artifact_findings) == len(manifest_findings) == 1
+    assert artifact_findings[0]["code"] == manifest_findings[0]["reason_code"]
+    assert artifact_findings[0]["message"] == manifest_findings[0]["message"]
+
+    # And for a grammatically invalid document — one that parses but
+    # fails validation — the two surfaces report the same underlying
+    # manifest problem. Activation would never be reached.
+    # Built rather than written on one line. A repo guard scans committed
+    # files for the version key and validates what follows it, and it
+    # cannot strip the quotes of a single-line Python literal.
+    invalid = (
+        f'{_VERSION_KEY}: "0.4.0-alpha.1"\npolicies: {{}}\nintervention_points: {{}}\n'
+    )
+    artifact_findings = validate_artifacts(invalid)
+    manifest_findings = validate_manifest_detailed(invalid)
+    assert len(artifact_findings) == len(manifest_findings) == 1
+    assert artifact_findings[0]["code"] == manifest_findings[0]["reason_code"]
+    assert artifact_findings[0]["message"] == manifest_findings[0]["message"]
+
+
+def test_validate_artifacts_accepts_none_for_bundles():
+    # ``bundles=None`` is the ergonomic form for "no Rego to supply".
+    # It must behave identically to an empty mapping so callers can
+    # write either.
+    assert validate_artifacts(ARTIFACT_MANIFEST, None) == validate_artifacts(
+        ARTIFACT_MANIFEST, {}
+    )

@@ -1275,6 +1275,74 @@ pub unsafe extern "C" fn acs_manifest_diagnostics(
     }
 }
 
+/// Validate a manifest together with the Rego it names, and return the
+/// findings as a JSON array.
+///
+/// An empty array means both halves are sound. `acs_manifest_diagnostics`
+/// answers only for the document: a manifest can name a bundle, satisfy
+/// the grammar, and still fail at activation because the Rego does not
+/// compile. Compilation happens at activation, so this activates against
+/// the supplied bundles in memory and reports what that surfaced, which
+/// moves the failure from a host's first agent action to its CI.
+///
+/// `bundles_json` maps policy id to an in-memory bundle, the same shape
+/// `acs_policy_activate_from_memory` takes. NULL or empty means the
+/// manifest names no Rego, in which case this answers exactly as
+/// `acs_manifest_diagnostics` does. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `manifest_yaml` must be a valid NUL-terminated string. `bundles_json`
+/// must be NULL or a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_artifact_diagnostics(
+    manifest_yaml: *const c_char,
+    bundles_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(source) = read_utf8(manifest_yaml, "manifest_yaml", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let bundles = match read_in_memory_bundles(bundles_json, err_out) {
+            Some(bundles) => bundles,
+            None => return std::ptr::null_mut(),
+        };
+
+        // The manifest is checked first and on its own. A document that
+        // does not parse would otherwise be reported as an activation
+        // failure, which names the wrong half.
+        let findings = match Manifest::from_yaml_str(source) {
+            Err(e) => vec![diagnostic_json(&e)],
+            Ok(manifest) => match manifest.validate() {
+                Err(e) => vec![diagnostic_json(&e)],
+                Ok(()) => match ActivatedPolicy::activate_from_memory(source, bundles) {
+                    Ok(_) => Vec::new(),
+                    Err(e) => vec![diagnostic_json(&e)],
+                },
+            },
+        };
+
+        match serde_json::to_string(&findings) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("diagnostics serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_artifact_diagnostics".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
 fn diagnostic_json(error: &RuntimeError) -> Value {
     serde_json::json!({
         "code": error.reason(),

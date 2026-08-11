@@ -724,6 +724,7 @@ module.exports.streamSessionSafeOffset = nativeBinding.streamSessionSafeOffset
 module.exports.streamSessionState = nativeBinding.streamSessionState
 module.exports.streamSessionWatermark = nativeBinding.streamSessionWatermark
 module.exports.supportedManifestVersions = nativeBinding.supportedManifestVersions
+module.exports.validateArtifactsDetailed = nativeBinding.validateArtifactsDetailed
 module.exports.validateManifest = nativeBinding.validateManifest
 module.exports.validateManifestDetailed = nativeBinding.validateManifestDetailed
 module.exports.validateManifestFile = nativeBinding.validateManifestFile

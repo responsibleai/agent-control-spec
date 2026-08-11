@@ -96,6 +96,31 @@ public static class AcsManifestTools
     public static IReadOnlyList<ManifestDiagnostic> Diagnostics(string yaml) =>
         JsonSerializer.Deserialize<List<ManifestDiagnostic>>(Native.ManifestDiagnostics(yaml), Json)
         ?? throw new AgentControlSpecNativeException("diagnostics did not deserialize");
+
+    /// <summary>
+    /// Validate a manifest together with the Rego it names, and return
+    /// every finding. An empty list means both halves are sound.
+    /// </summary>
+    /// <param name="manifestYaml">The manifest source.</param>
+    /// <param name="bundles">
+    /// Policy id to in-memory Rego bundle, the same shape
+    /// <see cref="AcsPolicy.ActivateFromMemory"/> takes. Null means the
+    /// manifest names no Rego, and the answer then equals
+    /// <see cref="Diagnostics"/>.
+    /// </param>
+    /// <remarks>
+    /// <see cref="Diagnostics"/> answers only for the document. A manifest
+    /// can name a bundle, satisfy the grammar, and still fail at
+    /// activation because the Rego does not compile. Compilation happens
+    /// at activation, so this activates in memory and reports what that
+    /// surfaced, which moves the failure from a host's first agent action
+    /// to its CI.
+    /// </remarks>
+    public static IReadOnlyList<ManifestDiagnostic> ValidateArtifacts(
+        string manifestYaml, string? bundles = null) =>
+        JsonSerializer.Deserialize<List<ManifestDiagnostic>>(
+            Native.ArtifactDiagnostics(manifestYaml, bundles), Json)
+        ?? throw new AgentControlSpecNativeException("diagnostics did not deserialize");
 }
 
 /// <summary>

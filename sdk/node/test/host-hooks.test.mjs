@@ -21,6 +21,7 @@ const {
   ActivatedPolicy,
   parseManifest,
   mergeManifests,
+  validateArtifacts,
   validateManifestDetailed,
 } = require("../dist/index.js");
 const { AgentContextBuilder } = require("@responsibleai/agent-hooks");
@@ -377,4 +378,119 @@ test("ActivatedPolicy.activate accepts host hooks and evaluates against them", (
   assert.equal(verdict.decision, "deny");
   assert.equal(verdict.reason, "denied_by_test");
   assert.deepEqual(seen, ["custom"]);
+});
+
+
+// ---------------------------------------------------------------------
+// 8. `validateArtifacts` catches Rego compilation failures a
+// manifest-only validator cannot see. This is the shape a 0.3-era
+// consumer's CI depended on (validate_acs_artifacts) and the reason
+// this feature exists: today a manifest can name a bundle, pass
+// grammar validation, and only fail at activation. That moves the
+// failure from CI to a host's first agent action.
+// ---------------------------------------------------------------------
+
+const ARTIFACT_MANIFEST = `agent_control_specification_version: "0.4.0-alpha.1"
+policies:
+  gate:
+    type: rego
+    bundle: ./b
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy:
+      id: gate
+      query: data.acs.decision
+`;
+
+const VALID_REGO = 'package acs\ndecision := {"decision":"allow"}\n';
+
+test("validateArtifacts returns [] for a manifest whose Rego compiles", () => {
+  const findings = validateArtifacts(ARTIFACT_MANIFEST, {
+    gate: { modules: { "p.rego": VALID_REGO } },
+  });
+  assert.deepEqual(findings, []);
+});
+
+test("validateArtifacts surfaces a broken Rego module the manifest names", () => {
+  // Same manifest, same shape, only the module is malformed. The
+  // manifest-only surface accepts this; the artifact surface must
+  // not, because activation would fail on the host's first action.
+  const findings = validateArtifacts(ARTIFACT_MANIFEST, {
+    gate: { modules: { "p.rego": "package acs\nfoo := ] not valid rego" } },
+  });
+  assert.equal(findings.length, 1, `expected one finding, got ${JSON.stringify(findings)}`);
+  const entry = findings[0];
+  assert.equal(entry.severity, "error");
+  assert.ok(
+    entry.code.startsWith("runtime_error:"),
+    `code was ${entry.code}`,
+  );
+  // The Rego compiler's own text carries the module name and its
+  // "expecting expression" complaint verbatim, so an editor can point
+  // at the module. Assert both so a regression that swallowed the
+  // detail would fail.
+  assert.match(entry.message, /p\.rego/);
+  assert.match(entry.message, /expecting expression/);
+
+  // And the manifest-only surface still accepts this: the point of
+  // validateArtifacts is exactly this gap.
+  assert.deepEqual(validateManifestDetailed(ARTIFACT_MANIFEST), []);
+});
+
+test("validateArtifacts reports an unparseable manifest as a manifest problem", () => {
+  // A document that does not parse must be reported as a manifest
+  // problem, not an activation failure — that would name the wrong
+  // half. Even when bundles are supplied, the diagnostic must be
+  // manifest-half.
+  const findings = validateArtifacts("::not: [valid", {
+    gate: { modules: { "p.rego": VALID_REGO } },
+  });
+  assert.equal(findings.length, 1);
+  const entry = findings[0];
+  assert.equal(entry.code, "runtime_error:manifest_invalid");
+  assert.equal(entry.severity, "error");
+
+  // The underlying RuntimeError message matches what the
+  // manifest-only surface reports for the same input.
+  const manifestOnly = validateManifestDetailed("::not: [valid");
+  assert.equal(manifestOnly[0].code, entry.code);
+  assert.equal(manifestOnly[0].message, entry.message);
+});
+
+test("validateArtifacts without bundles equals the manifest-only result", () => {
+  // No bundles supplied: activation is either skipped (no Rego to
+  // load) or fails the same way manifest validation does. Either
+  // way, the artifact validator must not invent activation errors
+  // when the manifest half is what actually reports the problem.
+  // For a grammatically invalid document — one that parses but
+  // fails validation — the two surfaces report the same underlying
+  // manifest problem. Activation would never be reached.
+  const invalid =
+    'agent_control_specification_version: "0.4.0-alpha.1"\npolicies: {}\nintervention_points: {}\n';
+  const artifact = validateArtifacts(invalid);
+  const manifest = validateManifestDetailed(invalid);
+  assert.equal(artifact.length, manifest.length);
+  assert.equal(artifact.length, 1);
+  assert.equal(artifact[0].code, manifest[0].code);
+  assert.equal(artifact[0].message, manifest[0].message);
+  assert.equal(artifact[0].severity, "error");
+
+  // And omitting the bundles argument behaves identically to passing
+  // an empty object, so callers can write either.
+  assert.deepEqual(
+    validateArtifacts(ARTIFACT_MANIFEST, {}),
+    validateArtifacts(ARTIFACT_MANIFEST),
+  );
+});
+
+test("validateArtifacts throws on boundary problems", () => {
+  // Non-string manifest and unpaired surrogate are boundary problems
+  // and throw as TypeError, not as an invalid manifest. Wrong shape
+  // for `bundles` throws too, rather than silently JSON.stringify-ing
+  // something the native side would reject.
+  assert.throws(() => validateArtifacts(42), TypeError);
+  assert.throws(() => validateArtifacts("\uD800"), TypeError);
+  assert.throws(() => validateArtifacts(ARTIFACT_MANIFEST, 5), TypeError);
+  assert.throws(() => validateArtifacts(ARTIFACT_MANIFEST, "not-an-object"), TypeError);
 });
