@@ -700,12 +700,32 @@ if (!nativeBinding) {
 }
 
 module.exports = nativeBinding
+module.exports.defaultLimits = nativeBinding.defaultLimits
 module.exports.intercept = nativeBinding.intercept
 module.exports.interceptorNew = nativeBinding.interceptorNew
+module.exports.interceptorNewWithHooks = nativeBinding.interceptorNewWithHooks
+module.exports.mergeManifests = nativeBinding.mergeManifests
+module.exports.parseManifest = nativeBinding.parseManifest
 module.exports.policyActivate = nativeBinding.policyActivate
 module.exports.policyActivateFromMemory = nativeBinding.policyActivateFromMemory
+module.exports.policyActivateFromMemoryWithHooks = nativeBinding.policyActivateFromMemoryWithHooks
+module.exports.policyActivateWithHooks = nativeBinding.policyActivateWithHooks
 module.exports.policyEvaluate = nativeBinding.policyEvaluate
 module.exports.policyInterventionPoints = nativeBinding.policyInterventionPoints
+module.exports.streamSessionAdvance = nativeBinding.streamSessionAdvance
+module.exports.streamSessionEndOfPayloads = nativeBinding.streamSessionEndOfPayloads
+module.exports.streamSessionFinish = nativeBinding.streamSessionFinish
+module.exports.streamSessionNew = nativeBinding.streamSessionNew
+module.exports.streamSessionObserve = nativeBinding.streamSessionObserve
+module.exports.streamSessionObserveText = nativeBinding.streamSessionObserveText
+module.exports.streamSessionPending = nativeBinding.streamSessionPending
+module.exports.streamSessionRecordOutcome = nativeBinding.streamSessionRecordOutcome
+module.exports.streamSessionRecordVerdict = nativeBinding.streamSessionRecordVerdict
+module.exports.streamSessionSafeOffset = nativeBinding.streamSessionSafeOffset
+module.exports.streamSessionState = nativeBinding.streamSessionState
+module.exports.streamSessionWatermark = nativeBinding.streamSessionWatermark
 module.exports.supportedManifestVersions = nativeBinding.supportedManifestVersions
+module.exports.validateArtifactsDetailed = nativeBinding.validateArtifactsDetailed
 module.exports.validateManifest = nativeBinding.validateManifest
+module.exports.validateManifestDetailed = nativeBinding.validateManifestDetailed
 module.exports.validateManifestFile = nativeBinding.validateManifestFile

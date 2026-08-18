@@ -11,7 +11,7 @@ name = "agent_control_spec_node"
 crate-type = ["cdylib"]
 
 [dependencies]
-agent-control-spec = { path = "../../../engine", features = ["default-dispatchers"] }
+agent-control-spec = { path = "../../../engine", features = ["default-dispatchers", "streaming"] }
 napi = { version = "3", default-features = false, features = ["napi8"] }
 napi-derive = "3"
 serde_json = "1"

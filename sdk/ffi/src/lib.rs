@@ -17,22 +17,47 @@
 // every schema-valid context. Errors on that path are boundary
 // problems only (bad UTF-8, non-object context, poisoned handle).
 
+use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
 use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
+use agent_control_spec::policy::PreparedPolicyInvocation;
+use agent_control_spec::runtime::PolicyDispatcher;
+use agent_control_spec::stream_session::{
+    SafetyLevel, SegmentOutcome, StreamSession, StreamSessionConfig, StreamSourceType, StreamSpan,
+    StreamTrack,
+};
+use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
+use agent_control_spec::wire;
 use agent_control_spec::{
-    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Manifest, Runtime, RuntimeError,
-    SUPPORTED_VERSIONS,
+    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, Limits, Manifest, Runtime,
+    RuntimeError, Verdict, SUPPORTED_VERSIONS,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Opaque interceptor handle: the runtime plus the payload-free name
 /// recorded on `verdicts[].name`.
 pub struct AcsInterceptor {
     runtime: Runtime,
     name: String,
+}
+
+/// Read an optional NUL-terminated string. NULL means absent, which is
+/// distinct from present and invalid.
+unsafe fn read_optional<'a>(
+    ptr: *const c_char,
+    what: &str,
+    err_out: *mut *mut c_char,
+) -> Result<Option<&'a str>, ()> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    match read_utf8(ptr, what, err_out) {
+        Some(value) => Ok(Some(value)),
+        None => Err(()),
+    }
 }
 
 fn set_err(err_out: *mut *mut c_char, message: String) {
@@ -804,6 +829,1225 @@ pub unsafe extern "C" fn acs_policy_free(handle: *mut AcsActivatedPolicy) {
         return;
     }
     drop(Box::from_raw(handle));
+}
+
+// ---------------------------------------------------------------------
+// Host extension points and manifest tooling.
+//
+// The engine takes an annotator dispatcher, a policy dispatcher, a
+// telemetry sink and a perf level. The zero-config constructors above
+// pick defaults for all four, which is right for a host that wants a
+// policy decision and nothing else. A host that classifies through its
+// own service, evaluates through its own engine, or records its own
+// audit trail needs to supply them, and before these entry points
+// existed there was no way in from any language but Rust.
+//
+// Callbacks cross the boundary as JSON and answer with JSON. A callback
+// returns NULL and sets its own error string to fail, and the engine
+// turns that into a fail-closed deny rather than treating it as an
+// absent annotation: a classifier that could not be reached must not
+// read as "found nothing".
+//
+// Ownership: a string the host returns is freed by the host, through
+// the `free` callback registered alongside. The engine copies what it
+// needs first. It never calls `acs_free_string` on host memory.
+// ---------------------------------------------------------------------
+
+/// Free a string a host callback returned.
+pub type AcsHookFree = unsafe extern "C" fn(ctx: *mut c_void, value: *mut c_char);
+
+/// Classify one annotation. Returns the annotation value as JSON, or
+/// NULL with `*err_out` set.
+pub type AcsAnnotatorFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    annotator_name: *const c_char,
+    invocation_json: *const c_char,
+    policy_input_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char;
+
+/// Evaluate one prepared policy invocation. Returns the policy output as
+/// JSON, or NULL with `*err_out` set.
+pub type AcsPolicyFn = unsafe extern "C" fn(
+    ctx: *mut c_void,
+    invocation_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char;
+
+/// Receive one telemetry event as JSON. A sink cannot fail the
+/// evaluation, so it has no error channel.
+pub type AcsTelemetryFn = unsafe extern "C" fn(ctx: *mut c_void, event_json: *const c_char);
+
+// A host context is an opaque pointer the engine only hands back. The
+// engine calls dispatchers from whatever thread is evaluating, so the
+// host is responsible for its context being safe to use from more than
+// one. Stated here because the compiler cannot check it.
+struct HostCtx {
+    ctx: *mut c_void,
+    free: Option<AcsHookFree>,
+}
+
+unsafe impl Send for HostCtx {}
+unsafe impl Sync for HostCtx {}
+
+impl HostCtx {
+    /// Copy a string the host returned, then hand the original back to
+    /// the host's own allocator.
+    unsafe fn take(&self, raw: *mut c_char) -> Option<String> {
+        if raw.is_null() {
+            return None;
+        }
+        let copied = CStr::from_ptr(raw).to_str().ok().map(str::to_string);
+        if let Some(free) = self.free {
+            free(self.ctx, raw);
+        }
+        copied
+    }
+}
+
+fn host_error(what: &str, err_out: *mut *mut c_char) -> RuntimeError {
+    let detail = if err_out.is_null() {
+        None
+    } else {
+        let raw = unsafe { *err_out };
+        if raw.is_null() {
+            None
+        } else {
+            let message = unsafe { CStr::from_ptr(raw) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { acs_free_string(raw) };
+            Some(message)
+        }
+    };
+    RuntimeError::PolicyInvocationFailed(match detail {
+        Some(message) => format!("host {what} failed: {message}"),
+        None => format!("host {what} failed without a message"),
+    })
+}
+
+struct HostAnnotatorDispatcher {
+    host: HostCtx,
+    call: AcsAnnotatorFn,
+}
+
+impl AnnotatorDispatcher for HostAnnotatorDispatcher {
+    fn dispatch(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &Value,
+    ) -> Result<Value, RuntimeError> {
+        let name = CString::new(annotator_name).map_err(|_| {
+            RuntimeError::PolicyInvocationFailed("annotator name held a NUL".into())
+        })?;
+        let invocation = CString::new(serde_json::to_string(annotator).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("annotator invocation: {e}"))
+        })?)
+        .map_err(|_| {
+            RuntimeError::PolicyInvocationFailed("annotator invocation held a NUL".into())
+        })?;
+        let input = CString::new(
+            serde_json::to_string(preliminary_policy_input)
+                .map_err(|e| RuntimeError::PolicyInvocationFailed(format!("policy input: {e}")))?,
+        )
+        .map_err(|_| RuntimeError::PolicyInvocationFailed("policy input held a NUL".into()))?;
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe {
+            (self.call)(
+                self.host.ctx,
+                name.as_ptr(),
+                invocation.as_ptr(),
+                input.as_ptr(),
+                &mut err,
+            )
+        };
+        let Some(json) = (unsafe { self.host.take(raw) }) else {
+            return Err(host_error("annotator", &mut err));
+        };
+        serde_json::from_str(&json).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("host annotator returned non JSON: {e}"))
+        })
+    }
+}
+
+struct HostPolicyDispatcher {
+    host: HostCtx,
+    call: AcsPolicyFn,
+}
+
+impl PolicyDispatcher for HostPolicyDispatcher {
+    fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<Value, RuntimeError> {
+        let payload = CString::new(serde_json::to_string(invocation).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("policy invocation: {e}"))
+        })?)
+        .map_err(|_| RuntimeError::PolicyInvocationFailed("policy invocation held a NUL".into()))?;
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let raw = unsafe { (self.call)(self.host.ctx, payload.as_ptr(), &mut err) };
+        let Some(json) = (unsafe { self.host.take(raw) }) else {
+            return Err(host_error("policy dispatcher", &mut err));
+        };
+        serde_json::from_str(&json).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!("host policy returned non JSON: {e}"))
+        })
+    }
+}
+
+struct HostTelemetrySink {
+    host: HostCtx,
+    call: AcsTelemetryFn,
+}
+
+impl TelemetrySink for HostTelemetrySink {
+    fn emit(&self, event: TelemetryEvent) {
+        // A sink cannot fail an evaluation, so a problem here drops the
+        // event rather than denying the action it describes.
+        let Ok(json) = serde_json::to_string(&wire::telemetry_event_json(&event)) else {
+            return;
+        };
+        let Ok(payload) = CString::new(json) else {
+            return;
+        };
+        unsafe { (self.call)(self.host.ctx, payload.as_ptr()) };
+    }
+}
+
+/// Build an interceptor with host-supplied extension points.
+///
+/// Any callback may be NULL, which keeps the bundled default for that
+/// slot, so a host overrides only what it needs. `perf_telemetry` is
+/// `off`, `external` or `full`, and NULL means `off`.
+///
+/// `annotator_ctx`, `policy_ctx` and `telemetry_ctx` are opaque to the
+/// engine. Dispatch happens on whichever thread evaluates, so a context
+/// shared across threads must be safe to use from all of them.
+///
+/// Returns NULL and sets `*err_out` on failure. Free with
+/// `acs_interceptor_free`.
+///
+/// # Safety
+/// `manifest_path` must point to `manifest_path_len` readable bytes.
+/// Every non-null callback must remain valid, and every context must
+/// stay alive, until the handle is freed.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
+    manifest_path: *const u8,
+    manifest_path_len: usize,
+    annotator_fn: Option<AcsAnnotatorFn>,
+    annotator_ctx: *mut c_void,
+    policy_fn: Option<AcsPolicyFn>,
+    policy_ctx: *mut c_void,
+    telemetry_fn: Option<AcsTelemetryFn>,
+    telemetry_ctx: *mut c_void,
+    hook_free: Option<AcsHookFree>,
+    perf_telemetry: *const c_char,
+    limits_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut AcsInterceptor {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let path = match read_path(manifest_path, manifest_path_len, err_out) {
+            Some(p) => p,
+            None => return std::ptr::null_mut(),
+        };
+        let manifest = match Manifest::from_path(path) {
+            Ok(m) => m,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let perf = match read_optional(perf_telemetry, "perf_telemetry", err_out) {
+            Ok(Some(raw)) => match wire::parse_perf_telemetry(raw) {
+                Ok(level) => level,
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    return std::ptr::null_mut();
+                }
+            },
+            Ok(None) => agent_control_spec::PerfTelemetry::Off,
+            Err(()) => return std::ptr::null_mut(),
+        };
+        let limits = match read_optional(limits_json, "limits_json", err_out) {
+            Ok(Some(raw)) if !raw.trim().is_empty() => {
+                let parsed: Value = match serde_json::from_str(raw) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        set_err(err_out, format!("limits_json does not parse: {e}"));
+                        return std::ptr::null_mut();
+                    }
+                };
+                match wire::limits_from_json(&parsed) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        set_err(err_out, format!("{e}"));
+                        return std::ptr::null_mut();
+                    }
+                }
+            }
+            Ok(_) => Limits::default(),
+            Err(()) => return std::ptr::null_mut(),
+        };
+
+        let annotations: Arc<dyn AnnotatorDispatcher> = match annotator_fn {
+            Some(call) => Arc::new(HostAnnotatorDispatcher {
+                host: HostCtx {
+                    ctx: annotator_ctx,
+                    free: hook_free,
+                },
+                call,
+            }),
+            None => default_annotator_dispatcher(),
+        };
+        let policy: Arc<dyn PolicyDispatcher> = match policy_fn {
+            Some(call) => Arc::new(HostPolicyDispatcher {
+                host: HostCtx {
+                    ctx: policy_ctx,
+                    free: hook_free,
+                },
+                call,
+            }),
+            None => Arc::new(BindingPolicyDispatcher::new()),
+        };
+        let telemetry: Arc<dyn TelemetrySink> = match telemetry_fn {
+            Some(call) => Arc::new(HostTelemetrySink {
+                host: HostCtx {
+                    ctx: telemetry_ctx,
+                    free: hook_free,
+                },
+                call,
+            }),
+            None => Arc::new(NoopTelemetrySink),
+        };
+
+        match Runtime::with_telemetry_perf_and_limits(
+            manifest,
+            annotations,
+            policy,
+            telemetry,
+            perf,
+            limits,
+        ) {
+            Ok(runtime) => Box::into_raw(Box::new(AcsInterceptor {
+                runtime,
+                name: "acs".to_string(),
+            })),
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_interceptor_new_with_hooks".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Parse manifest text and return it as JSON.
+///
+/// Parsing is not validation: this answers what the document says, which
+/// an authoring or migration tool needs before the document is
+/// runnable. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `yaml` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_parse(
+    yaml: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(source) = read_utf8(yaml, "yaml", err_out) else {
+            return std::ptr::null_mut();
+        };
+        match Manifest::from_yaml_str(source) {
+            Ok(manifest) => match serde_json::to_string(&manifest) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("manifest serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(err_out, "internal panic in acs_manifest_parse".to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Compose a chain of manifest documents into one and return it as JSON.
+///
+/// `yamls_json` is a JSON array of manifest sources, outermost base
+/// first. This is the overlay case: a base policy plus the deltas an
+/// environment layers on it, resolved the same way the engine resolves
+/// `extends`. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `yamls_json` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_merge(
+    yamls_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(yamls_json, "yamls_json", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let sources: Vec<String> = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(
+                    err_out,
+                    format!("yamls_json must be a JSON array of manifest sources: {e}"),
+                );
+                return std::ptr::null_mut();
+            }
+        };
+        if sources.is_empty() {
+            set_err(err_out, "yamls_json must name at least one source".into());
+            return std::ptr::null_mut();
+        }
+        let borrowed: Vec<&str> = sources.iter().map(String::as_str).collect();
+        match Manifest::from_yaml_chain(&borrowed) {
+            Ok(manifest) => match serde_json::to_string(&manifest) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("manifest serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
+            },
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(err_out, "internal panic in acs_manifest_merge".to_string());
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Validate manifest text and return the findings as a JSON array.
+///
+/// An empty array means valid. Each entry carries `code`, `message` and
+/// `severity`. This is the shape an authoring tool or a CI linter needs:
+/// `acs_validate_manifest` answers yes or no through an error string,
+/// which cannot be rendered against a document. Freed with
+/// `acs_free_string`.
+///
+/// # Safety
+/// `yaml` must be a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_diagnostics(
+    yaml: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(source) = read_utf8(yaml, "yaml", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let findings = match Manifest::from_yaml_str(source) {
+            Ok(manifest) => match manifest.validate() {
+                Ok(()) => Vec::new(),
+                Err(e) => vec![wire::diagnostic_json(&e)],
+            },
+            Err(e) => vec![wire::diagnostic_json(&e)],
+        };
+        match serde_json::to_string(&findings) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("diagnostics serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_manifest_diagnostics".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Validate a manifest together with the Rego it names, and return the
+/// findings as a JSON array.
+///
+/// An empty array means both halves are sound. `acs_manifest_diagnostics`
+/// answers only for the document: a manifest can name a bundle, satisfy
+/// the grammar, and still fail at activation because the Rego does not
+/// compile. Compilation happens at activation, so this activates against
+/// the supplied bundles in memory and reports what that surfaced, which
+/// moves the failure from a host's first agent action to its CI.
+///
+/// `bundles_json` maps policy id to an in-memory bundle, the same shape
+/// `acs_policy_activate_from_memory` takes. NULL or empty means the
+/// manifest names no Rego, in which case this answers exactly as
+/// `acs_manifest_diagnostics` does. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `manifest_yaml` must be a valid NUL-terminated string. `bundles_json`
+/// must be NULL or a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_artifact_diagnostics(
+    manifest_yaml: *const c_char,
+    bundles_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(source) = read_utf8(manifest_yaml, "manifest_yaml", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let bundles = match read_in_memory_bundles(bundles_json, err_out) {
+            Some(bundles) => bundles,
+            None => return std::ptr::null_mut(),
+        };
+
+        // The manifest is checked first and on its own. A document that
+        // does not parse would otherwise be reported as an activation
+        // failure, which names the wrong half.
+        let findings = match Manifest::from_yaml_str(source) {
+            Err(e) => vec![wire::diagnostic_json(&e)],
+            Ok(manifest) => match manifest.validate() {
+                Err(e) => vec![wire::diagnostic_json(&e)],
+                Ok(()) => match ActivatedPolicy::activate_from_memory(source, bundles) {
+                    Ok(_) => Vec::new(),
+                    Err(e) => vec![wire::diagnostic_json(&e)],
+                },
+            },
+        };
+
+        match serde_json::to_string(&findings) {
+            Ok(json) => to_c_string(json, err_out),
+            Err(e) => {
+                set_err(err_out, format!("diagnostics serialization failed: {e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_artifact_diagnostics".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------
+// Incremental stream mediation (specification section 18.1).
+//
+// A `StreamSession` is stateful, so it follows the handle shape used by
+// `AcsActivatedPolicy`: create once, drive it as payloads arrive, free
+// exactly once. The runtime underneath stays stateless; the session only
+// records what each ordinary evaluation cleared.
+//
+// Scalar queries return `i64` so an absent value needs no allocation:
+// `>= 0` is the value, `-1` is absent (a released offset the caller must
+// treat as "release nothing"), and `-2` means the call failed and
+// `*err_out` carries why. Absent and failed are distinct because a
+// settled session legitimately has no safe offset, which is not an error.
+//
+// Structured queries return JSON, freed with `acs_free_string`, so the
+// wire contract is owned here rather than derived from Rust layout.
+// ---------------------------------------------------------------------
+
+/// Parse a wire value through the core, reporting failure the way this
+/// boundary does. The core owns what the names mean.
+fn wire_track(value: &str, err_out: *mut *mut c_char) -> Option<StreamTrack> {
+    match StreamTrack::parse(value) {
+        Ok(track) => Some(track),
+        Err(e) => {
+            set_err(err_out, format!("{e}"));
+            None
+        }
+    }
+}
+
+fn wire_outcome(value: &str, err_out: *mut *mut c_char) -> Option<SegmentOutcome> {
+    match SegmentOutcome::parse(value) {
+        Ok(outcome) => Some(outcome),
+        Err(e) => {
+            set_err(err_out, format!("{e}"));
+            None
+        }
+    }
+}
+
+/// Opaque handle to one mediated stream.
+///
+/// The session is behind a lock because its methods take `&mut self`,
+/// unlike `AcsActivatedPolicy`, whose evaluation takes `&self` and is
+/// `Send + Sync`. Without one, two host threads driving one stream race
+/// in the engine, and a lost `observe` silently shortens the received
+/// offset, which releases text no task evaluated. The lock costs
+/// nothing next to the JSON on either side of this boundary, and it
+/// means every C consumer gets the guarantee rather than each binding
+/// having to rediscover it.
+pub struct AcsStreamSession {
+    session: Mutex<StreamSession>,
+}
+
+/// Run `body` against the session, reporting a poisoned lock rather
+/// than panicking across the C boundary.
+///
+/// A poisoned lock means a previous call panicked while holding it, so
+/// the accounting may be half-applied. Refusing is the only safe answer:
+/// the alternative is releasing against state nobody can vouch for.
+unsafe fn with_session<T>(
+    handle: *const AcsStreamSession,
+    err_out: *mut *mut c_char,
+    failure: T,
+    body: impl FnOnce(&mut StreamSession) -> T,
+) -> T {
+    if handle.is_null() {
+        set_err(err_out, "handle must not be null".to_string());
+        return failure;
+    }
+    match (*handle).session.lock() {
+        Ok(mut guard) => body(&mut guard),
+        Err(_) => {
+            set_err(
+                err_out,
+                "stream session lock is poisoned by an earlier panic".to_string(),
+            );
+            failure
+        }
+    }
+}
+
+/// Open a session from `config_json`.
+///
+/// The object takes `safety_level` (`blocking`, `complete` or
+/// `deferred`), the per track start offsets `request_start_rune_offset`
+/// and `response_start_rune_offset`, and the task name arrays
+/// `request_tasks` and `response_tasks`. An absent field takes its
+/// default; an empty task array means that track is unmediated.
+///
+/// Returns NULL and sets `*err_out` on failure. Free with
+/// `acs_stream_session_free`.
+///
+/// # Safety
+/// `config_json` must be a valid NUL-terminated string. `err_out` must
+/// be null or point to a writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_new(
+    config_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut AcsStreamSession {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(config_json, "config_json", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let parsed: Value = match serde_json::from_str(raw) {
+            Ok(v @ Value::Object(_)) => v,
+            Ok(_) => {
+                set_err(err_out, "config_json must be a JSON object".to_string());
+                return std::ptr::null_mut();
+            }
+            Err(e) => {
+                set_err(err_out, format!("config_json does not parse: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let level_raw = parsed
+            .get("safety_level")
+            .and_then(Value::as_str)
+            .unwrap_or("blocking");
+        let safety_level = match SafetyLevel::parse(level_raw) {
+            Ok(l) => l,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return std::ptr::null_mut();
+            }
+        };
+        let offset = |key: &str| -> Result<u32, String> {
+            match parsed.get(key) {
+                None | Some(Value::Null) => Ok(0),
+                Some(v) => v
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| format!("{key} must be a rune offset within u32")),
+            }
+        };
+        let request_start_rune_offset = match offset("request_start_rune_offset") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let response_start_rune_offset = match offset("response_start_rune_offset") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let tasks = |key: &str| -> Result<Vec<String>, String> {
+            match parsed.get(key) {
+                None | Some(Value::Null) => Ok(Vec::new()),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|i| {
+                        i.as_str()
+                            .map(str::to_string)
+                            .ok_or_else(|| format!("{key} must contain only task name strings"))
+                    })
+                    .collect(),
+                Some(_) => Err(format!("{key} must be an array of task names")),
+            }
+        };
+        let request_tasks = match tasks("request_tasks") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let response_tasks = match tasks("response_tasks") {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, e);
+                return std::ptr::null_mut();
+            }
+        };
+        let config = StreamSessionConfig {
+            safety_level,
+            request_start_rune_offset,
+            response_start_rune_offset,
+            request_tasks,
+            response_tasks,
+        };
+        match StreamSession::new(config) {
+            Ok(session) => Box::into_raw(Box::new(AcsStreamSession {
+                session: Mutex::new(session),
+            })),
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                std::ptr::null_mut()
+            }
+        }
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_new".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Free a session handle. Freeing NULL is a no-op.
+///
+/// # Safety
+/// `handle` must come from `acs_stream_session_new` and be freed once.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_free(handle: *mut AcsStreamSession) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| drop(Box::from_raw(handle))));
+}
+
+/// Record that `runes` more runes of `source_type` arrived. Returns the
+/// track's received offset, or -2 on failure.
+///
+/// # Safety
+/// `handle` must be live; `source_type` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_observe(
+    handle: *mut AcsStreamSession,
+    source_type: *const c_char,
+    runes: u32,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -2;
+        };
+        let source = match StreamSourceType::parse(raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -2;
+            }
+        };
+        with_session(handle, err_out, -2, |s| match s.observe(source, runes) {
+            Ok(received) => i64::from(received),
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                -2
+            }
+        })
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_observe".to_string(),
+        );
+        -2
+    })
+}
+
+/// Record an arriving payload by its text, counting runes the way the
+/// engine does so a host never has to count them itself. Returns the
+/// track's received offset, or -2 on failure.
+///
+/// # Safety
+/// `handle` must be live; `source_type` and `text` valid NUL-terminated
+/// strings.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_observe_text(
+    handle: *mut AcsStreamSession,
+    source_type: *const c_char,
+    text: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -2;
+        };
+        let source = match StreamSourceType::parse(raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -2;
+            }
+        };
+        let Some(body) = read_utf8(text, "text", err_out) else {
+            return -2;
+        };
+        with_session(handle, err_out, -2, |s| {
+            match s.observe_text(source, body) {
+                Ok(received) => i64::from(received),
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    -2
+                }
+            }
+        })
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_observe_text".to_string(),
+        );
+        -2
+    })
+}
+
+/// Record what `task` decided about the span `[start, end)` of
+/// `source_type`. `outcome` is `cleared`, `transformed` or `denied`.
+/// Returns 0, or -1 on failure.
+///
+/// # Safety
+/// `handle` must be live; `task`, `source_type` and `outcome` valid
+/// NUL-terminated strings.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_record_outcome(
+    handle: *mut AcsStreamSession,
+    task: *const c_char,
+    source_type: *const c_char,
+    start: u32,
+    end: u32,
+    outcome: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i32 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(task_name) = read_utf8(task, "task", err_out) else {
+            return -1;
+        };
+        let Some(source_raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -1;
+        };
+        let source = match StreamSourceType::parse(source_raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        let Some(outcome_raw) = read_utf8(outcome, "outcome", err_out) else {
+            return -1;
+        };
+        let Some(outcome) = wire_outcome(outcome_raw, err_out) else {
+            return -1;
+        };
+        let span = match StreamSpan::new(source, start, end) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        with_session(handle, err_out, -1, |s| {
+            match s.record_outcome(task_name, &span, outcome) {
+                Ok(()) => 0,
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    -1
+                }
+            }
+        })
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_record_outcome".to_string(),
+        );
+        -1
+    })
+}
+
+/// Record an Agent Control Specification verdict against the span
+/// `[start, end)` of `source_type`, mapping its decision onto an
+/// outcome. `verdict_json` is a verdict as `acs_policy_evaluate`
+/// returns one, so a host feeds a decision straight back without
+/// translating it. Returns 0, or -1 on failure.
+///
+/// # Safety
+/// `handle` must be live; `task`, `source_type` and `verdict_json`
+/// valid NUL-terminated strings.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_record_verdict(
+    handle: *mut AcsStreamSession,
+    task: *const c_char,
+    source_type: *const c_char,
+    start: u32,
+    end: u32,
+    verdict_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i32 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(task_name) = read_utf8(task, "task", err_out) else {
+            return -1;
+        };
+        let Some(source_raw) = read_utf8(source_type, "source_type", err_out) else {
+            return -1;
+        };
+        let source = match StreamSourceType::parse(source_raw) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        let Some(raw) = read_utf8(verdict_json, "verdict_json", err_out) else {
+            return -1;
+        };
+        let verdict: Verdict = match serde_json::from_str(raw) {
+            Ok(v) => v,
+            Err(e) => {
+                set_err(err_out, format!("verdict_json does not parse: {e}"));
+                return -1;
+            }
+        };
+        let span = match StreamSpan::new(source, start, end) {
+            Ok(s) => s,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return -1;
+            }
+        };
+        with_session(handle, err_out, -1, |s| {
+            match s.record_verdict(task_name, &span, &verdict) {
+                Ok(()) => 0,
+                Err(e) => {
+                    set_err(err_out, format!("{e}"));
+                    -1
+                }
+            }
+        })
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_record_verdict".to_string(),
+        );
+        -1
+    })
+}
+
+/// Recompute `track`'s watermark and return the offset it advanced to,
+/// -1 when it did not advance or the session has ended, -2 on failure.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_advance(
+    handle: *mut AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return -2;
+        };
+        let Some(track) = wire_track(raw, err_out) else {
+            return -2;
+        };
+        with_session(handle, err_out, -2, |s| match s.advance(track) {
+            Some(offset) => i64::from(offset),
+            None => -1,
+        })
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_advance".to_string(),
+        );
+        -2
+    })
+}
+
+/// The offset of `track` safe to release, -1 once the session has ended,
+/// -2 on failure. A settled session has no safe offset, which is not an
+/// error: it means release nothing further.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_safe_offset(
+    handle: *const AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return -2;
+        };
+        let Some(track) = wire_track(raw, err_out) else {
+            return -2;
+        };
+        with_session(handle, err_out, -2, |s| match s.safe_offset(track) {
+            Some(offset) => i64::from(offset),
+            None => -1,
+        })
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_safe_offset".to_string(),
+        );
+        -2
+    })
+}
+
+/// The rune count of `track` observed but not yet released, or -2 on
+/// failure.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_pending(
+    handle: *const AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i64 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return -2;
+        };
+        let Some(track) = wire_track(raw, err_out) else {
+            return -2;
+        };
+        with_session(handle, err_out, -2, |s| i64::from(s.pending(track)))
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_pending".to_string(),
+        );
+        -2
+    })
+}
+
+/// `track`'s watermark as JSON, carrying `track`, `confirmed`,
+/// `received`, `pending` and the `tasks` that must clear it. The
+/// confirmed offset stays readable after settlement, so an audit record
+/// can still say how far the stream got. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `handle` must be live; `track` a valid NUL-terminated string.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_watermark(
+    handle: *const AcsStreamSession,
+    track: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(raw) = read_utf8(track, "track", err_out) else {
+            return std::ptr::null_mut();
+        };
+        let Some(track) = wire_track(raw, err_out) else {
+            return std::ptr::null_mut();
+        };
+        with_session(handle, err_out, std::ptr::null_mut(), |s| {
+            let watermark = s.watermark(track);
+            let payload = wire::watermark_json(track, watermark);
+            match serde_json::to_string(&payload) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("watermark serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
+            }
+        })
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_watermark".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Session state as JSON: `is_ended`, `transformed`, `end_reason` and
+/// the effective `config`. `end_reason` is null while the session is
+/// live. Freed with `acs_free_string`.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_stream_session_new`.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_state(
+    handle: *const AcsStreamSession,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        with_session(handle, err_out, std::ptr::null_mut(), |s| {
+            let payload = wire::stream_session_state_json(s);
+            match serde_json::to_string(&payload) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("state serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
+            }
+        })
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_state".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Declare that no further payload will arrive. Returns 0, or -1 on
+/// failure.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_stream_session_new`.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_end_of_payloads(
+    handle: *mut AcsStreamSession,
+    err_out: *mut *mut c_char,
+) -> i32 {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        with_session(handle, err_out, -1, |s| {
+            s.end_of_payloads();
+            0
+        })
+    }));
+    result.unwrap_or_else(|_| {
+        set_err(
+            err_out,
+            "internal panic in acs_stream_session_end_of_payloads".to_string(),
+        );
+        -1
+    })
+}
+
+/// Settle the session and return the completion as JSON, carrying
+/// `reason`, `transformed` and `is_clean`. Freed with
+/// `acs_free_string`. Settling twice returns the same completion.
+///
+/// # Safety
+/// `handle` must be a live pointer from `acs_stream_session_new`.
+#[no_mangle]
+pub unsafe extern "C" fn acs_stream_session_finish(
+    handle: *mut AcsStreamSession,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_err(err_out);
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        with_session(handle, err_out, std::ptr::null_mut(), |s| {
+            let completion = s.finish();
+            let payload = wire::completion_json(&completion);
+            match serde_json::to_string(&payload) {
+                Ok(json) => to_c_string(json, err_out),
+                Err(e) => {
+                    set_err(err_out, format!("completion serialization failed: {e}"));
+                    std::ptr::null_mut()
+                }
+            }
+        })
+    }));
+    match result {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_err(
+                err_out,
+                "internal panic in acs_stream_session_finish".to_string(),
+            );
+            std::ptr::null_mut()
+        }
+    }
 }
 
 #[cfg(test)]

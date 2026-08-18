@@ -8,3 +8,12 @@ __pycache__/
 dist/
 bin/
 obj/
+
+# Per-RID engine binaries staged for the .NET package (built, never committed).
+/sdk/dotnet/native/
+
+# napi writes these next to the committed binding.js loader when the
+# platform build runs in place. The loader the package ships is
+# binding.js; these are byproducts.
+/sdk/node/index.js
+/sdk/node/index.d.ts
