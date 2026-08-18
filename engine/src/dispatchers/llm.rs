@@ -3,6 +3,7 @@ use crate::dispatchers::{
     constants::*,
     http, resolve,
 };
+use crate::hex::lower as hex;
 use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, RuntimeError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -776,16 +777,6 @@ fn hmac_sha256(key: &[u8], message: &[u8]) -> Vec<u8> {
 
 fn hex_sha256(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
-}
-
-fn hex(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        out.push(HEX[(byte >> 4) as usize] as char);
-        out.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    out
 }
 
 fn percent_encode_path_segment(value: &str) -> String {

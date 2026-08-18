@@ -20,6 +20,7 @@ pub use constants::reserved_reason;
 #[cfg(feature = "default-dispatchers")]
 pub mod dispatchers;
 pub mod error;
+mod hex;
 pub mod interceptor;
 pub mod limits;
 pub mod manifest;
