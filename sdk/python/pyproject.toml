@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Rust",
 ]
-dependencies = ["agent-hooks-sdk==0.1.0a4"]
+dependencies = ["agent-hooks-sdk==0.1.0a5"]
 
 [project.urls]
 Repository = "https://github.com/responsibleai/agent-control-spec"
