@@ -5,11 +5,13 @@
 version: 2
 updates:
   - package-ecosystem: cargo
+    # Workspace ROOTS only: sdk/ffi and sdk/node/native are members of the
+    # root workspace (shared Cargo.lock) and are covered by "/". Listing a
+    # member directory makes Dependabot's grouped fetcher fail with
+    # "No Cargo.toml!" because it cannot see the workspace root.
     directories:
       - "/"
       - "/sdk/python"
-      - "/sdk/node/native"
-      - "/sdk/ffi"
     schedule: { interval: weekly }
     groups:
       rust: { patterns: ["*"] }
