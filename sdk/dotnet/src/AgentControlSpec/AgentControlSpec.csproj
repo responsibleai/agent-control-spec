@@ -43,7 +43,7 @@
   </Target>
 
   <ItemGroup>
-    <PackageReference Include="ResponsibleAI.AgentHooks" Version="0.1.0-alpha.4" />
+    <PackageReference Include="ResponsibleAI.AgentHooks" Version="0.1.0-alpha.5" />
   </ItemGroup>
 
 </Project>
