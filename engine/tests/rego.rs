@@ -991,8 +991,15 @@ fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
     // correlated with the box being busy, which is when CI runs. 10
     // leaves roughly 4x headroom on the pass side and 2.3x on the detect
     // side.
+    //
+    // 2026-08-18: a loaded macos-latest runner produced a passing-regime
+    // ratio of 9.58 (bounded 63.6ms, unbounded 608.9ms), well below the
+    // 38-54 measured range, and tripped the threshold of 10. The
+    // populations still do not overlap: worst observed pass 9.58 against
+    // the defect ceiling of 4.3. Recalibrated to 6, which sits 40% above
+    // the defect ceiling and 37% below the observed pass floor.
     assert!(
-        bounded * 10 < unbounded,
+        bounded * 6 < unbounded,
         "bundle load escaped the deadline: bounded {bounded:?} against an \
          unbounded control of {unbounded:?}"
     );
