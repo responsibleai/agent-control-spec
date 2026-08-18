@@ -11,12 +11,24 @@
   to a search-and-replace bump, because the stale literal never contained the
   version being replaced. `sdk/python/tests/test_version.py` fails if a literal
   returns.
-- Release bump only otherwise. 0.4.0-alpha.2 shipped before #39 merged, so the
-  streaming, host hook, manifest tooling and artifact validation surfaces that
-  change added are reachable from a registry install for the first time here.
-  The .NET package also carries the native engine for five runtime identifiers;
-  the published 0.4.0-alpha.2 nupkg could not run without one on the library
-  path.
+- `scripts/check-version-consistency.py` now also reads the Python binding's
+  `agent-control-spec` dependency requirement. That crate is the only one
+  pinning the engine by version as well as by path, and a stale requirement
+  still resolves, because a caret requirement carrying a pre-release admits
+  later pre-releases of the same triple. It had drifted to `0.4.0-alpha.2`.
+- The first release reachable from a registry that carries what #39 added:
+  stream mediation, host annotator and policy dispatchers, the telemetry sink,
+  perf telemetry levels, resource caps, manifest parsing, chaining and overlay,
+  validation findings as data, and manifest plus Rego validated together, in all
+  four languages. The .NET package now carries the engine for five runtime
+  identifiers; the published 0.4.0-alpha.2 nupkg could not run without one on
+  the library path.
+- Dependency work that ships inside these binaries rather than alongside them:
+  the engine HTTP transport moved to ureq 3, and sha2 0.11, base64 0.23 and
+  jsonschema 0.47 crossed majors. Bundle digests were verified byte-identical
+  across the sha2 major, so no manifest or bundle identity changes. The Rust
+  side now resolves `agent-hooks-sdk` 0.1.0-alpha.5, matching what the Python
+  and .NET packages already required.
 
 ## 0.4.0-alpha.2
 

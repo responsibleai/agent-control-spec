@@ -8,10 +8,17 @@ carry the same version at all times:
 
   Cargo.toml                   [workspace.package] version   (SemVer)
   sdk/python/Cargo.toml        [package] version             (SemVer)
+  sdk/python/Cargo.toml        agent-control-spec req         (SemVer)
   sdk/python/pyproject.toml    [project] version             (PEP 440)
   sdk/node/package.json        version                       (SemVer)
   sdk/node/npm/*/package.json  version                       (SemVer)
   sdk/dotnet csproj            <Version>                     (SemVer)
+
+The Python binding is the one crate that pins its engine dependency by
+version as well as by path, so that requirement is a version surface too.
+It resolves even when stale, because a caret requirement carrying a
+pre-release admits later pre-releases of the same triple, which is exactly
+why nothing noticed it drifting.
 
 PEP 440 spells SemVer pre-releases differently (0.4.0-alpha.1 ->
 0.4.0a1), so versions are compared after normalizing both spellings.
@@ -49,6 +56,14 @@ def read_versions() -> dict[str, str]:
     m = re.search(r'^version\s*=\s*"([^"]+)"', pycargo, re.MULTILINE)
     assert m, "no version in sdk/python/Cargo.toml"
     versions["sdk/python/Cargo.toml"] = m.group(1)
+
+    m = re.search(
+        r'^agent-control-spec\s*=\s*\{[^}]*?version\s*=\s*"([^"]+)"',
+        pycargo,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert m, "no agent-control-spec version req in sdk/python/Cargo.toml"
+    versions["sdk/python/Cargo.toml (agent-control-spec req)"] = m.group(1)
 
     py = (ROOT / "sdk/python/pyproject.toml").read_text(encoding="utf-8")
     m = re.search(r'^version\s*=\s*"([^"]+)"', py, re.MULTILINE)
