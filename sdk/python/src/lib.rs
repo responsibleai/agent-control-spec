@@ -440,6 +440,7 @@ struct RuntimeHandle {
     limits = None,
 ))]
 fn interceptor_new(
+    py: Python<'_>,
     manifest_path: &str,
     annotator_dispatcher: Option<Py<PyAny>>,
     policy_dispatcher: Option<Py<PyAny>>,
@@ -447,38 +448,54 @@ fn interceptor_new(
     perf_telemetry: &str,
     limits: Option<Py<PyAny>>,
 ) -> PyResult<RuntimeHandle> {
-    let manifest =
-        Manifest::from_path(manifest_path).map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let manifest_path = manifest_path.to_string();
     let annotations = resolve_annotator_dispatcher(annotator_dispatcher);
     let policy = resolve_policy_dispatcher(policy_dispatcher);
     let perf = wire::parse_perf_telemetry(perf_telemetry)
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let telemetry = resolve_telemetry_sink(telemetry_sink);
+    // Reads Python, so it happens before the GIL is dropped.
     let limits = resolve_limits(limits)?;
     let telemetry_arc: Arc<dyn TelemetrySink> =
         telemetry.unwrap_or_else(|| Arc::new(NoopTelemetrySink));
-    let runtime = Runtime::with_telemetry_perf_and_limits(
-        manifest,
-        annotations,
-        policy,
-        telemetry_arc,
-        perf,
-        limits,
-    )
-    .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+    // Loading reads the manifest from disk and follows its `extends`
+    // chain, which may fetch over the network. Construction is once per
+    // host rather than once per request, but a stalled interpreter is a
+    // stalled interpreter, and the sibling `policy_activate` already
+    // drops the GIL for the same reason.
+    let runtime = py.detach(move || {
+        let manifest = Manifest::from_path(&manifest_path)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Runtime::with_telemetry_perf_and_limits(
+            manifest,
+            annotations,
+            policy,
+            telemetry_arc,
+            perf,
+            limits,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    })?;
     Ok(RuntimeHandle { runtime })
 }
 
 /// Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) and
 /// return the verdict as wire JSON.
 #[pyfunction]
-fn intercept(handle: &RuntimeHandle, context_json: &str) -> PyResult<String> {
+fn intercept(py: Python<'_>, handle: &RuntimeHandle, context_json: &str) -> PyResult<String> {
     let snapshot: Value = serde_json::from_str(context_json)
         .map_err(|e| PyValueError::new_err(format!("context_json does not parse: {e}")))?;
     if !snapshot.is_object() {
         return Err(PyValueError::new_err("context_json must be a JSON object"));
     }
-    let verdict = handle.runtime.evaluate(&snapshot).verdict;
+    // Evaluation must not hold the GIL. A manifest whose annotators are
+    // `llm`, `endpoint` or `classifier` performs a blocking HTTP request
+    // inside this call, and annotators on a point are dispatched in
+    // sequence, so holding it stops every other thread in the process for
+    // the sum of those round trips rather than for this one request. A
+    // host dispatcher written in Python re-acquires through
+    // `Python::attach`, which is what `policy_evaluate` already relies on.
+    let verdict = py.detach(move || handle.runtime.evaluate(&snapshot).verdict);
     serde_json::to_string(&verdict)
         .map_err(|e| PyRuntimeError::new_err(format!("verdict serialization failed: {e}")))
 }
