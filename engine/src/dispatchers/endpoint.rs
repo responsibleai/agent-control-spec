@@ -166,7 +166,49 @@ mod tests {
             .contains("endpoint annotator response must be a JSON object"));
     }
 
+    /// Pins the fail-closed contract across the ureq 3 migration: ureq 3 no
+    /// longer surfaces 4xx/5xx as a dedicated status error, so this guards
+    /// that a 500 from an annotator endpoint still maps to the same
+    /// `runtime_error:annotation_failed` reason and error text shape.
+    #[test]
+    fn endpoint_annotator_http_500_fails_closed() {
+        let (url, request) =
+            json_server_with_status("500 Internal Server Error", r#"{"error":"boom"}"#);
+        let annotator = AnnotatorInvocation {
+            fields: BTreeMap::from([
+                (ANNOTATOR_TYPE.to_string(), json!(TYPE_ENDPOINT)),
+                (FIELD_ENDPOINT.to_string(), json!(url)),
+                (FIELD_FROM.to_string(), json!("$target")),
+                (FIELD_TIMEOUT_MS.to_string(), json!(1000)),
+            ]),
+        };
+
+        let error = EndpointAnnotator
+            .dispatch(
+                "endpoint_scan",
+                &annotator,
+                &json!({"policy_target": {"value": "hello endpoint"}}),
+            )
+            .unwrap_err();
+
+        assert_eq!(error.reason(), "runtime_error:annotation_failed");
+        assert!(error
+            .detail()
+            .contains("HTTP request failed with status 500 (Internal Server Error)"));
+        // The request must still go out as a JSON document (header names are
+        // case-insensitive on the wire; ureq 3 sends them lowercased).
+        let request = request.join().unwrap().to_lowercase();
+        assert!(request.contains("content-type: application/json"));
+    }
+
     fn json_server(response_body: &'static str) -> (String, thread::JoinHandle<String>) {
+        json_server_with_status("200 OK", response_body)
+    }
+
+    fn json_server_with_status(
+        status_line: &'static str,
+        response_body: &'static str,
+    ) -> (String, thread::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let handle = thread::spawn(move || {
@@ -187,7 +229,8 @@ mod tests {
                 }
             }
             let response = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                "HTTP/1.1 {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                status_line,
                 response_body.len(),
                 response_body
             );
