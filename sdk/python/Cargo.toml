@@ -1,6 +1,6 @@
 [package]
 name = "agent-control-spec-py"
-version = "0.4.0-alpha.2"
+version = "0.4.0-alpha.3"
 edition = "2021"
 license = "MIT"
 description = "Python native binding for the Agent Control Specification runtime."

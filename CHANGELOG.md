@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## 0.4.0-alpha.3
+
+- Python `__version__` is read from the installed distribution instead of being
+  written into `__init__.py`. The literal was a seventh version surface, covered
+  by neither `scripts/check-version-consistency.py` nor RELEASING.md, so it held
+  `0.4.0a1` through the 0.4.0-alpha.2 release with CI green. It was also immune
+  to a search-and-replace bump, because the stale literal never contained the
+  version being replaced. `sdk/python/tests/test_version.py` fails if a literal
+  returns.
+- Release bump only otherwise. 0.4.0-alpha.2 shipped before #39 merged, so the
+  streaming, host hook, manifest tooling and artifact validation surfaces that
+  change added are reachable from a registry install for the first time here.
+  The .NET package also carries the native engine for five runtime identifiers;
+  the published 0.4.0-alpha.2 nupkg could not run without one on the library
+  path.
+
 ## 0.4.0-alpha.2
 
 - Section 18's requirement that a host assemble streamed model output before

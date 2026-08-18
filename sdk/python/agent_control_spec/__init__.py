@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterable, Mapping
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _distribution_version
 from types import MappingProxyType as _MappingProxyType
 from typing import Any, Self
 
@@ -43,7 +45,15 @@ __all__ = [
     "validate_manifest_file",
 ]
 
-__version__ = "0.4.0a1"
+#: Read from the installed distribution rather than written here. A
+#: literal is a seventh version surface, and it is the one surface
+#: neither ``scripts/check-version-consistency.py`` nor RELEASING.md
+#: covers, so it silently kept a stale value across two releases. The
+#: fallback covers an import from a source tree that was never installed.
+try:
+    __version__ = _distribution_version("agent-control-spec")
+except PackageNotFoundError:  # pragma: no cover - source tree, not installed
+    __version__ = "0.0.0.dev0"
 
 #: One Rego policy's sources, held in memory rather than on disk:
 #: ``{"modules": {name: source}, "data": [{"mount": [...], "document":
