@@ -7,7 +7,10 @@ manifests (`scripts/check-version-consistency.py`, enforced in CI).
    `sdk/python/{Cargo.toml,pyproject.toml}` + `Cargo.lock`,
    `sdk/node/package.json` + `npm/*/package.json` + lockfile,
    `sdk/dotnet/src/AgentControlSpec/AgentControlSpec.csproj`) and add a
-   `CHANGELOG.md` entry, through a PR. Do NOT regenerate
+   `CHANGELOG.md` entry, through a PR. Python's `__version__` is NOT on
+   that list and must not be added to it: it is read from the installed
+   distribution, and `sdk/python/tests/test_version.py` fails if someone
+   writes a literal back. Do NOT regenerate
    `sdk/node/binding.js` for the bump: the napi version-check strings it
    embeds are stamped from `package.json` at publish time
    (`sdk/node/scripts/stamp-binding-version.mjs`, run by the release
