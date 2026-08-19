@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Python evaluation no longer holds the GIL. `intercept` and `interceptor_new`
+  drop it around engine work, matching what `policy_activate` and
+  `policy_evaluate` already did. A manifest with an `llm`, `endpoint` or
+  `classifier` annotator performs a blocking HTTP request inside evaluation, and
+  holding the lock across it stopped every thread in the process for the sum of
+  those round trips. A Python host dispatcher re-acquires through
+  `Python::attach`, unchanged.
+
 ## 0.4.0-alpha.3
 
 - Python `__version__` is read from the installed distribution instead of being
