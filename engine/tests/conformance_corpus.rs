@@ -2,7 +2,7 @@ use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint, JsonValue, Limits,
     Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError, Verdict,
 };
-use jsonschema::JSONSchema;
+use jsonschema::Validator;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -125,14 +125,17 @@ fn conformance_cases_validate_against_schema() {
         &fs::read_to_string(conformance_dir().join("cases.schema.json")).unwrap(),
     )
     .unwrap();
-    let compiled = JSONSchema::compile(&schema).unwrap();
+    let compiled = Validator::new(&schema).unwrap();
     let paths = case_paths();
     assert!(paths.len() >= 16, "expanded corpus should not shrink");
 
     for path in paths {
         let case: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-        if let Err(errors) = compiled.validate(&case) {
-            let messages = errors.map(|error| error.to_string()).collect::<Vec<_>>();
+        let messages = compiled
+            .iter_errors(&case)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        if !messages.is_empty() {
             panic!("{} failed schema validation: {messages:?}", path.display());
         }
         assert_eq!(

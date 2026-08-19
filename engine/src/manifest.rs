@@ -1136,12 +1136,18 @@ impl ExtendsFetcher for HttpExtendsFetcher {
         // inability to obtain the document, so it is classified here
         // rather than being left to surface as a transport failure.
         validate_https_url(url)?;
-        let agent = ureq::AgentBuilder::new()
-            .https_only(true)
-            .try_proxy_from_env(false)
-            .redirects(limits.max_manifest_url_redirects as u32)
-            .timeout(Duration::from_millis(limits.manifest_url_timeout_ms))
-            .build();
+        // `http_status_as_error(false)` keeps the ureq 2 `or_any_status`
+        // shape: every HTTP status comes back as `Ok`, and the >= 400
+        // fail-closed check below stays the single authority.
+        let agent = ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .https_only(true)
+                .proxy(None)
+                .max_redirects(limits.max_manifest_url_redirects as u32)
+                .timeout_global(Some(Duration::from_millis(limits.manifest_url_timeout_ms)))
+                .http_status_as_error(false)
+                .build(),
+        );
         self.fetch_with_agent(url, limits, agent)
     }
 }
@@ -1153,19 +1159,18 @@ impl HttpExtendsFetcher {
         limits: Limits,
         agent: ureq::Agent,
     ) -> Result<Vec<u8>, RuntimeError> {
-        use ureq::OrAnyStatus as _;
-
-        let response = agent.get(url).call().or_any_status().map_err(|err| {
+        let response = agent.get(url).call().map_err(|err| {
             RuntimeError::ManifestUnreadable(format!("failed to fetch extends URL '{url}': {err}"))
         })?;
-        if response.status() >= 400 {
+        if response.status().as_u16() >= 400 {
             return Err(RuntimeError::ManifestUnreadable(format!(
                 "failed to fetch extends URL '{url}': HTTP {}",
-                response.status()
+                response.status().as_u16()
             )));
         }
         let mut body = Vec::new();
         let mut reader = response
+            .into_body()
             .into_reader()
             .take(limits.max_manifest_url_bytes as u64 + 1);
         reader.read_to_end(&mut body).map_err(|err| {
@@ -1887,10 +1892,13 @@ intervention_points:
     }
 
     fn local_http_agent(redirects: usize) -> ureq::Agent {
-        ureq::AgentBuilder::new()
-            .try_proxy_from_env(false)
-            .redirects(redirects as u32)
-            .build()
+        ureq::Agent::new_with_config(
+            ureq::Agent::config_builder()
+                .proxy(None)
+                .max_redirects(redirects as u32)
+                .http_status_as_error(false)
+                .build(),
+        )
     }
 
     #[test]
@@ -1950,9 +1958,13 @@ intervention_points:
         assert!(error.detail().contains("HTTP 404"));
     }
 
+    /// ureq 3 counts the cap as "redirects followed": a chain needing more
+    /// than `max_redirects` hops fails closed with `TooManyRedirects` (ureq 2
+    /// errored one hop earlier, on receiving the nth redirect response). The
+    /// server therefore serves the initial request plus the one allowed hop.
     #[test]
     fn real_http_fetcher_enforces_redirect_cap() {
-        let (base_url, handle) = spawn_http_server(1, |base_url, path| {
+        let (base_url, handle) = spawn_http_server(2, |base_url, path| {
             let next = if path == "/start.yaml" {
                 "/middle.yaml"
             } else {

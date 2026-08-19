@@ -10,10 +10,40 @@
     <Description>Agent Control Specification: a policy decision runtime plugging into agent-hooks as an interceptor. .NET wrapper over the Rust engine (native library agent_control_spec_ffi resolved from the loader path).</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/responsibleai/agent-control-spec</RepositoryUrl>
+    <!--
+      Where the per-RID native builds are staged before packing. The
+      release workflow fills this from its build matrix; a local
+      `dotnet pack` finds it empty and produces a managed-only package,
+      which is why AcsNativeAssetsRequired exists below.
+    -->
+    <AcsNativeDir Condition="'$(AcsNativeDir)' == ''">$(MSBuildThisFileDirectory)..\..\native\</AcsNativeDir>
   </PropertyGroup>
 
+  <!--
+    The managed assembly is useless on its own: every call reaches the
+    engine through agent_control_spec_ffi, so a package without the
+    native library throws DllNotFoundException on first use. NuGet
+    resolves runtimes/{rid}/native/ per consumer RID, so ship one entry
+    per supported platform.
+  -->
   <ItemGroup>
-    <PackageReference Include="ResponsibleAI.AgentHooks" Version="0.1.0-alpha.4" />
+    <_AcsNativeAsset Include="$(AcsNativeDir)runtimes\**\*" />
+    <None Include="@(_AcsNativeAsset)" Pack="true" PackagePath="runtimes\%(RecursiveDir)%(Filename)%(Extension)" Visible="false" />
+  </ItemGroup>
+
+  <!--
+    Publishing a managed-only package is the failure this guard exists to
+    stop: it installs cleanly, satisfies a build, and throws at the first
+    call. Set AcsNativeAssetsRequired=true when packing for release.
+  -->
+  <Target Name="AcsVerifyNativeAssets" BeforeTargets="GenerateNuspec"
+          Condition="'$(AcsNativeAssetsRequired)' == 'true'">
+    <Error Condition="'@(_AcsNativeAsset)' == ''"
+           Text="No native assets staged in $(AcsNativeDir)runtimes. A package without agent_control_spec_ffi throws DllNotFoundException on the first call. Build the FFI for each supported RID and stage it before packing." />
+  </Target>
+
+  <ItemGroup>
+    <PackageReference Include="ResponsibleAI.AgentHooks" Version="0.1.0-alpha.5" />
   </ItemGroup>
 
 </Project>

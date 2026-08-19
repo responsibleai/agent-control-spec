@@ -321,7 +321,7 @@ fn content_digest(
         field(&mut hasher, canonical.as_bytes());
     }
 
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::hex::lower(&hasher.finalize()))
 }
 
 /// Serializes as the digest alone.

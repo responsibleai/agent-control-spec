@@ -20,6 +20,7 @@ pub use constants::reserved_reason;
 #[cfg(feature = "default-dispatchers")]
 pub mod dispatchers;
 pub mod error;
+mod hex;
 pub mod interceptor;
 pub mod limits;
 pub mod manifest;
@@ -38,6 +39,7 @@ pub mod runtime;
 pub mod stream_session;
 pub mod telemetry;
 pub mod tool_projection;
+pub mod wire;
 
 // The interception contract, re-exported for consumers that want a
 // single dependency.

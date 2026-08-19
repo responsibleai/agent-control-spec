@@ -8,6 +8,14 @@ export declare class ExternalObject<T> {
   }
 }
 /**
+ * The engine's default resource caps as a JSON object string. A host
+ * that raises one cap reads this to see what it is overriding, so a
+ * shipping change to another default cannot be silently absorbed by a
+ * stale mapping.
+ */
+export declare function defaultLimits(): string
+
+/**
  * Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) and
  * return the verdict as wire JSON.
  */
@@ -19,6 +27,54 @@ export declare function intercept(handle: ExternalObject<Handle>, contextJson: s
  * built-in evaluator, `test` policies through their embedded verdict).
  */
 export declare function interceptorNew(manifestPath: string): ExternalObject<Handle>
+
+/**
+ * Build a runtime handle from a manifest path, optionally overriding
+ * the annotator dispatcher, policy dispatcher, telemetry sink, perf
+ * telemetry level, and resource caps.
+ *
+ * Every callback is optional: absent means keep the zero-config
+ * default for that slot. Callbacks cross the boundary as JSON strings,
+ * mirroring the FFI hook contract, so a host that already sits behind
+ * a JSON schema does not re-model its wire shape for this SDK.
+ *
+ * `limits_json` is a JSON object of resource caps overriding the
+ * engine's defaults field by field. Null or empty means keep every
+ * default; each field is individually optional, so a host raising one
+ * cap does not restate the other nine. A host feeding large payloads
+ * raises `max_snapshot_bytes`; one hardening against a hostile
+ * manifest lowers `max_extends_depth` or `manifest_url_timeout_ms`.
+ * A field present but not a non-negative integer is a hard ERROR, not
+ * a silently-kept default.
+ *
+ * Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
+ * engine's evaluation. A callback that throws surfaces as a fail-closed
+ * `runtime_error:*` deny (annotator → `annotation_failed`, policy →
+ * `policy_invocation_failed`) rather than silently reading as "no
+ * annotation".
+ */
+export declare function interceptorNewWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null, telemetrySink?: ((arg0: string) => void) | undefined | null, perfTelemetry?: string | undefined | null, limitsJson?: string | undefined | null): ExternalObject<Handle>
+
+/**
+ * Compose a chain of manifest YAML documents (outermost base first)
+ * into one merged manifest, returned as JSON.
+ *
+ * This is the overlay case: a base policy plus deltas an environment
+ * layers on it, resolved the same way the engine resolves `extends`.
+ */
+export declare function mergeManifests(sourcesJson: string): string
+
+/**
+ * Parse manifest YAML into an object (JSON encoded) without
+ * validating cross-references.
+ *
+ * The document is deserialized as-written: a manifest with an
+ * unresolved `extends` chain parses fine, and returning it lets an
+ * authoring tool see the fragment. Use `validate_manifest` or
+ * `validate_manifest_detailed` to judge whether the fragment is
+ * runnable.
+ */
+export declare function parseManifest(source: string): string
 
 /**
  * Activate the manifest at `manifest_path`, readying every policy it
@@ -56,6 +112,19 @@ export declare function policyActivate(manifestPath: string): ExternalObject<Pol
 export declare function policyActivateFromMemory(manifestYaml: string, bundlesJson: string): ExternalObject<PolicyHandle>
 
 /**
+ * Activate a manifest and its Rego from memory against host-supplied
+ * dispatchers.
+ */
+export declare function policyActivateFromMemoryWithHooks(manifestYaml: string, bundlesJson: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null): ExternalObject<PolicyHandle>
+
+/**
+ * Activate the manifest at `manifest_path` against host-supplied
+ * dispatchers. See `interceptor_new_with_hooks` for the callback
+ * contract.
+ */
+export declare function policyActivateWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null): ExternalObject<PolicyHandle>
+
+/**
  * Evaluate one intervention point against an activated policy and
  * return the verdict as wire JSON.
  *
@@ -76,8 +145,121 @@ export declare function policyEvaluate(handle: ExternalObject<PolicyHandle>, poi
  */
 export declare function policyInterventionPoints(handle: ExternalObject<PolicyHandle>): Array<string>
 
+/**
+ * Recompute `track`'s watermark. Returns the new offset when the
+ * watermark advanced, `null` when it did not or the session has ended
+ * (matching the Rust `Option<u32>`).
+ */
+export declare function streamSessionAdvance(handle: ExternalObject<StreamHandle>, track: string): number | null
+
+/** Declare that no further payload will arrive. Idempotent. */
+export declare function streamSessionEndOfPayloads(handle: ExternalObject<StreamHandle>): void
+
+/**
+ * Settle the session and return the completion as JSON, carrying
+ * `reason`, `transformed` and `is_clean`. Settling twice returns the
+ * same completion.
+ */
+export declare function streamSessionFinish(handle: ExternalObject<StreamHandle>): string
+
+/**
+ * Open a session from a config JSON object.
+ *
+ * Matches `acs_stream_session_new`: takes `safety_level` (`blocking`,
+ * `complete` or `deferred`), the per-track start offsets
+ * `request_start_rune_offset` and `response_start_rune_offset`, and
+ * the task name arrays `request_tasks` and `response_tasks`. An empty
+ * task array means that track is unmediated; payload on it fails
+ * closed. A configuration mediating neither track is refused.
+ *
+ * The wrapper takes a JSON string rather than a napi object so the
+ * config surface is identical to the other language SDKs and offset
+ * coercion happens in one place.
+ */
+export declare function streamSessionNew(configJson: string): ExternalObject<StreamHandle>
+
+/**
+ * Report that `runes` more runes of `source_type` arrived and return
+ * the track's new end offset. Boundary failures throw; a streaming
+ * accounting failure throws with the engine's message and puts the
+ * session into its terminal state.
+ */
+export declare function streamSessionObserve(handle: ExternalObject<StreamHandle>, sourceType: string, runes: number): number
+
+/**
+ * Report arriving `text` on `source_type`, counting Unicode scalars so
+ * a host does not have to. Returns the track's new end offset.
+ *
+ * The engine counts runes, not UTF-16 code units. `Utf16String` yields
+ * UTF-16, so the binding decodes to a `String` before delegating to
+ * the engine and rune counting stays consistent with every other SDK.
+ * An astral-plane character is one rune here even though it is two
+ * UTF-16 code units.
+ */
+export declare function streamSessionObserveText(handle: ExternalObject<StreamHandle>, sourceType: string, text: string): number
+
+/** Runes on `track` observed but not yet released. */
+export declare function streamSessionPending(handle: ExternalObject<StreamHandle>, track: string): number
+
+/**
+ * Record what `task` decided about the span `[start, end)` of
+ * `source_type`. `outcome` is `cleared`, `transformed` or `denied`.
+ */
+export declare function streamSessionRecordOutcome(handle: ExternalObject<StreamHandle>, task: string, sourceType: string, start: number, end: number, outcome: string): void
+
+/**
+ * Record an ACS verdict against the span `[start, end)` of
+ * `source_type`, mapping its decision onto an outcome. A host feeds
+ * the JSON returned by `policyEvaluate` straight back without
+ * translating it.
+ */
+export declare function streamSessionRecordVerdict(handle: ExternalObject<StreamHandle>, task: string, sourceType: string, start: number, end: number, verdictJson: string): void
+
+/**
+ * Offset of `track` the host may release through, or `null` once the
+ * session has ended. A settled session has no safe offset, which is
+ * not an error: it means release nothing further.
+ */
+export declare function streamSessionSafeOffset(handle: ExternalObject<StreamHandle>, track: string): number | null
+
+/**
+ * Session state as JSON: `is_ended`, `transformed`, `end_reason`
+ * (null while live) and the effective `config`.
+ */
+export declare function streamSessionState(handle: ExternalObject<StreamHandle>): string
+
+/**
+ * `track`'s watermark as JSON, carrying `track`, `confirmed`,
+ * `received`, `pending` and the `tasks` that must clear it. The
+ * confirmed offset stays readable after settlement, so an audit
+ * record can still say how far the stream got.
+ */
+export declare function streamSessionWatermark(handle: ExternalObject<StreamHandle>, track: string): string
+
 /** The manifest grammar versions this engine accepts. */
 export declare function supportedManifestVersions(): Array<string>
+
+/**
+ * Validate a manifest together with the Rego it names, and return
+ * findings as a JSON array.
+ *
+ * An empty array means both halves are sound. Each entry has wire
+ * shape `{"code": str, "message": str, "severity": "error"}`, matching
+ * the C ABI's `acs_artifact_diagnostics`.
+ *
+ * `validate_manifest_detailed` answers only for the document: a
+ * manifest can name a bundle, satisfy the grammar, and still fail at
+ * activation because the Rego does not compile. Compilation happens
+ * at activation, so this activates against the supplied bundles in
+ * memory and reports what that surfaced, which moves the failure from
+ * a host's first agent action to its CI.
+ *
+ * `bundles_json` maps policy id to an in-memory bundle, the same
+ * shape `policy_activate_from_memory` takes. An empty document means
+ * the manifest names no Rego, and the answer then equals what
+ * `validate_manifest_detailed` reports for the manifest half.
+ */
+export declare function validateArtifactsDetailed(manifestYaml: string, bundlesJson: string): string
 
 /**
  * Validate manifest source against the grammar, without building a
@@ -94,6 +276,18 @@ export declare function supportedManifestVersions(): Array<string>
  * failures.
  */
 export declare function validateManifest(source: string): string | null
+
+/**
+ * Validate manifest source and return findings as a JSON array.
+ *
+ * An empty array means the manifest is valid. Each entry carries
+ * `code` (`runtime_error:*`), `message` (engine detail), `severity`,
+ * and a best-effort `field` extracted from the message. This is the
+ * shape an authoring tool or CI linter needs; `validate_manifest`
+ * answers yes/no with a single message and cannot be rendered
+ * per-field.
+ */
+export declare function validateManifestDetailed(source: string): string
 
 /**
  * Validate a manifest file, resolving `extends` first.

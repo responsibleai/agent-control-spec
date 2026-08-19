@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: "3.12" }
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Install locked dependencies, then the package itself
         # requirements-dev.lock pins every transitive dep including the
         # maturin build backend; --no-build-isolation makes the editable
@@ -60,7 +60,7 @@ jobs:
       - run: cargo test --workspace --all-features --locked
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: "3.12" }
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
       - name: Install and test the Python binding
         # requirements-dev.lock is compiled on Linux and is not portable;
         # this advisory job installs the package (Rust side still pinned
@@ -85,6 +85,12 @@ jobs:
           ./actionlint -color
       - name: Version surfaces agree
         run: python3 scripts/check-version-consistency.py
+      # The parity harness proves the bindings agree about the calls it
+      # makes. It cannot notice a capability none of them expose, because
+      # a surface absent everywhere is consistent everywhere. That blind
+      # spot is how streaming shipped reachable only from Rust.
+      - name: Every engine capability is reachable from every language
+        run: python3 tests/conformance/bindings/run.py language_coverage
       - name: cargo-audit over example lockfiles (pinned, checksum-verified)
         # Examples are deliberately outside the Dependabot update config,
         # and the coding_agent app's path dependency predates the engine
@@ -119,9 +125,19 @@ jobs:
       # `npm test` regenerates binding.js and binding.d.ts, which are
       # committed and shipped in the npm package. Without this gate a
       # native signature change leaves a stale declaration in the
-      # published types and CI stays green.
+      # published types and CI stays green. binding.js is compared
+      # modulo napi's embedded version-check strings: those are stamped
+      # from package.json at publish time (release.yml), so a version
+      # bump does not have to regenerate the bindings (#31). Stamping
+      # both sides to the same version leaves only real generator-output
+      # drift to fail the diff.
       - name: generated bindings are current
-        run: git diff --exit-code -- binding.js binding.d.ts
+        run: |
+          git diff --exit-code -- binding.d.ts
+          git show HEAD:sdk/node/binding.js > /tmp/binding.committed.js
+          node scripts/stamp-binding-version.mjs /tmp/binding.committed.js
+          node scripts/stamp-binding-version.mjs binding.js
+          diff -u /tmp/binding.committed.js binding.js
         working-directory: sdk/node
 
   dotnet:
@@ -141,3 +157,74 @@ jobs:
         working-directory: sdk/dotnet
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+      # The suite above runs with the engine on the loader path, which a
+      # consumer installing from NuGet does not have. Pack and run the
+      # artifact itself so a package that omits the native library fails
+      # here rather than in someone else's process.
+      - name: Verify the packed package works without a local engine build
+        run: |
+          set -euo pipefail
+          mkdir -p sdk/dotnet/native/runtimes/linux-x64/native
+          cp target/release/libagent_control_spec_ffi.so \
+             sdk/dotnet/native/runtimes/linux-x64/native/
+          dotnet pack sdk/dotnet/src/AgentControlSpec -c Release -o "$PWD/ci-feed" \
+            --nologo -p:AcsNativeAssetsRequired=true -p:Version=0.0.0-ci
+          bash tests/conformance/bindings/dotnet_package.sh "$PWD/ci-feed" 0.0.0-ci
+
+  # Streaming reaches each language through a different binding
+  # mechanism, so agreement between them is not structural. Run one
+  # scenario in all four and diff.
+  streaming-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: cargo build --release --locked -p agent-control-spec-ffi
+      - name: Build the node binding
+        run: |
+          npm ci
+          npm run build
+        working-directory: sdk/node
+      - name: Build and install the python wheel
+        run: |
+          pip install maturin==1.8.7
+          maturin build --release -m sdk/python/Cargo.toml -o dist
+          pip install dist/*.whl
+      - name: Compare every language across the whole surface
+        run: python tests/conformance/bindings/run.py cross_language_parity
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/release
+
+  # The suites and the parity harness run against this checkout, where the
+  # engine is on the loader path and the packages are importable from
+  # source. A consumer has a crate, a wheel, a tarball and a nupkg. A
+  # published .NET package once passed every test and threw
+  # DllNotFoundException on the first call a consumer made, so build the
+  # real artifacts and run the surface from a clean install of each.
+  artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install maturin==1.8.7
+      - run: npm ci
+        working-directory: sdk/node
+      - run: python tests/conformance/bindings/run.py published_artifacts

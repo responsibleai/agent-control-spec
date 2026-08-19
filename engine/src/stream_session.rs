@@ -225,6 +225,19 @@ pub enum StreamTrack {
 }
 
 impl StreamTrack {
+    /// Parse a track's wire name.
+    ///
+    /// Every binding needs this and none should own it. Three copies of
+    /// what `"response"` means are three chances to disagree, which is
+    /// the drift this module exists to prevent.
+    pub fn parse(value: &str) -> Result<Self, StreamError> {
+        match value {
+            "request" => Ok(Self::Request),
+            "response" => Ok(Self::Response),
+            _ => Err(StreamError::UnknownStreamTrack(value.to_string())),
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Request => "request",
@@ -244,6 +257,8 @@ impl StreamTrack {
 pub enum StreamError {
     UnknownSafetyLevel(String),
     UnknownSourceType(String),
+    UnknownStreamTrack(String),
+    UnknownSegmentOutcome(String),
     /// Payload arrived on a track the session does not mediate.
     ///
     /// An empty task set means that track is not mediated, which is the
@@ -323,6 +338,10 @@ impl fmt::Display for StreamError {
                 write!(f, "unknown streaming safety level {value}")
             }
             Self::UnknownSourceType(value) => write!(f, "unknown stream source type {value}"),
+            Self::UnknownStreamTrack(value) => write!(f, "unknown stream track {value}"),
+            Self::UnknownSegmentOutcome(value) => {
+                write!(f, "unknown segment outcome {value}")
+            }
             Self::NoTasks(track) => write!(
                 f,
                 "payload arrived on the unmediated {} track",
@@ -440,6 +459,26 @@ pub enum SegmentOutcome {
     /// The policy refused the text, or an escalation did not resolve to an
     /// allow.
     Denied,
+}
+
+impl SegmentOutcome {
+    /// Parse an outcome's wire name.
+    pub fn parse(value: &str) -> Result<Self, StreamError> {
+        match value {
+            "cleared" => Ok(Self::Cleared),
+            "transformed" => Ok(Self::Transformed),
+            "denied" => Ok(Self::Denied),
+            _ => Err(StreamError::UnknownSegmentOutcome(value.to_string())),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cleared => "cleared",
+            Self::Transformed => "transformed",
+            Self::Denied => "denied",
+        }
+    }
 }
 
 /// Reason a session reached its terminal state.

@@ -312,15 +312,280 @@ internal static partial class Native
     }
 
     internal static void PolicyFree(IntPtr handle) => acs_policy_free(handle);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_stream_session_new(string configJson, out IntPtr errOut);
+
+    [LibraryImport(Lib)]
+    private static partial void acs_stream_session_free(IntPtr handle);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial long acs_stream_session_observe(
+        StreamSessionHandle handle, string sourceType, uint runes, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial long acs_stream_session_observe_text(
+        StreamSessionHandle handle, string sourceType, string text, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int acs_stream_session_record_outcome(
+        StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string outcome, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int acs_stream_session_record_verdict(
+        StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string verdictJson, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial long acs_stream_session_advance(StreamSessionHandle handle, string track, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial long acs_stream_session_safe_offset(StreamSessionHandle handle, string track, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial long acs_stream_session_pending(StreamSessionHandle handle, string track, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_stream_session_watermark(StreamSessionHandle handle, string track, out IntPtr errOut);
+
+    [LibraryImport(Lib)]
+    private static partial IntPtr acs_stream_session_state(StreamSessionHandle handle, out IntPtr errOut);
+
+    [LibraryImport(Lib)]
+    private static partial int acs_stream_session_end_of_payloads(StreamSessionHandle handle, out IntPtr errOut);
+
+    [LibraryImport(Lib)]
+    private static partial IntPtr acs_stream_session_finish(StreamSessionHandle handle, out IntPtr errOut);
+
+    internal static StreamSessionHandle StreamSessionNew(string configJson)
+    {
+        var handle = acs_stream_session_new(configJson, out var err);
+        if (handle == IntPtr.Zero)
+        {
+            ThrowIfError(err);
+            throw new AgentControlSpecNativeException("stream session creation returned no handle");
+        }
+
+        return new StreamSessionHandle(handle);
+    }
+
+    internal static void StreamSessionFree(IntPtr handle) => acs_stream_session_free(handle);
+
+    // A scalar query answers with the value, -1 for absent, or -2 for a
+    // boundary failure. Absent is a real answer (a settled session has no
+    // safe offset), so it becomes null rather than an exception.
+    private static long? Scalar(long value, IntPtr err)
+    {
+        if (value == -2)
+        {
+            ThrowIfError(err);
+            throw new AgentControlSpecNativeException("stream session call failed without a message");
+        }
+
+        return value == -1 ? null : value;
+    }
+
+    internal static int StreamObserve(StreamSessionHandle handle, string sourceType, uint runes)
+    {
+        var received = acs_stream_session_observe(handle, sourceType, runes, out var err);
+        return checked((int)Scalar(received, err)!.Value);
+    }
+
+    internal static int StreamObserveText(StreamSessionHandle handle, string sourceType, string text)
+    {
+        var received = acs_stream_session_observe_text(handle, sourceType, text, out var err);
+        return checked((int)Scalar(received, err)!.Value);
+    }
+
+    internal static void StreamRecordOutcome(
+        StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string outcome)
+    {
+        if (acs_stream_session_record_outcome(
+                handle, task, sourceType, start, end, outcome, out var err) != 0)
+        {
+            ThrowIfError(err);
+            throw new AgentControlSpecNativeException("recording the outcome failed without a message");
+        }
+    }
+
+    internal static void StreamRecordVerdict(
+        StreamSessionHandle handle, string task, string sourceType, uint start, uint end, string verdictJson)
+    {
+        if (acs_stream_session_record_verdict(
+                handle, task, sourceType, start, end, verdictJson, out var err) != 0)
+        {
+            ThrowIfError(err);
+            throw new AgentControlSpecNativeException("recording the verdict failed without a message");
+        }
+    }
+
+    internal static int? StreamAdvance(StreamSessionHandle handle, string track)
+    {
+        var offset = acs_stream_session_advance(handle, track, out var err);
+        return (int?)Scalar(offset, err);
+    }
+
+    internal static int? StreamSafeOffset(StreamSessionHandle handle, string track)
+    {
+        var offset = acs_stream_session_safe_offset(handle, track, out var err);
+        return (int?)Scalar(offset, err);
+    }
+
+    internal static int StreamPending(StreamSessionHandle handle, string track)
+    {
+        var pending = acs_stream_session_pending(handle, track, out var err);
+        return checked((int)Scalar(pending, err)!.Value);
+    }
+
+    internal static string StreamWatermark(StreamSessionHandle handle, string track)
+    {
+        var json = acs_stream_session_watermark(handle, track, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static string StreamState(StreamSessionHandle handle)
+    {
+        var json = acs_stream_session_state(handle, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static void StreamEndOfPayloads(StreamSessionHandle handle)
+    {
+        if (acs_stream_session_end_of_payloads(handle, out var err) != 0)
+        {
+            ThrowIfError(err);
+            throw new AgentControlSpecNativeException("closing the payload stream failed without a message");
+        }
+    }
+
+    internal static string StreamFinish(StreamSessionHandle handle)
+    {
+        var json = acs_stream_session_finish(handle, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    [LibraryImport(Lib)]
+    private static partial IntPtr acs_interceptor_new_with_hooks(
+        ReadOnlySpan<byte> manifestPath, nuint manifestPathLen,
+        IntPtr annotatorFn, IntPtr annotatorCtx,
+        IntPtr policyFn, IntPtr policyCtx,
+        IntPtr telemetryFn, IntPtr telemetryCtx,
+        IntPtr hookFree,
+        IntPtr perfTelemetry,
+        IntPtr limitsJson,
+        out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_manifest_parse(string yaml, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_manifest_merge(string yamlsJson, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_manifest_diagnostics(string yaml, out IntPtr errOut);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial IntPtr acs_artifact_diagnostics(
+        string manifestYaml, string? bundlesJson, out IntPtr errOut);
+
+    internal static IntPtr InterceptorNewWithHooks(
+        string manifestPath,
+        IntPtr annotatorFn, IntPtr annotatorCtx,
+        IntPtr policyFn, IntPtr policyCtx,
+        IntPtr telemetryFn, IntPtr telemetryCtx,
+        IntPtr hookFree,
+        string? perfTelemetry,
+        string? limitsJson)
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes(manifestPath);
+        var perf = perfTelemetry is null
+            ? IntPtr.Zero
+            : Marshal.StringToCoTaskMemUTF8(perfTelemetry);
+        var limits = limitsJson is null ? IntPtr.Zero : Marshal.StringToCoTaskMemUTF8(limitsJson);
+        try
+        {
+            var handle = acs_interceptor_new_with_hooks(
+                bytes, (nuint)bytes.Length,
+                annotatorFn, annotatorCtx, policyFn, policyCtx,
+                telemetryFn, telemetryCtx, hookFree, perf, limits, out var err);
+            if (handle == IntPtr.Zero)
+            {
+                ThrowIfError(err);
+                throw new AgentControlSpecNativeException("interceptor construction returned no handle");
+            }
+
+            return handle;
+        }
+        finally
+        {
+            if (perf != IntPtr.Zero)
+                Marshal.FreeCoTaskMem(perf);
+            if (limits != IntPtr.Zero)
+                Marshal.FreeCoTaskMem(limits);
+        }
+    }
+
+    internal static string ManifestParse(string yaml)
+    {
+        var json = acs_manifest_parse(yaml, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static string ManifestMerge(string yamlsJson)
+    {
+        var json = acs_manifest_merge(yamlsJson, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static string ManifestDiagnostics(string yaml)
+    {
+        var json = acs_manifest_diagnostics(yaml, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
+
+    internal static string ArtifactDiagnostics(string manifestYaml, string? bundlesJson)
+    {
+        var json = acs_artifact_diagnostics(manifestYaml, bundlesJson, out var err);
+        ThrowIfError(err);
+        return TakeString(json);
+    }
 }
 
-/// <summary>Owns one activated policy version's native allocation.</summary>
+/// <summary>Owns one native stream session.</summary>
 /// <remarks>
-/// A <see cref="SafeHandle"/> rather than the bare pointer the
-/// interceptor keeps, because an activated policy is shared across
-/// threads by design: the ref count holds the pointer alive for the
-/// duration of every in-flight evaluation, so disposing while another
-/// thread evaluates frees after that call rather than under it.
+/// Every P/Invoke below takes this type rather than an <see cref="IntPtr"/>,
+/// so the marshaller takes a reference for the duration of the call. That
+/// is what makes a call safe against a racing <c>Dispose</c>: without it a
+/// free during an in-flight call runs under it, and a call after
+/// <c>Dispose</c> hands a stale pointer to native code, which the engine's
+/// null check cannot catch because the pointer is not null, only dead.
+/// A closed handle surfaces as <see cref="ObjectDisposedException"/>.
+/// </remarks>
+internal sealed class StreamSessionHandle : SafeHandle
+{
+    internal StreamSessionHandle(IntPtr handle)
+        : base(IntPtr.Zero, ownsHandle: true) => SetHandle(handle);
+
+    public override bool IsInvalid => handle == IntPtr.Zero;
+
+    protected override bool ReleaseHandle()
+    {
+        Native.StreamSessionFree(handle);
+        return true;
+    }
+}
+
+/// <summary>Owns one activated policy version.</summary>
+/// <remarks>
+/// Evaluation pairs <c>DangerousGetHandle</c> with
+/// <c>DangerousAddRef</c> and <c>DangerousRelease</c>. That pair is what
+/// makes concurrent evaluation safe against a racing <c>Dispose</c>:
+/// without it the free runs under an in-flight call.
 /// </remarks>
 internal sealed class ActivatedPolicyHandle : SafeHandle
 {
