@@ -41,5 +41,5 @@ those are host obligations defined by agent-hooks.
 
 ## Status
 
-`0.4.0-alpha.1` — first release of the re-based runtime. Depends on
-`agent-hooks-sdk 0.1.0-alpha.3`.
+`0.4.0-alpha.3`, an alpha of the re-based runtime. Depends on
+`agent-hooks-sdk 0.1.0-alpha.5`.

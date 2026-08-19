@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 0.4.0-alpha.3
+
+- Python `__version__` is read from the installed distribution instead of being
+  written into `__init__.py`. The literal was a seventh version surface, covered
+  by neither `scripts/check-version-consistency.py` nor RELEASING.md, so it held
+  `0.4.0a1` through the 0.4.0-alpha.2 release with CI green. It was also immune
+  to a search-and-replace bump, because the stale literal never contained the
+  version being replaced. `sdk/python/tests/test_version.py` fails if a literal
+  returns.
+- `scripts/check-version-consistency.py` now also reads the Python binding's
+  `agent-control-spec` dependency requirement. That crate is the only one
+  pinning the engine by version as well as by path, and a stale requirement
+  still resolves, because a caret requirement carrying a pre-release admits
+  later pre-releases of the same triple. It had drifted to `0.4.0-alpha.2`.
+- The first release reachable from a registry that carries what #39 added:
+  stream mediation, host annotator and policy dispatchers, the telemetry sink,
+  perf telemetry levels, resource caps, manifest parsing, chaining and overlay,
+  validation findings as data, and manifest plus Rego validated together, in all
+  four languages. The .NET package now carries the engine for five runtime
+  identifiers; the published 0.4.0-alpha.2 nupkg could not run without one on
+  the library path.
+- Dependency work that ships inside these binaries rather than alongside them:
+  the engine HTTP transport moved to ureq 3, and sha2 0.11, base64 0.23 and
+  jsonschema 0.47 crossed majors. Bundle digests were verified byte-identical
+  across the sha2 major, so no manifest or bundle identity changes. The Rust
+  side now resolves `agent-hooks-sdk` 0.1.0-alpha.5, matching what the Python
+  and .NET packages already required.
 - Section 18.1 gates durable writes behind the watermark. Durable
   incorporation of stream text, into conversation history, a session store,
   or any record a later evaluation or run can read, follows the same rule as
