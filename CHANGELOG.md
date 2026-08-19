@@ -29,6 +29,45 @@
   across the sha2 major, so no manifest or bundle identity changes. The Rust
   side now resolves `agent-hooks-sdk` 0.1.0-alpha.5, matching what the Python
   and .NET packages already required.
+- Section 18.1 gates durable writes behind the watermark. Durable
+  incorporation of stream text, into conversation history, a session store,
+  or any record a later evaluation or run can read, follows the same rule as
+  emission: a rune is eligible for a durable write when the watermark covers
+  it, under every safety level, and a terminal deny or a failing settlement
+  forbids persisting the withheld or uncleared runes. This restates the
+  AGENT-HOOKS-0.1 section 6.1 discard obligation at the granularity the
+  profile evaluates. The released prefix is already part of the caller
+  visible record and may stay durable alongside the refusal that followed
+  it. Mirrored as a module doc obligation on `StreamSession`.
+- Section 18.1 defines the caller as any consumer outside the enforcement
+  boundary. A host registered observer, a callback, a preview channel, or a
+  sink fed from the raw accumulation is a caller, and withheld runes must
+  not be delivered to one. The profile holds no text, so nothing structural
+  separates the accumulation from a channel wired ahead of the release
+  decision; the stated obligation is the whole of the protection.
+- Section 18.1 states that the attempt boundary is not a clearance boundary.
+  A track resuming at an offset above zero retains the last `L - 1` runes
+  the earlier attempt delivered and includes them in the value it evaluates
+  near the boundary, since a term can straddle the attempts and no value
+  drawn from the new attempt alone can contain it. A host that no longer
+  holds that tail must not resume the track under the profile. A mediation
+  test covers a term straddling the resume boundary, with the host that
+  dropped the tail as the negative control.
+- Section 18.1 states the released text identity obligation. The runes the
+  host releases are rune identical to the runes the recorded outcomes were
+  evaluated against; a host side rewrite after clearance invalidates the
+  clearance, and altered text belongs on the whole snapshot path or in a new
+  session. Added to the `StreamSession` module doc obligations.
+- Section 18.1 requires settlement of every opened session, including one
+  the host abandons on disconnect, cancellation, or replacement by a retry.
+  An abandoned session settles like any other, so uncleared residue is
+  recorded rather than lost with the dropped session.
+- Section 18.1 states the interaction with the `output` point, which section
+  18 keeps on the whole snapshot path in every case. A host adopting the
+  profile for caller facing egress receives that verdict after runes have
+  reached the caller, so a deny there cannot recall them; the host records
+  it and does not present the stream as settled clean, per the
+  AGENT-HOOKS-0.1 section 6.1a record and close shape.
 
 ## 0.4.0-alpha.2
 
