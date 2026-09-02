@@ -1,4 +1,4 @@
 agent-hooks-sdk==0.1.0a5
-maturin==1.14.1
+maturin==1.15.0
 pytest
 ruff
