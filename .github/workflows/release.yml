@@ -61,7 +61,7 @@ jobs:
           maturin build --release --locked -m sdk/python/Cargo.toml -o dist
           maturin sdist -m sdk/python/Cargo.toml -o dist
       - name: SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: sdk/python
           artifact-name: sbom-python.spdx.json
@@ -93,7 +93,7 @@ jobs:
       - name: Package (verifies the publishable crate)
         run: cargo package --locked -p agent-control-spec
       - name: SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: engine
           artifact-name: sbom-rust.spdx.json
@@ -178,7 +178,7 @@ jobs:
           npm pack
         working-directory: sdk/node
       - name: SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: sdk/node
           artifact-name: sbom-node.spdx.json
@@ -302,7 +302,7 @@ jobs:
           version=${version#ResponsibleAI.AgentControlSpec.}
           bash tests/conformance/bindings/dotnet_package.sh "$PWD/sdk/dotnet/dist" "$version"
       - name: SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           path: sdk/dotnet
           artifact-name: sbom-dotnet.spdx.json
