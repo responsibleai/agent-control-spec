@@ -160,6 +160,29 @@
         }
       ]
     },
+    "pinned_https_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "integrity": {
+          "type": "string",
+          "pattern": "^sha256-([A-Za-z0-9+/]{42}|[A-Za-z0-9_-]{42})[AEIMQUYcgkosw048]=?$"
+        }
+      },
+      "oneOf": [
+        { "required": ["sha256"] },
+        { "required": ["integrity"] }
+      ]
+    },
     "path": {
       "type": "string",
       "minLength": 1
@@ -211,6 +234,9 @@
               "type": "string",
               "minLength": 1
             },
+            "bundle_url": {
+              "$ref": "#/$defs/pinned_https_source"
+            },
             "data_paths": {
               "$ref": "#/$defs/string_array"
             },
@@ -222,7 +248,10 @@
               ]
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "not": {
+            "required": ["bundle", "bundle_url"]
+          }
         },
         {
           "type": "object",
@@ -332,6 +361,22 @@
       "type": "object",
       "required": [
         "type"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "llm" } } },
+          "then": {
+            "properties": {
+              "system_prompt_url": { "$ref": "#/$defs/pinned_https_source" }
+            },
+            "not": {
+              "anyOf": [
+                { "required": ["system_prompt_url", "system_prompt"] },
+                { "required": ["system_prompt_url", "prompt"] }
+              ]
+            }
+          }
+        }
       ],
       "properties": {
         "type": {

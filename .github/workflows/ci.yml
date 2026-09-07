@@ -23,7 +23,20 @@ jobs:
           components: rustfmt, clippy
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-features --locked -- -D warnings
+      - name: Install OPA (pinned, checksum-verified)
+        run: |
+          curl -fsSL -o opa \
+            https://github.com/open-policy-agent/opa/releases/download/v1.20.2/opa_linux_amd64_static
+          echo "69da5179ee403d10fa11bab6cfb4ffb0d23dba5f9b682fa977db772a1da5670f  opa" | sha256sum -c -
+          chmod +x opa
+          sudo install -m 0755 opa /usr/local/bin/opa
       - run: cargo test --workspace --all-features --locked
+        env:
+          AGENT_CONTROL_REQUIRE_OPA: "1"
+      - name: OPA-only dispatcher URL limits
+        run: cargo test -p agent-control-spec --no-default-features --features opa,default-dispatchers --locked --lib
+        env:
+          AGENT_CONTROL_REQUIRE_OPA: "1"
 
   python:
     runs-on: ubuntu-latest

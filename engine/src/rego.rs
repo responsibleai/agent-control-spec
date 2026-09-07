@@ -28,6 +28,8 @@
 //!
 //! * A `bundle` MUST be a directory or a single policy/data file. OPA's
 //!   packaged `.tar.gz` bundles are not read; the error message says so.
+//!   Pinned HTTPS `bundle_url` archives likewise require the opt-in OPA
+//!   dispatcher and are rejected here, including during warm-up.
 //! * Rego parses as v1 by default. A bundle written for OPA 0.x without
 //!   `import rego.v1` needs [`RegorusRegoRunner::with_rego_v0`] or
 //!   `ACS_REGO_V0=1`.
@@ -454,6 +456,7 @@ impl RegorusRegoRunner {
     /// Only meaningful with the policy cache enabled; without it there is
     /// nowhere to keep the result and this is a no-op.
     pub fn warm(&self, invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+        Self::reject_remote_bundle(invocation)?;
         if self.cache.is_none() {
             return Ok(());
         }
@@ -525,6 +528,7 @@ impl RegorusRegoRunner {
     }
 
     pub fn evaluate(&self, invocation: &RegoPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+        Self::reject_remote_bundle(invocation)?;
         let key = self.cache_key(invocation)?;
         let query = invocation.query.clone();
         let input = invocation.canonical_input.clone();
@@ -598,6 +602,17 @@ impl RegorusRegoRunner {
             ))),
             DeadlineOutcome::Unavailable(error) => Err(error),
         }
+    }
+
+    fn reject_remote_bundle(invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+        if invocation.bundle_url()?.is_some() {
+            return Err(RuntimeError::PolicyInvocationFailed(
+                "Regorus does not support bundle_url archives; use the opt-in OPA dispatcher \
+                 or supply a local directory or in-memory Rego modules"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn cache_key(&self, invocation: &RegoPolicyInvocation) -> Result<CacheKey, RuntimeError> {

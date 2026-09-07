@@ -8,13 +8,14 @@
 //! and a host that must pin evaluation to a specific `opa` build.
 
 use crate::{
-    policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue,
+    policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue, Limits,
     PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
 };
 use serde::Deserialize;
 use std::{
     env,
     ffi::OsString,
+    fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Output, Stdio},
@@ -26,12 +27,15 @@ pub const OPA_PATH_ENV: &str = "ACS_OPA_PATH";
 pub const OPA_TIMEOUT_ENV: &str = "ACS_OPA_TIMEOUT_MS";
 const DEFAULT_OPA_TIMEOUT: Duration = Duration::from_secs(5);
 const ERROR_OUTPUT_LIMIT: usize = 4096;
+const BUNDLE_CLEANUP_ATTEMPTS: usize = 3;
+const BUNDLE_CLEANUP_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaRegoRunner {
     executable: PathBuf,
     data_paths: Vec<PathBuf>,
     eval_timeout: Duration,
+    limits: Limits,
 }
 
 impl OpaRegoRunner {
@@ -40,6 +44,7 @@ impl OpaRegoRunner {
             executable: PathBuf::from("opa"),
             data_paths: Vec::new(),
             eval_timeout: DEFAULT_OPA_TIMEOUT,
+            limits: Limits::default(),
         }
     }
 
@@ -63,6 +68,13 @@ impl OpaRegoRunner {
 
     pub fn with_eval_timeout(mut self, timeout: Duration) -> Self {
         self.eval_timeout = timeout;
+        self
+    }
+
+    /// Sets the existing manifest URL budgets for pinned remote bundle fetches.
+    /// This does not change the OPA subprocess evaluation timeout.
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
         self
     }
 
@@ -137,6 +149,16 @@ impl OpaRegoRunner {
 
     fn run_opa_eval(&self, invocation: &RegoPolicyInvocation) -> Result<Output, RuntimeError> {
         let adapter_data_paths = rego_adapter_data_paths(&invocation.adapter_config)?;
+        let mut remote_bundle = invocation
+            .bundle_url()?
+            .map(|source| {
+                let bytes = crate::manifest::fetch_pinned_https_bytes(&source, self.limits)
+                    .map_err(|err| {
+                        RuntimeError::PolicyInvocationFailed(err.detail().to_string())
+                    })?;
+                StagedBundle::new(&bytes)
+            })
+            .transpose()?;
         let mut command = Command::new(&self.executable);
         command
             .arg("eval")
@@ -146,6 +168,11 @@ impl OpaRegoRunner {
 
         if let Some(bundle) = &invocation.bundle {
             command.arg("--bundle").arg(opa_command_path_arg(bundle));
+        }
+        if let Some(bundle) = &remote_bundle {
+            command
+                .arg("--bundle")
+                .arg(opa_command_path_arg(bundle.path()));
         }
         for data_path in &self.data_paths {
             command.arg("--data").arg(opa_command_path_arg(data_path));
@@ -180,9 +207,99 @@ impl OpaRegoRunner {
             }
         }
 
-        wait_with_timeout(child, self.eval_timeout).map_err(|err| {
+        let result = wait_with_timeout(child, self.eval_timeout).map_err(|err| {
             RuntimeError::PolicyInvocationFailed(format!("failed to read OPA output: {err}"))
+        });
+        if let Some(bundle) = remote_bundle.as_mut() {
+            bundle.cleanup();
+        }
+        result
+    }
+}
+
+/// OPA needs a filename. Own a unique directory under the OS temporary root
+/// until the subprocess exits. Cleanup is bounded and best-effort; Drop covers
+/// early returns without changing the policy result.
+struct StagedBundle {
+    directory: PathBuf,
+    cleanup_attempted: bool,
+}
+
+impl StagedBundle {
+    fn new(bytes: &[u8]) -> Result<Self, RuntimeError> {
+        let stage = || -> io::Result<Self> {
+            let mut builder = tempfile::Builder::new();
+            builder.prefix("acs-opa-bundle-");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                builder.permissions(fs::Permissions::from_mode(0o700));
+            }
+            let directory = builder.tempdir()?.keep();
+            let bundle = Self {
+                directory,
+                cleanup_attempted: false,
+            };
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(bundle.path())?;
+            file.write_all(bytes)?;
+            Ok(bundle)
+        };
+        stage().map_err(|err| {
+            RuntimeError::PolicyInvocationFailed(format!(
+                "failed to stage pinned OPA bundle in the temporary directory: {err}"
+            ))
         })
+    }
+
+    fn path(&self) -> PathBuf {
+        self.directory.join("bundle.tar.gz")
+    }
+
+    fn cleanup(&mut self) {
+        if self.cleanup_attempted {
+            return;
+        }
+        self.cleanup_attempted = true;
+        cleanup_bundle_directory(
+            &self.directory,
+            |path| fs::remove_dir_all(path),
+            thread::sleep,
+            &mut io::stderr().lock(),
+        );
+    }
+}
+
+impl Drop for StagedBundle {
+    fn drop(&mut self) {
+        self.cleanup();
+    }
+}
+
+fn cleanup_bundle_directory(
+    directory: &Path,
+    mut remove: impl FnMut(&Path) -> io::Result<()>,
+    mut wait: impl FnMut(Duration),
+    diagnostics: &mut impl Write,
+) {
+    for attempt in 1..=BUNDLE_CLEANUP_ATTEMPTS {
+        match remove(directory) {
+            Ok(()) => return,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(error) if attempt == BUNDLE_CLEANUP_ATTEMPTS => {
+                // A failed diagnostic write must not replace the policy result either.
+                let _ = writeln!(
+                    diagnostics,
+                    "ACS warning: failed to remove staged OPA bundle directory '{}' after \
+                     {attempt} attempts: {error}. The policy result is unchanged; \
+                     the host must reclaim this directory when it is no longer in use.",
+                    directory.display(),
+                );
+            }
+            Err(_) => wait(BUNDLE_CLEANUP_RETRY_DELAY),
+        }
     }
 }
 
@@ -251,6 +368,7 @@ fn join_reader(handle: thread::JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Ve
 /// manifest's `bundle` still pointed at, or nothing at all, and either
 /// way would return a verdict for a policy the host did not supply.
 fn reject_in_memory_bundle(invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+    invocation.bundle_url()?;
     if invocation.inline_bundle.is_some() {
         return Err(RuntimeError::PolicyInvocationFailed(
             "this policy supplies Rego modules in memory, which the `opa` CLI dispatcher cannot \
@@ -436,8 +554,208 @@ fn truncate(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::opa_command_path_arg;
-    use std::path::Path;
+    use super::{
+        cleanup_bundle_directory, opa_command_path_arg, OpaRegoRunner, StagedBundle,
+        BUNDLE_CLEANUP_ATTEMPTS, BUNDLE_CLEANUP_RETRY_DELAY,
+    };
+    use crate::artifact_tests::{rego, source, with_test_ca, Response, Server};
+    use base64::Engine;
+    use std::{io, path::Path};
+
+    fn archive() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD.decode(
+            "H4sIAAAAAAACCu3SsQrDIBSFYWefQnyA4qAJBPowYkQkoRZj26H03StZCt1bCv2/5VzOcpabfIuHGlMRn2O6wdo9u/c0xo2ve+9HZ51QRnzBZWu+9knxn84+LD5FlfofSHmNdc6hqemo7nqOIW+5nPSktF/XctMPKQAAAAAAAAAAAAAAAAAAv+EJiUDVRQAoAAA="
+        ).unwrap()
+    }
+
+    #[test]
+    fn explicit_default_url_limits_preserve_runner_configuration() {
+        assert_eq!(
+            OpaRegoRunner::new(),
+            OpaRegoRunner::new().with_limits(crate::Limits::default())
+        );
+    }
+
+    #[test]
+    fn staged_bundle_keeps_bytes_until_dropped_and_cleans_up_on_error() {
+        let bytes = archive();
+        let bundle = StagedBundle::new(&bytes).unwrap();
+        let path = bundle.path();
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        let directory = path.parent().unwrap().to_owned();
+        drop(bundle);
+        assert!(!directory.exists());
+
+        let mut staged = None;
+        let fail = |staged: &mut Option<std::path::PathBuf>| -> Result<(), &'static str> {
+            let bundle = StagedBundle::new(b"test").unwrap();
+            *staged = Some(bundle.directory.clone());
+            Err("simulated subprocess failure")
+        };
+        assert!(fail(&mut staged).is_err());
+        assert!(!staged.unwrap().exists());
+    }
+
+    #[test]
+    fn staged_bundle_uses_a_unique_temporary_directory() {
+        let mut first = StagedBundle::new(b"first").unwrap();
+        let second = StagedBundle::new(b"second").unwrap();
+        assert_ne!(first.directory, second.directory);
+        assert_eq!(
+            first.directory.parent().unwrap().canonicalize().unwrap(),
+            std::env::temp_dir().canonicalize().unwrap()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&first.directory)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        let path = first.directory.clone();
+        first.cleanup();
+        assert!(first.cleanup_attempted);
+        assert!(!path.exists());
+        drop(first);
+        assert_eq!(std::fs::read(second.path()).unwrap(), b"second");
+    }
+
+    #[test]
+    fn bundle_cleanup_retries_transient_errors() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let mut diagnostics = Vec::new();
+        cleanup_bundle_directory(
+            Path::new("owned-bundle"),
+            |_| {
+                attempts += 1;
+                if attempts < BUNDLE_CLEANUP_ATTEMPTS {
+                    Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "file locked",
+                    ))
+                } else {
+                    Ok(())
+                }
+            },
+            |delay| delays.push(delay),
+            &mut diagnostics,
+        );
+        assert_eq!(attempts, BUNDLE_CLEANUP_ATTEMPTS);
+        assert_eq!(delays, vec![BUNDLE_CLEANUP_RETRY_DELAY; 2]);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn bundle_cleanup_reports_exhausted_retries() {
+        let mut attempts = 0;
+        let mut delays = Vec::new();
+        let mut diagnostics = Vec::new();
+        cleanup_bundle_directory(
+            Path::new("owned-bundle"),
+            |_| {
+                attempts += 1;
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "file locked",
+                ))
+            },
+            |delay| delays.push(delay),
+            &mut diagnostics,
+        );
+        assert_eq!(attempts, BUNDLE_CLEANUP_ATTEMPTS);
+        assert_eq!(delays.len(), BUNDLE_CLEANUP_ATTEMPTS - 1);
+        let message = String::from_utf8(diagnostics).unwrap();
+        assert!(message.contains("owned-bundle"));
+        assert!(message.contains("file locked"));
+        assert!(message.contains("policy result is unchanged"));
+    }
+
+    #[test]
+    fn bundle_cleanup_accepts_an_already_removed_directory() {
+        let mut attempts = 0;
+        let mut diagnostics = Vec::new();
+        cleanup_bundle_directory(
+            Path::new("owned-bundle"),
+            |_| {
+                attempts += 1;
+                Err(io::Error::from(io::ErrorKind::NotFound))
+            },
+            |_| panic!("a missing directory needs no retry"),
+            &mut diagnostics,
+        );
+        assert_eq!(attempts, 1);
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn pinned_bundle_runs_with_real_opa_when_installed() {
+        let runner = OpaRegoRunner::new();
+        if !runner.is_available() {
+            assert_ne!(
+                std::env::var("AGENT_CONTROL_REQUIRE_OPA").as_deref(),
+                Ok("1"),
+                "AGENT_CONTROL_REQUIRE_OPA=1 but the 'opa' executable is not available on PATH"
+            );
+            eprintln!("skipping OPA integration; set AGENT_CONTROL_REQUIRE_OPA=1 to require OPA");
+            return;
+        }
+        with_test_ca(|| {
+            let bytes = archive();
+            let response = bytes.clone();
+            let server = Server::https(move |_, _| Response::ok(response.clone()));
+            let value = runner
+                .evaluate(&rego(&source(server.url.clone(), &bytes)))
+                .unwrap();
+            assert_eq!(value["decision"], "allow");
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pinned_bundle_lives_through_subprocess_and_is_removed_after_success_or_failure() {
+        use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+        with_test_ca(|| {
+            // This separate guard owns only the fake executable and its observation
+            // file, not the runner's downloaded bundle.
+            let harness = StagedBundle::new(b"test harness").unwrap();
+            let script = harness.directory.join("opa-test");
+            let observed = harness.directory.join("observed");
+            let bytes = archive();
+            let response = bytes.clone();
+            let server = Server::https(move |_, _| Response::ok(response.clone()));
+            let invocation = rego(&source(server.url.clone(), &bytes));
+            for ending in [
+                "printf '%s\\n' '{\"result\":[{\"expressions\":[{\"value\":{\"decision\":\"allow\"}}]}]}'",
+                "exit 7",
+                "printf '%s\\n' 'not json'",
+                "exec sleep 2",
+            ] {
+                let body = format!(
+                    "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n\
+                     if [ \"$1\" = --bundle ]; then shift; bundle=\"$1\"; fi\n\
+                     shift\ndone\ncat >/dev/null\n[ -s \"$bundle\" ] || exit 9\n\
+                     printf '%s' \"$bundle\" > \"$(dirname \"$0\")/observed\"\n{ending}\n"
+                );
+                fs::write(&script, body).unwrap();
+                fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+                let runner = OpaRegoRunner::new().with_executable(&script)
+                    .with_eval_timeout(Duration::from_millis(250));
+                let result = runner.evaluate(&invocation);
+                if ending.contains("expressions") {
+                    assert_eq!(result.unwrap()["decision"], "allow");
+                } else {
+                    assert!(result.is_err());
+                }
+                let downloaded = fs::read_to_string(&observed).unwrap();
+                assert!(!Path::new(&downloaded).exists(), "staged archive leaked");
+                assert!(!Path::new(&downloaded).parent().unwrap().exists());
+                fs::remove_file(&observed).unwrap();
+            }
+        });
+    }
 
     #[test]
     fn opa_command_path_arg_strips_windows_verbatim_disk_prefix() {

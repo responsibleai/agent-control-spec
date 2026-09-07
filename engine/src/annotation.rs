@@ -47,6 +47,20 @@ pub struct AnnotatorInvocation {
     pub fields: BTreeMap<String, JsonValue>,
 }
 
+pub(crate) fn system_prompt_source(
+    fields: &BTreeMap<String, JsonValue>,
+) -> Result<Option<crate::manifest::PinnedHttpsSource>, RuntimeError> {
+    let Some(value) = fields.get("system_prompt_url") else {
+        return Ok(None);
+    };
+    if fields.contains_key("system_prompt") || fields.contains_key("prompt") {
+        return Err(RuntimeError::ManifestInvalid(
+            "system_prompt_url must not be combined with system_prompt or prompt".to_string(),
+        ));
+    }
+    crate::manifest::PinnedHttpsSource::from_value(value).map(Some)
+}
+
 impl AnnotatorInvocation {
     /// Lays the binding's fields over the declaration's. `url_sourced`
     /// starts false: this constructor sees no manifest. The runtime

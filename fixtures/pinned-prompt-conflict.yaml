@@ -1,0 +1,23 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+policies:
+  allow:
+    type: test
+    verdict:
+      decision: allow
+annotators:
+  judge:
+    type: llm
+    provider: openai_compatible
+    endpoint: http://localhost:1/inference
+    system_prompt: inline fallback must not override a pinned source
+    system_prompt_url:
+      url: https://localhost:1/prompt
+      sha256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+intervention_points:
+  input:
+    policy_target: $.input
+    annotations:
+      judge:
+        from: $target.content
+    policy:
+      id: allow

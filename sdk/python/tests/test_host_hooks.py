@@ -34,6 +34,8 @@ from agent_hooks import AgentContextBuilder
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 DEFAULT_MANIFEST = str(FIXTURES / "manifest.yaml")
+SHARED_FIXTURES = pathlib.Path(__file__).parents[3] / "fixtures"
+PINNED_PROMPT_MANIFEST = str(SHARED_FIXTURES / "pinned-prompt.yaml")
 
 
 def _builder() -> AgentContextBuilder:
@@ -558,23 +560,83 @@ def test_lowered_snapshot_cap_flips_the_verdict():
     assert verdict.reason.startswith("runtime_error:"), verdict.reason
 
 
+@pytest.mark.parametrize(
+    "custom_policy", [False, True], ids=["bundled-policy", "host-policy"]
+)
+def test_prompt_fetch_uses_limits_and_custom_annotator_keeps_control(custom_policy):
+    """Zero timeout rejects before GET; a host policy cannot skip this gate."""
+    limits = {"manifest_url_timeout_ms": 0}
+    policy_calls = []
+
+    def allow(invocation):
+        policy_calls.append(invocation)
+        return {"decision": "allow"}
+
+    policy_options = {"policy_dispatcher": allow} if custom_policy else {}
+    default = AcsInterceptor(PINNED_PROMPT_MANIFEST, limits=limits, **policy_options)
+    verdict = default.intercept(_builder().input(content="hello"))
+    assert verdict.decision.value == "deny"
+    assert verdict.reason == "runtime_error:annotation_failed"
+    assert "timeout of 0 ms" in verdict.message
+    assert policy_calls == []
+
+    callback = RecordingAnnotator({"label": "safe"})
+    custom = AcsInterceptor(
+        PINNED_PROMPT_MANIFEST,
+        limits=limits,
+        annotator_dispatcher=callback,
+        **policy_options,
+    )
+    assert custom.intercept(_builder().input(content="hello")).decision.value == "allow"
+    assert len(callback.calls) == 1
+    assert callback.calls[0][0] == "judge"
+    assert callback.calls[0][1]["system_prompt_url"]["url"].startswith("https://")
+    assert len(policy_calls) == int(custom_policy)
+    if custom_policy:
+        assert policy_calls[0]["input"]["annotations"]["judge"] == {"label": "safe"}
+
+
+def test_conflicting_prompt_sources_are_rejected_even_with_host_callbacks():
+    annotator = RecordingAnnotator({"label": "safe"})
+    policy_calls = []
+
+    def policy(invocation):
+        policy_calls.append(invocation)
+        return {"decision": "allow"}
+
+    with pytest.raises(ValueError, match="must not be combined"):
+        AcsInterceptor(
+            str(SHARED_FIXTURES / "pinned-prompt-conflict.yaml"),
+            limits={"manifest_url_timeout_ms": 0},
+            annotator_dispatcher=annotator,
+            policy_dispatcher=policy,
+        )
+    assert annotator.calls == []
+    assert policy_calls == []
+
+
 def test_no_limits_argument_matches_the_baseline_zero_config_path():
-    """Regression guard: `limits=None` (and omitting the argument) must
-    behave identically to the pre-Limits baseline. Two contexts, one
-    that allowed and one that denied on the fixture, produce the same
-    verdicts under a `limits=None` interceptor as under one with no
-    kwarg at all.
-    """
+    """Omitted, empty, None and explicit defaults preserve allow AND deny."""
     baseline = AcsInterceptor(DEFAULT_MANIFEST)
     explicit_none = AcsInterceptor(DEFAULT_MANIFEST, limits=None)
     empty = AcsInterceptor(DEFAULT_MANIFEST, limits={})
-    for ctx in (
-        _builder().input(content="hi"),
-        _builder().pre_tool_call(call_id="t1", name="search", args={"q": "x"}),
+    explicit_defaults = AcsInterceptor(DEFAULT_MANIFEST, limits=DEFAULT_LIMITS)
+    for ctx, expected in (
+        (_builder().input(content="hi"), "allow"),
+        (
+            _builder().pre_tool_call(call_id="t1", name="search", args={"q": "x"}),
+            "deny",
+        ),
     ):
         base_v = baseline.intercept(ctx)
-        assert explicit_none.intercept(ctx).decision == base_v.decision
-        assert empty.intercept(ctx).decision == base_v.decision
+        assert base_v.decision.value == expected
+        for configured in (explicit_none, empty, explicit_defaults):
+            verdict = configured.intercept(ctx)
+            assert (verdict.decision, verdict.reason, verdict.message) == (
+                base_v.decision,
+                base_v.reason,
+                base_v.message,
+            )
 
 
 def test_overriding_one_limit_leaves_the_others_at_their_defaults():
