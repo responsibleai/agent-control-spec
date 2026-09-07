@@ -118,6 +118,103 @@ pub struct ManifestUrlExtends {
     pub sha256: Option<String>,
 }
 
+/// A content-pinned HTTPS artifact. Unlike manifest extends, artifacts require
+/// exactly one SHA-256 pin before any network access is attempted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinnedHttpsSource {
+    pub url: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_pin"
+    )]
+    pub integrity: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_pin"
+    )]
+    pub sha256: Option<String>,
+}
+
+fn deserialize_present_pin<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
+impl PinnedHttpsSource {
+    pub fn from_value(value: &JsonValue) -> Result<Self, RuntimeError> {
+        let source: Self = serde_json::from_value(value.clone()).map_err(|err| {
+            RuntimeError::ManifestInvalid(format!("invalid pinned HTTPS source: {err}"))
+        })?;
+        source.validate()?;
+        Ok(source)
+    }
+
+    pub fn validate(&self) -> Result<(), RuntimeError> {
+        validate_https_url_with_context(&self.url, "artifact")?;
+        self.digest().map(|_| ())
+    }
+
+    fn digest(&self) -> Result<Vec<u8>, RuntimeError> {
+        match (&self.sha256, &self.integrity) {
+            (Some(hash), None) => parse_sha256_hex_with_context(hash, "artifact"),
+            (None, Some(hash)) => parse_integrity_with_context(hash, "artifact"),
+            _ => Err(RuntimeError::ManifestInvalid(
+                "pinned HTTPS source requires exactly one of sha256 or integrity".to_string(),
+            )),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "opa", feature = "default-dispatchers"))]
+pub(crate) fn fetch_pinned_https_bytes(
+    source: &PinnedHttpsSource,
+    limits: Limits,
+) -> Result<Vec<u8>, RuntimeError> {
+    source.validate()?;
+    if limits.manifest_url_timeout_ms == 0 {
+        return Err(RuntimeError::ResourceLimitExceeded(
+            "artifact URL fetch exceeds timeout of 0 ms".to_string(),
+        ));
+    }
+    if std::time::Instant::now()
+        .checked_add(Duration::from_millis(limits.manifest_url_timeout_ms))
+        .is_none()
+    {
+        return Err(RuntimeError::ResourceLimitExceeded(
+            "artifact URL timeout is too large for this platform".to_string(),
+        ));
+    }
+    let body = HttpExtendsFetcher.fetch_body(
+        &source.url,
+        limits,
+        https_agent(limits),
+        "artifact",
+        true,
+    )?;
+    if sha256_digest(&body).as_slice() != source.digest()?.as_slice() {
+        return Err(RuntimeError::ManifestInvalid(format!(
+            "SHA-256 pin mismatch for artifact URL '{}'",
+            source.url
+        )));
+    }
+    Ok(body)
+}
+
+#[cfg(any(test, feature = "default-dispatchers"))]
+pub(crate) fn fetch_pinned_https_text(
+    source: &PinnedHttpsSource,
+    limits: Limits,
+) -> Result<String, RuntimeError> {
+    String::from_utf8(fetch_pinned_https_bytes(source, limits)?).map_err(|err| {
+        RuntimeError::ManifestInvalid(format!("artifact URL '{}' is not UTF-8: {err}", source.url))
+    })
+}
+
 impl ManifestExtends {
     fn reference(&self) -> &str {
         match self {
@@ -194,7 +291,7 @@ impl Manifest {
         }
     }
 
-    /// Replaces the `bundle` path of one Rego policy with modules the
+    /// Replaces the `bundle` path or `bundle_url` of one Rego policy with modules the
     /// host holds in memory.
     ///
     /// The manifest names its bundle by a path relative to the manifest
@@ -207,8 +304,9 @@ impl Manifest {
     /// alone: those are separate paths the host wrote deliberately, and
     /// a host that wants them in memory puts them in the bundle instead.
     ///
-    /// Fails when `policy_id` is not declared, or is declared as
-    /// something other than a Rego policy.
+    /// Fails without modifying the manifest when `policy_id` is not declared,
+    /// is not a Rego policy, or a binding for that policy declares `bundle_url`.
+    /// Remove binding-level source overrides explicitly before replacing a bundle.
     pub fn set_rego_bundle_in_memory(
         &mut self,
         policy_id: &str,
@@ -226,7 +324,19 @@ impl Manifest {
                  policy"
             )));
         };
+        for (point, config) in &self.intervention_points {
+            if config.policy.id == policy_id
+                && config.policy.adapter_config.contains_key("bundle_url")
+            {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "cannot supply in-memory Rego modules for policy '{policy_id}': \
+                     intervention point {point} still declares a bundle_url override; \
+                     remove the binding override first"
+                )));
+            }
+        }
         rego.bundle = None;
+        rego.adapter_config.remove("bundle_url");
         rego.inline_bundle = Some(std::sync::Arc::new(bundle));
         Ok(())
     }
@@ -396,11 +506,14 @@ impl Manifest {
             validate_policy_definition(policy_name, policy_config)?;
         }
 
-        for annotator_name in self.annotators.keys() {
+        for (annotator_name, annotator) in &self.annotators {
             if annotator_name.trim().is_empty() {
                 return Err(RuntimeError::ManifestInvalid(
                     "annotator names must not be empty".to_string(),
                 ));
+            }
+            if annotator.annotator_type == crate::annotation::AnnotatorType::Llm {
+                crate::annotation::system_prompt_source(&annotator.fields)?;
             }
         }
 
@@ -477,6 +590,13 @@ fn validate_point_config(
                 "intervention point {} references unknown annotator '{annotation_name}'",
                 intervention_point
             )));
+        }
+        let invocation = crate::AnnotatorInvocation::from_annotation(
+            &manifest.annotators[annotation_name],
+            annotation_config,
+        );
+        if invocation.field("type").and_then(JsonValue::as_str) == Some("llm") {
+            crate::annotation::system_prompt_source(&invocation.fields)?;
         }
         if annotation_config.fields.contains_key("annotator") {
             return Err(RuntimeError::ManifestInvalid(format!(
@@ -996,29 +1116,40 @@ fn resolve_url_reference(parent: &ManifestLocation, raw: &str) -> Result<String,
 }
 
 fn validate_https_url(raw: &str) -> Result<String, RuntimeError> {
-    let parsed = url::Url::parse(raw).map_err(|err| {
-        RuntimeError::ManifestInvalid(format!("extends URL '{raw}' is invalid: {err}"))
-    })?;
-    validate_url_components(parsed)
+    validate_https_url_with_context(raw, "extends")
 }
 
-fn validate_url_components(mut parsed: url::Url) -> Result<String, RuntimeError> {
+fn validate_https_url_with_context(raw: &str, context: &str) -> Result<String, RuntimeError> {
+    let parsed = url::Url::parse(raw).map_err(|err| {
+        RuntimeError::ManifestInvalid(format!("{context} URL '{raw}' is invalid: {err}"))
+    })?;
+    validate_url_components_with_context(parsed, context)
+}
+
+fn validate_url_components(parsed: url::Url) -> Result<String, RuntimeError> {
+    validate_url_components_with_context(parsed, "extends")
+}
+
+fn validate_url_components_with_context(
+    mut parsed: url::Url,
+    context: &str,
+) -> Result<String, RuntimeError> {
     if parsed.scheme() != "https" {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "extends URL '{}' uses unsupported URL scheme '{}'; only https is allowed",
+            "{context} URL '{}' uses unsupported URL scheme '{}'; only https is allowed",
             parsed,
             parsed.scheme()
         )));
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "extends URL '{}' must not include credentials",
+            "{context} URL '{}' must not include credentials",
             parsed
         )));
     }
     if parsed.fragment().is_some() {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "extends URL '{}' must not include a fragment",
+            "{context} URL '{}' must not include a fragment",
             parsed
         )));
     }
@@ -1079,10 +1210,14 @@ fn sha256_digest(body: &[u8]) -> [u8; 32] {
 }
 
 fn parse_integrity(raw: &str) -> Result<Vec<u8>, RuntimeError> {
+    parse_integrity_with_context(raw, "extends")
+}
+
+fn parse_integrity_with_context(raw: &str, context: &str) -> Result<Vec<u8>, RuntimeError> {
     use base64::Engine;
     let digest = raw.trim().strip_prefix("sha256-").ok_or_else(|| {
         RuntimeError::ManifestInvalid(format!(
-            "extends integrity '{raw}' must use sha256-<base64>"
+            "{context} integrity '{raw}' must use sha256-<base64>"
         ))
     })?;
     let decoded = base64::engine::general_purpose::STANDARD
@@ -1092,12 +1227,12 @@ fn parse_integrity(raw: &str) -> Result<Vec<u8>, RuntimeError> {
         .or_else(|_| base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(digest))
         .map_err(|_| {
             RuntimeError::ManifestInvalid(format!(
-                "extends integrity '{raw}' must use sha256-<base64>"
+                "{context} integrity '{raw}' must use sha256-<base64>"
             ))
         })?;
     if decoded.len() != crate::constants::sha256::DIGEST_BYTES {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "extends integrity '{raw}' must contain a {} byte sha256 digest",
+            "{context} integrity '{raw}' must contain a {} byte sha256 digest",
             crate::constants::sha256::DIGEST_BYTES
         )));
     }
@@ -1105,12 +1240,16 @@ fn parse_integrity(raw: &str) -> Result<Vec<u8>, RuntimeError> {
 }
 
 fn parse_sha256_hex(raw: &str) -> Result<Vec<u8>, RuntimeError> {
+    parse_sha256_hex_with_context(raw, "extends")
+}
+
+fn parse_sha256_hex_with_context(raw: &str, context: &str) -> Result<Vec<u8>, RuntimeError> {
     let trimmed = raw.trim();
     if trimmed.len() != crate::constants::sha256::HEX_LEN
         || !trimmed.chars().all(|ch| ch.is_ascii_hexdigit())
     {
         return Err(RuntimeError::ManifestInvalid(format!(
-            "extends sha256 '{raw}' must be {} lowercase or uppercase hex characters",
+            "{context} sha256 '{raw}' must be {} lowercase or uppercase hex characters",
             crate::constants::sha256::HEX_LEN
         )));
     }
@@ -1118,7 +1257,7 @@ fn parse_sha256_hex(raw: &str) -> Result<Vec<u8>, RuntimeError> {
         .step_by(2)
         .map(|index| {
             u8::from_str_radix(&trimmed[index..index + 2], 16).map_err(|err| {
-                RuntimeError::ManifestInvalid(format!("extends sha256 '{raw}' is invalid: {err}"))
+                RuntimeError::ManifestInvalid(format!("{context} sha256 '{raw}' is invalid: {err}"))
             })
         })
         .collect()
@@ -1139,17 +1278,24 @@ impl ExtendsFetcher for HttpExtendsFetcher {
         // `http_status_as_error(false)` keeps the ureq 2 `or_any_status`
         // shape: every HTTP status comes back as `Ok`, and the >= 400
         // fail-closed check below stays the single authority.
-        let agent = ureq::Agent::new_with_config(
-            ureq::Agent::config_builder()
-                .https_only(true)
-                .proxy(None)
-                .max_redirects(limits.max_manifest_url_redirects as u32)
-                .timeout_global(Some(Duration::from_millis(limits.manifest_url_timeout_ms)))
-                .http_status_as_error(false)
-                .build(),
-        );
-        self.fetch_with_agent(url, limits, agent)
+        self.fetch_with_agent(url, limits, https_agent(limits))
     }
+}
+
+fn https_agent(limits: Limits) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .https_only(true)
+        .proxy(None)
+        .max_redirects(u32::try_from(limits.max_manifest_url_redirects).unwrap_or(u32::MAX))
+        .timeout_global(Some(Duration::from_millis(limits.manifest_url_timeout_ms)))
+        .http_status_as_error(false);
+    #[cfg(test)]
+    let config = if crate::artifact_tests::trust_test_ca() {
+        config.tls_config(crate::artifact_tests::tls_config())
+    } else {
+        config
+    };
+    ureq::Agent::new_with_config(config.build())
 }
 
 impl HttpExtendsFetcher {
@@ -1159,28 +1305,48 @@ impl HttpExtendsFetcher {
         limits: Limits,
         agent: ureq::Agent,
     ) -> Result<Vec<u8>, RuntimeError> {
+        self.fetch_body(url, limits, agent, "extends", false)
+    }
+
+    fn fetch_body(
+        &self,
+        url: &str,
+        limits: Limits,
+        agent: ureq::Agent,
+        context: &str,
+        require_success: bool,
+    ) -> Result<Vec<u8>, RuntimeError> {
         let response = agent.get(url).call().map_err(|err| {
-            RuntimeError::ManifestUnreadable(format!("failed to fetch extends URL '{url}': {err}"))
+            RuntimeError::ManifestUnreadable(format!(
+                "failed to fetch {context} URL '{url}': {err}"
+            ))
         })?;
-        if response.status().as_u16() >= 400 {
+        if response.status().as_u16() >= 400 || (require_success && !response.status().is_success())
+        {
             return Err(RuntimeError::ManifestUnreadable(format!(
-                "failed to fetch extends URL '{url}': HTTP {}",
+                "failed to fetch {context} URL '{url}': HTTP {}",
                 response.status().as_u16()
             )));
         }
         let mut body = Vec::new();
-        let mut reader = response
-            .into_body()
-            .into_reader()
-            .take(limits.max_manifest_url_bytes as u64 + 1);
+        let mut reader = response.into_body().into_reader().take(
+            u64::try_from(limits.max_manifest_url_bytes)
+                .unwrap_or(u64::MAX)
+                .saturating_add(1),
+        );
         reader.read_to_end(&mut body).map_err(|err| {
             RuntimeError::ManifestUnreadable(format!(
-                "failed to read extends URL '{url}' response body: {err}"
+                "failed to read {context} URL '{url}' response body: {err}"
             ))
         })?;
         if body.len() > limits.max_manifest_url_bytes {
+            let label = if require_success {
+                "artifact URL"
+            } else {
+                "manifest URL extends"
+            };
             return Err(RuntimeError::ResourceLimitExceeded(format!(
-                "manifest URL extends body from '{url}' exceeds limit {}",
+                "{label} body from '{url}' exceeds limit {}",
                 limits.max_manifest_url_bytes
             )));
         }

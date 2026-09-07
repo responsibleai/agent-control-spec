@@ -1,6 +1,6 @@
 use super::constants::{ANNOTATOR_TYPE, TYPE_CLASSIFIER, TYPE_ENDPOINT, TYPE_LLM};
 use super::{resolve, ClassifierAnnotator, EndpointAnnotator, LlmAnnotator};
-use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, RuntimeError};
+use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, Limits, RuntimeError};
 
 /// Zero-config annotator dispatcher that routes an annotator invocation to the
 /// matching bundled reference dispatcher based on its declared `type`. Backs the
@@ -8,6 +8,11 @@ use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, RuntimeError};
 /// own endpoint configuration without wiring a dispatcher by hand.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultAnnotatorDispatcher;
+
+#[derive(Debug)]
+pub(super) struct ConfiguredAnnotatorDispatcher {
+    pub(super) limits: Limits,
+}
 
 impl DefaultAnnotatorDispatcher {
     pub fn new() -> Self {
@@ -22,13 +27,29 @@ impl AnnotatorDispatcher for DefaultAnnotatorDispatcher {
         annotator: &AnnotatorInvocation,
         preliminary_policy_input: &JsonValue,
     ) -> Result<JsonValue, RuntimeError> {
+        ConfiguredAnnotatorDispatcher {
+            limits: Limits::default(),
+        }
+        .dispatch(annotator_name, annotator, preliminary_policy_input)
+    }
+}
+
+impl AnnotatorDispatcher for ConfiguredAnnotatorDispatcher {
+    fn dispatch(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &JsonValue,
+    ) -> Result<JsonValue, RuntimeError> {
         match annotator.field(ANNOTATOR_TYPE).and_then(JsonValue::as_str) {
             Some(TYPE_CLASSIFIER) => {
                 ClassifierAnnotator.dispatch(annotator_name, annotator, preliminary_policy_input)
             }
-            Some(TYPE_LLM) => {
-                LlmAnnotator.dispatch(annotator_name, annotator, preliminary_policy_input)
-            }
+            Some(TYPE_LLM) => LlmAnnotator.with_limits(self.limits).dispatch(
+                annotator_name,
+                annotator,
+                preliminary_policy_input,
+            ),
             Some(TYPE_ENDPOINT) => {
                 EndpointAnnotator.dispatch(annotator_name, annotator, preliminary_policy_input)
             }

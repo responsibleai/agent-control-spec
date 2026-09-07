@@ -9,7 +9,9 @@
 // context JSON).
 
 use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
-use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
+use agent_control_spec::dispatchers::{
+    default_annotator_dispatcher, default_annotator_dispatcher_with_limits, BindingPolicyDispatcher,
+};
 use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
 use agent_control_spec::wire;
@@ -299,16 +301,30 @@ type NodePolicyFn = FunctionRef<FnArgs<(String,)>, String>;
 type NodeTelemetryFn = FunctionRef<FnArgs<(String,)>, ()>;
 
 fn build_annotator(dispatcher: Option<NodeAnnotatorFn>) -> Arc<dyn AnnotatorDispatcher> {
+    build_annotator_with_limits(dispatcher, Limits::default())
+}
+
+fn build_annotator_with_limits(
+    dispatcher: Option<NodeAnnotatorFn>,
+    limits: Limits,
+) -> Arc<dyn AnnotatorDispatcher> {
     match dispatcher {
         Some(func) => Arc::new(NodeAnnotatorDispatcher { func }),
-        None => default_annotator_dispatcher(),
+        None => default_annotator_dispatcher_with_limits(limits),
     }
 }
 
 fn build_policy(dispatcher: Option<NodePolicyFn>) -> Arc<dyn PolicyDispatcher> {
+    build_policy_with_limits(dispatcher, Limits::default())
+}
+
+fn build_policy_with_limits(
+    dispatcher: Option<NodePolicyFn>,
+    limits: Limits,
+) -> Arc<dyn PolicyDispatcher> {
     match dispatcher {
         Some(func) => Arc::new(NodePolicyDispatcher { func }),
-        None => Arc::new(BindingPolicyDispatcher::new()),
+        None => Arc::new(BindingPolicyDispatcher::with_limits(limits)),
     }
 }
 
@@ -372,8 +388,8 @@ pub fn interceptor_new_with_hooks(
     let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
     let perf = parse_perf(perf_telemetry)?;
     let limits = parse_limits(limits_json)?;
-    let annotations = build_annotator(annotator_dispatcher);
-    let policy = build_policy(policy_dispatcher);
+    let annotations = build_annotator_with_limits(annotator_dispatcher, limits);
+    let policy = build_policy_with_limits(policy_dispatcher, limits);
     let telemetry = build_telemetry(telemetry_sink);
     let runtime = Runtime::with_telemetry_perf_and_limits(
         manifest,

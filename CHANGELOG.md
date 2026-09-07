@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Restore pinned remote prompt and OPA bundle downloads, and propagate host URL
+  limits to bundled dispatchers. Reject invalid or conflicting sources, including
+  for custom-dispatcher hosts. Existing constructor signatures remain supported;
+  Regorus remains the default and rejects remote bundles.
+
 - Python evaluation no longer holds the GIL. `intercept` and `interceptor_new`
   drop it around engine work, matching what `policy_activate` and
   `policy_evaluate` already did. A manifest with an `llm`, `endpoint` or
