@@ -1008,6 +1008,25 @@ mod tests {
         );
     }
 
+    /// The region falls back to `AWS_REGION`, then `AWS_DEFAULT_REGION`.
+    /// The second is set here, so the refusal holds only if the dispatcher
+    /// refused the first read outright rather than finding the variable
+    /// unset and reading on to a value.
+    #[test]
+    fn url_sourced_bedrock_ignores_a_set_default_region_variable() {
+        std::env::set_var("AWS_DEFAULT_REGION", "us-west-2");
+
+        assert_refused_before_request(
+            tainted(&[
+                (FIELD_PROVIDER, json!("bedrock")),
+                (FIELD_MODEL, json!("anthropic.claude-3-haiku-20240307-v1:0")),
+                (FIELD_AWS_ACCESS_KEY_ID, json!("AKIDEXAMPLE")),
+                (FIELD_AWS_SECRET_ACCESS_KEY, json!("secret")),
+            ]),
+            "AWS_REGION",
+        );
+    }
+
     #[test]
     fn url_sourced_bedrock_with_inline_credentials_signs_and_omits_session_token() {
         // The variable is set, so the assertion below holds only if the

@@ -3163,6 +3163,89 @@ intervention_points:
         assert!(!merged.url_sourced());
     }
 
+    /// Provenance is kept per binding, not per annotator name. The host
+    /// root binds its own judge at `input` and tunes it there; a fetched
+    /// document binds the same judge at `output` with `from` only. The
+    /// fetched binding is the supported shape, and the host binding at
+    /// the other point keeps its field.
+    #[test]
+    fn host_binding_at_another_point_keeps_its_fields() {
+        let path = root_extending_url(
+            "url-host-binding-other-point.yaml",
+            REMOTE,
+            &format!(
+                "{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        system_prompt: be strict\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.host.example/v1\n    api_key: sk-host-inline\n"
+            ),
+        );
+
+        let manifest = load_with_fetcher(
+            &path,
+            fetcher_with(REMOTE, &remote_output_binding("")),
+            Limits::default(),
+        )
+        .unwrap();
+
+        assert!(manifest.url_sourced());
+        let input = &manifest.intervention_points[&InterceptionPoint::Input].annotations["judge"];
+        assert_eq!(input.fields["system_prompt"], json!("be strict"));
+        let output = &manifest.intervention_points[&InterceptionPoint::Output].annotations["judge"];
+        assert!(output.fields.is_empty());
+    }
+
+    /// Two fetched documents may overlay each other: one declares the
+    /// judge and picks its endpoint, the other binds it with an inline
+    /// key of its own. Nothing of the host's is involved. The loader
+    /// adopts the first fetched document as it is and merges the second
+    /// into it, so both orders run: each side's provenance has to survive
+    /// being the merged in one.
+    #[test]
+    fn two_fetched_documents_overlay_each_other_in_either_order() {
+        let declares_url = "https://policy.example/declares.yaml";
+        let binds_url = "https://policy.example/binds.yaml";
+        let declares = "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\n";
+        let binds = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\n{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        api_key: sk-remote-inline\n        endpoint: https://judge.remote.example/v2\n"
+        );
+        for (name, first, second) in [
+            (
+                "url-two-fetched-declares-first.yaml",
+                declares_url,
+                binds_url,
+            ),
+            ("url-two-fetched-binds-first.yaml", binds_url, declares_url),
+        ] {
+            let path = root_path(
+                name,
+                &format!(
+                    "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {first}\n  - {second}\n"
+                ),
+            );
+            let fetcher = MockFetcher::new(BTreeMap::from([
+                (declares_url.to_string(), declares.as_bytes().to_vec()),
+                (binds_url.to_string(), binds.as_bytes().to_vec()),
+            ]));
+
+            let manifest = load_with_fetcher(&path, fetcher, Limits::default()).unwrap();
+
+            assert_eq!(
+                manifest.url_sources(),
+                [binds_url.to_string(), declares_url.to_string()]
+            );
+            assert!(manifest.url_sourced_annotators.contains("judge"));
+            assert!(manifest
+                .url_sourced_annotations
+                .contains(&(InterceptionPoint::Input, "judge".to_string())));
+            let invocation = AnnotatorInvocation::from_annotation(
+                &manifest.annotators["judge"],
+                &manifest.intervention_points[&InterceptionPoint::Input].annotations["judge"],
+            );
+            assert_eq!(
+                invocation.fields["endpoint"],
+                json!("https://judge.remote.example/v2")
+            );
+        }
+    }
+
     /// A fetched document that repeats a host declaration byte for byte
     /// adds nothing, so the declaration stays the host's: the host may
     /// still lend it an inline credential, and the fetched document still
