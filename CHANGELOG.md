@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Python adds `AsyncAcsInterceptor` over an `ActivatedPolicy`: awaitable
+  interception, a dedicated bounded worker pool, reject or bounded-wait
+  admission, and draining async shutdown. Emitter timeout/cancellation
+  does not free capacity until native evaluation returns. Strict scope
+  remains the default; `Scope.BOUND_POINTS_ONLY` explicitly skips valid
+  lifecycle points outside this control without weakening bound-point
+  failures or suppressing other controls. This is separate from the GIL
+  fix below and does not change the manifest grammar.
+- All Python `ActivatedPolicy` constructors now accept `telemetry_sink`,
+  `perf_telemetry`, and `limits`, preserving these settings through
+  async evaluation. File activation applies host limits to manifest
+  loading as well. Existing calls keep their defaults.
+- Regenerated the Python development lockfile from its requirements:
+  it now installs the declared Agent Hooks `0.1.0a5` and maturin
+  `1.15.0`, rather than the stale `0.1.0a3` / `1.8.7` pins.
+
 - Python evaluation no longer holds the GIL. `intercept` and `interceptor_new`
   drop it around engine work, matching what `policy_activate` and
   `policy_evaluate` already did. A manifest with an `llm`, `endpoint` or
