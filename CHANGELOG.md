@@ -33,6 +33,8 @@
   declaration or binding the host wrote stays the host's when a fetched
   document repeats it byte for byte. `AnnotatorInvocation` gains a
   `url_sourced` field the runtime sets; it is skipped on the wire.
+  `AnnotatorInvocation::from_annotation_in` builds an invocation with the
+  manifest's provenance; `from_annotation` alone leaves the field false.
   Rust hosts that build the struct with a literal must add the field or
   spread `..Default::default()`. Local only chains are unchanged.
   Closes #20.

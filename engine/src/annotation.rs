@@ -1,4 +1,4 @@
-use crate::{constants::annotation as annotation_key, JsonValue, RuntimeError};
+use crate::{constants::annotation as annotation_key, manifest::Manifest, JsonValue, RuntimeError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -48,6 +48,11 @@ pub struct AnnotatorInvocation {
 }
 
 impl AnnotatorInvocation {
+    /// Lays the binding's fields over the declaration's. `url_sourced`
+    /// starts false: this constructor sees no manifest. The runtime
+    /// builds its invocations with `from_annotation_in`, which copies the
+    /// manifest's provenance, and a host that dispatches invocations it
+    /// built itself does the same or sets the field.
     pub fn from_annotation(annotator: &AnnotatorConfig, annotation: &AnnotationConfig) -> Self {
         let mut fields = BTreeMap::new();
         fields.insert(
@@ -67,6 +72,19 @@ impl AnnotatorInvocation {
         Self {
             url_sourced: false,
             fields,
+        }
+    }
+
+    /// `from_annotation` stamped with the provenance of the manifest the
+    /// two configs came from, as `Runtime` dispatches it.
+    pub fn from_annotation_in(
+        manifest: &Manifest,
+        annotator: &AnnotatorConfig,
+        annotation: &AnnotationConfig,
+    ) -> Self {
+        Self {
+            url_sourced: manifest.url_sourced(),
+            ..Self::from_annotation(annotator, annotation)
         }
     }
 
