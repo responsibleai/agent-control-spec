@@ -18,9 +18,17 @@
   any request is sent. A pin vouches for the fetched bytes, not for host
   access. `Manifest::url_sourced`, `Manifest::url_sources` and the one way
   `Manifest::mark_url_sourced` expose and set the provenance for Rust hosts;
-  manifests parsed from text stay host authored. `AnnotatorInvocation`
-  gains a `url_sourced` field the runtime sets; it is skipped on the wire.
-  Local only chains are unchanged. Closes #20.
+  manifests parsed from text stay host authored. A binding overlays the
+  declaration it names at dispatch, so the loader also records which
+  annotator declarations and bindings a fetched document supplied: a fetched
+  binding for a host declared annotator may set only `from`, and a host
+  binding for an annotator a fetched document declared may not carry an
+  inline credential field (`api_key`, `headers`, `aws_access_key_id`,
+  `aws_secret_access_key`, `aws_session_token`). Either shape would let the
+  fetched document pick the endpoint that receives a host credential the
+  host wrote inline. `AnnotatorInvocation` gains a `url_sourced` field the
+  runtime sets; it is skipped on the wire. Local only chains are unchanged.
+  Closes #20.
 - Python evaluation no longer holds the GIL. `intercept` and `interceptor_new`
   drop it around engine work, matching what `policy_activate` and
   `policy_evaluate` already did. A manifest with an `llm`, `endpoint` or

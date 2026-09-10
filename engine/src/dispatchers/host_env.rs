@@ -33,7 +33,8 @@ fn read_with<F: Fn(&str) -> Option<String>>(
     if url_sourced {
         return Err(format!(
             "{} must not read host environment credential '{env_name}'; supply the credential \
-             inline or declare this annotator in a manifest chain with no URL extends",
+             inline on the annotator declaration or declare this annotator in a manifest chain \
+             with no URL extends",
             crate::constants::provenance::MARKER
         ));
     }

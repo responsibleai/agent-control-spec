@@ -64,6 +64,28 @@ pub(crate) mod host_env_secret_field {
     ];
 }
 
+/// Annotator fields that carry a credential inline. `headers` is here
+/// because a header value is where a bearer or API token usually goes.
+/// In a URL sourced manifest a host binding may not lay one of these
+/// over an annotator a fetched document declared: that document chose
+/// the endpoint that would receive the value. The bundled dispatcher
+/// constants alias these so both sides agree on one list.
+pub(crate) mod inline_credential_field {
+    pub(crate) const API_KEY: &str = "api_key";
+    pub(crate) const HEADERS: &str = "headers";
+    pub(crate) const AWS_ACCESS_KEY_ID: &str = "aws_access_key_id";
+    pub(crate) const AWS_SECRET_ACCESS_KEY: &str = "aws_secret_access_key";
+    pub(crate) const AWS_SESSION_TOKEN: &str = "aws_session_token";
+
+    pub(crate) const ALL: [&str; 5] = [
+        API_KEY,
+        HEADERS,
+        AWS_ACCESS_KEY_ID,
+        AWS_SECRET_ACCESS_KEY,
+        AWS_SESSION_TOKEN,
+    ];
+}
+
 /// Adapter config key that names a remote Rego bundle. Inert data to the
 /// core today; a fetched document may name it only when every URL hop
 /// from the root manifest to that document carries a pin.
