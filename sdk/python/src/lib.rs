@@ -727,25 +727,44 @@ struct PolicyHandle {
     manifest_path,
     annotator_dispatcher = None,
     policy_dispatcher = None,
+    telemetry_sink = None,
+    perf_telemetry = "off",
+    limits = None,
 ))]
 fn policy_activate(
     py: Python<'_>,
     manifest_path: &str,
     annotator_dispatcher: Option<Py<PyAny>>,
     policy_dispatcher: Option<Py<PyAny>>,
+    telemetry_sink: Option<Py<PyAny>>,
+    perf_telemetry: &str,
+    limits: Option<Py<PyAny>>,
 ) -> PyResult<PolicyHandle> {
     let manifest_path = manifest_path.to_string();
     let annotations = resolve_annotator_dispatcher(annotator_dispatcher);
     let policy = resolve_policy_dispatcher(policy_dispatcher);
+    let telemetry =
+        resolve_telemetry_sink(telemetry_sink).unwrap_or_else(|| Arc::new(NoopTelemetrySink));
+    let perf = wire::parse_perf_telemetry(perf_telemetry)
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let limits = resolve_limits(limits)?;
     // Activation is the expensive call and touches no Python object, so
     // it must not hold the GIL: a host activating a new policy version
     // in a background thread would otherwise stall every request thread
     // for the whole bundle load and compile.
     let policy = py.detach(move || {
-        let manifest = Manifest::from_path(&manifest_path)
+        let manifest = Manifest::from_path_with_limits(&manifest_path, limits)
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        ActivatedPolicy::activate_with(manifest, annotations, policy)
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+        let runtime = Runtime::with_telemetry_perf_and_limits(
+            manifest,
+            annotations,
+            policy,
+            telemetry,
+            perf,
+            limits,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("{e}")))?;
+        ActivatedPolicy::activate(runtime).map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     })?;
     Ok(PolicyHandle { policy })
 }
@@ -771,6 +790,9 @@ fn policy_activate(
     bundles_json,
     annotator_dispatcher = None,
     policy_dispatcher = None,
+    telemetry_sink = None,
+    perf_telemetry = "off",
+    limits = None,
 ))]
 fn policy_activate_from_memory(
     py: Python<'_>,
@@ -778,6 +800,9 @@ fn policy_activate_from_memory(
     bundles_json: &str,
     annotator_dispatcher: Option<Py<PyAny>>,
     policy_dispatcher: Option<Py<PyAny>>,
+    telemetry_sink: Option<Py<PyAny>>,
+    perf_telemetry: &str,
+    limits: Option<Py<PyAny>>,
 ) -> PyResult<PolicyHandle> {
     let bundles: std::collections::BTreeMap<String, InMemoryRegoBundle> =
         serde_json::from_str(bundles_json)
@@ -785,14 +810,27 @@ fn policy_activate_from_memory(
     let manifest_yaml = manifest_yaml.to_string();
     let annotations = resolve_annotator_dispatcher(annotator_dispatcher);
     let policy = resolve_policy_dispatcher(policy_dispatcher);
+    let telemetry =
+        resolve_telemetry_sink(telemetry_sink).unwrap_or_else(|| Arc::new(NoopTelemetrySink));
+    let perf = wire::parse_perf_telemetry(perf_telemetry)
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let limits = resolve_limits(limits)?;
     // Same reason as `policy_activate`: loading and compiling touches no
     // Python object and must not stall other threads.
     let policy = py.detach(move || {
-        ActivatedPolicy::activate_from_memory_with(&manifest_yaml, bundles, annotations, policy)
-            .map_err(|e| match e {
-                RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
-                other => PyRuntimeError::new_err(format!("{other}")),
-            })
+        ActivatedPolicy::activate_from_memory_with_telemetry_perf_and_limits(
+            &manifest_yaml,
+            bundles,
+            annotations,
+            policy,
+            telemetry,
+            perf,
+            limits,
+        )
+        .map_err(|e| match e {
+            RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
+            other => PyRuntimeError::new_err(format!("{other}")),
+        })
     })?;
     Ok(PolicyHandle { policy })
 }

@@ -23,6 +23,7 @@ from typing import Any, Self
 from agent_hooks import Verdict
 
 from agent_control_spec import _native
+from agent_control_spec.async_interceptor import AsyncAcsInterceptor, Scope
 
 __all__ = [
     "DEFAULT_LIMITS",
@@ -30,8 +31,10 @@ __all__ = [
     "AcsInterceptor",
     "ActivatedPolicy",
     "ArtifactDiagnostic",
+    "AsyncAcsInterceptor",
     "ManifestInvalidError",
     "RegoBundle",
+    "Scope",
     "StreamSession",
     "TelemetryEvent",
     "ValidationDiagnostic",
@@ -66,7 +69,8 @@ RegoBundle = Mapping[str, Any]
 PERF_TELEMETRY_LEVELS: tuple[str, ...] = ("off", "external", "full")
 
 #: The engine's shipped resource caps, as a read-only mapping. A host
-#: passing ``limits=`` to :class:`AcsInterceptor` reads this to see what
+#: passing ``limits=`` to :class:`AcsInterceptor` or :class:`ActivatedPolicy`
+#: reads this to see what
 #: it is overriding — a shipping change to another default cannot then
 #: be silently absorbed. Frozen at import time so a caller cannot mutate
 #: a shared default. Fields:
@@ -158,6 +162,9 @@ class AcsInterceptor:
 
     Register an instance with any agent-hooks host emitter. The manifest
     is loaded once at construction.
+
+    This is synchronous: GIL release does not yield the calling event
+    loop. Async hosts should use :class:`AsyncAcsInterceptor` instead.
 
     Zero-config path (the default): bundled annotators; Rego in process,
     Cedar through the built-in evaluator, ``test`` policies through
@@ -270,6 +277,9 @@ class ActivatedPolicy:
         *,
         annotator_dispatcher: object | None = None,
         policy_dispatcher: object | None = None,
+        telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
+        perf_telemetry: str = "off",
+        limits: Mapping[str, int] | None = None,
     ) -> None:
         """Activate the manifest at ``manifest_path``.
 
@@ -285,7 +295,12 @@ class ActivatedPolicy:
         merely needs real input to produce a verdict activates fine.
         """
         self._handle = _native.policy_activate(
-            manifest_path, annotator_dispatcher, policy_dispatcher
+            manifest_path,
+            annotator_dispatcher,
+            policy_dispatcher,
+            telemetry_sink,
+            _normalize_perf_telemetry(perf_telemetry),
+            limits,
         )
 
     @classmethod
@@ -295,6 +310,9 @@ class ActivatedPolicy:
         *,
         annotator_dispatcher: object | None = None,
         policy_dispatcher: object | None = None,
+        telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
+        perf_telemetry: str = "off",
+        limits: Mapping[str, int] | None = None,
     ) -> ActivatedPolicy:
         """Activate the manifest at ``manifest_path``.
 
@@ -304,6 +322,9 @@ class ActivatedPolicy:
             manifest_path,
             annotator_dispatcher=annotator_dispatcher,
             policy_dispatcher=policy_dispatcher,
+            telemetry_sink=telemetry_sink,
+            perf_telemetry=perf_telemetry,
+            limits=limits,
         )
 
     @classmethod
@@ -314,6 +335,9 @@ class ActivatedPolicy:
         *,
         annotator_dispatcher: object | None = None,
         policy_dispatcher: object | None = None,
+        telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
+        perf_telemetry: str = "off",
+        limits: Mapping[str, int] | None = None,
     ) -> ActivatedPolicy:
         """Activate a manifest and its Rego supplied as values.
 
@@ -338,6 +362,9 @@ class ActivatedPolicy:
             json.dumps(bundles, allow_nan=False),
             annotator_dispatcher,
             policy_dispatcher,
+            telemetry_sink,
+            _normalize_perf_telemetry(perf_telemetry),
+            limits,
         )
         return policy
 
@@ -360,8 +387,8 @@ class ActivatedPolicy:
     @property
     def intervention_points(self) -> tuple[str, ...]:
         """The intervention points this policy version binds, in manifest
-        order. Read it to skip emitting points the policy does not
-        govern.
+        order. Use it to scope this control explicitly, not to stop
+        emitting points that other controls may govern.
         """
         return tuple(_native.policy_intervention_points(self._handle))
 
