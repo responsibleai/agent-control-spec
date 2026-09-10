@@ -658,3 +658,49 @@ def test_default_limits_is_readable_and_matches_engine_defaults():
     # out from under a peer.
     with pytest.raises(TypeError):
         DEFAULT_LIMITS["max_snapshot_bytes"] = 1  # type: ignore[index]
+
+
+# ---------------------------------------------------------------------
+# Manifest provenance stays inside the engine. A local manifest may name
+# a host environment variable, and a host dispatcher receives the
+# invocation the manifest wrote, with no provenance key added to it.
+# ---------------------------------------------------------------------
+
+LLM_ENV_MANIFEST = """
+agent_control_specification_version: "0.4.0-alpha.1"
+policies:
+  allow:
+    type: test
+    verdict:
+      decision: allow
+annotators:
+  judge:
+    type: llm
+    api_key_env: ACS_PY_LOCAL_TEST_KEY
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    policy:
+      id: allow
+    annotations:
+      judge:
+        from: $target.content
+"""
+
+
+def test_local_manifest_naming_api_key_env_constructs_without_a_provenance_key(
+    tmp_path,
+):
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(LLM_ENV_MANIFEST)
+    dispatcher = RecordingAnnotator({"label": "safe"})
+
+    acs = AcsInterceptor(str(manifest), annotator_dispatcher=dispatcher)
+    verdict = acs.intercept(_builder().input(content="hello"))
+
+    assert verdict.decision.value == "allow"
+    assert len(dispatcher.calls) == 1
+    _, invocation, _ = dispatcher.calls[0]
+    assert invocation["api_key_env"] == "ACS_PY_LOCAL_TEST_KEY"
+    assert "url_sourced" not in invocation

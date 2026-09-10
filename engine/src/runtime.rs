@@ -432,8 +432,9 @@ impl Runtime {
                 .inspect_err(|error| {
                     self.emit_annotator_failed(intervention_point, annotator_name, error);
                 })?;
-            let annotator =
+            let mut annotator =
                 AnnotatorInvocation::from_annotation(annotator_config, annotation_config);
+            annotator.url_sourced = self.manifest.url_sourced();
 
             if let Some(input_from) = annotator.input_from() {
                 let path = JsonPath::parse_with_snapshot_alias(input_from)

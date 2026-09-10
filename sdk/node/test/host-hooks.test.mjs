@@ -628,3 +628,49 @@ test("DEFAULT_LIMITS carries every documented field and is frozen", () => {
   // Frozen so a caller cannot mutate a shared default.
   assert.ok(Object.isFrozen(DEFAULT_LIMITS));
 });
+
+// ---------------------------------------------------------------------
+// Manifest provenance stays inside the engine. A local manifest may name
+// a host environment variable, and a host dispatcher receives the
+// invocation the manifest wrote, with no provenance key added to it.
+// ---------------------------------------------------------------------
+
+test("a local manifest naming api_key_env constructs without a provenance key", () => {
+  const src = `agent_control_specification_version: "0.4.0-alpha.1"
+policies:
+  allow:
+    type: test
+    verdict:
+      decision: allow
+annotators:
+  judge:
+    type: llm
+    api_key_env: ACS_NODE_LOCAL_TEST_KEY
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    policy:
+      id: allow
+    annotations:
+      judge:
+        from: "$target.content"
+`;
+  const manifest = path.join(workdir, "llm-env-manifest.yaml");
+  fs.writeFileSync(manifest, src, "utf8");
+  const seen = [];
+  const acs = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher: (name, invocation) => {
+      seen.push({ name, invocation });
+      return { label: "safe" };
+    },
+  });
+
+  const verdict = acs.intercept(builder().input("hello"));
+
+  assert.equal(verdict.decision, "allow");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].name, "judge");
+  assert.equal(seen[0].invocation.api_key_env, "ACS_NODE_LOCAL_TEST_KEY");
+  assert.equal(Object.hasOwn(seen[0].invocation, "url_sourced"), false);
+});

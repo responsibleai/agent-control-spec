@@ -90,7 +90,7 @@
 //!   evaluation and one for warming.
 
 use crate::{
-    policy::{rego_adapter_data_paths, InMemoryRegoBundle},
+    policy::{is_rule_path, rego_adapter_data_paths, InMemoryRegoBundle},
     runtime::PolicyDispatcher,
     JsonValue, PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
 };
@@ -1301,27 +1301,6 @@ fn eval_error(err: &impl std::fmt::Display) -> RuntimeError {
 /// samples by more than that and in the wrong order.
 fn may_retry_after(elapsed: Duration, timeout: Duration) -> bool {
     elapsed < timeout
-}
-
-/// Whether `query` is a plain rule path such as
-/// `data.agent_control_specification.input.verdict`, as opposed to an
-/// expression like `count(numbers.range(1, 5))`.
-///
-/// Deliberately conservative: anything with whitespace, an operator, a
-/// call, or a subscript falls back to the general path, because reading
-/// a rule and evaluating an expression are not interchangeable and
-/// guessing wrong would change a verdict.
-fn is_rule_path(query: &str) -> bool {
-    let Some(rest) = query.strip_prefix("data.") else {
-        return false;
-    };
-    !rest.is_empty()
-        && rest.split('.').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
-        })
 }
 
 /// Projects a rule's value the way [`single_expression_value`] projects a

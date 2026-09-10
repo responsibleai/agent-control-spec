@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- A manifest chain that fetches any `extends` URL is now URL sourced, and a
+  URL sourced manifest may not read host secrets. A fetched document could
+  name a host environment variable through `api_key_env` or one of the
+  `aws_*_env` fields, or lean on a provider default such as `OPENAI_API_KEY`,
+  while also choosing the endpoint that received the value. The loader now
+  refuses, at load and with `runtime_error:manifest_invalid`, any `*_env`
+  field anywhere in a chain that fetched a document, and refuses in a fetched
+  document any filesystem path field (`bundle`, `data`, `data_paths`,
+  `policy_path`, `entities_path`, `schema_path`), a rego `query` that is not
+  a plain rule path, an `approval` section, and a rego `bundle_url` unless
+  every URL hop from the root is pinned. The bundled dispatchers refuse every
+  host environment read for a URL sourced invocation, provider defaults
+  included, and fail closed with `runtime_error:annotation_failed` before
+  any request is sent. A pin vouches for the fetched bytes, not for host
+  access. `Manifest::url_sourced`, `Manifest::url_sources` and the one way
+  `Manifest::mark_url_sourced` expose and set the provenance for Rust hosts;
+  manifests parsed from text stay host authored. `AnnotatorInvocation`
+  gains a `url_sourced` field the runtime sets; it is skipped on the wire.
+  Local only chains are unchanged. Closes #20.
 - Python evaluation no longer holds the GIL. `intercept` and `interceptor_new`
   drop it around engine work, matching what `policy_activate` and
   `policy_evaluate` already did. A manifest with an `llm`, `endpoint` or

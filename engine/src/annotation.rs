@@ -37,6 +37,12 @@ pub struct AnnotationConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AnnotatorInvocation {
+    /// Whether the manifest this invocation came from is URL sourced.
+    /// Set by the runtime from the manifest, never by the grammar or the
+    /// wire. A bundled dispatcher refuses every host environment read
+    /// when it is true.
+    #[serde(skip)]
+    pub url_sourced: bool,
     #[serde(flatten)]
     pub fields: BTreeMap<String, JsonValue>,
 }
@@ -58,7 +64,10 @@ impl AnnotatorInvocation {
         for (key, value) in &annotation.fields {
             fields.insert(key.clone(), value.clone());
         }
-        Self { fields }
+        Self {
+            url_sourced: false,
+            fields,
+        }
     }
 
     pub fn input_from(&self) -> Option<&str> {

@@ -311,5 +311,50 @@ public sealed class HostHooksTests : IDisposable
             AcsHostInterceptor.FromPath(manifest, limits: """{"max_snapshot_bytes": "big"}"""));
     }
 
+    // Manifest provenance stays inside the engine. A local manifest may
+    // name a host environment variable, and a host dispatcher receives the
+    // invocation the manifest wrote, with no provenance key added to it.
+    [Fact]
+    public async Task ALocalManifestNamingAnEnvironmentVariableConstructsWithoutAProvenanceKey()
+    {
+        var manifest = Path.Combine(_dir, "llm-env-manifest.yaml");
+        File.WriteAllText(manifest, """
+            agent_control_specification_version: "0.4.0-alpha.1"
+            policies:
+              allow:
+                type: test
+                verdict:
+                  decision: allow
+            annotators:
+              judge:
+                type: llm
+                api_key_env: ACS_DOTNET_LOCAL_TEST_KEY
+            intervention_points:
+              input:
+                policy_target: "$snap.input"
+                policy:
+                  id: allow
+                annotations:
+                  judge:
+                    from: "$target"
+            """);
+        string? invocationJson = null;
+
+        using var acs = AcsHostInterceptor.FromPath(
+            manifest,
+            annotator: (_, invocation, _) =>
+            {
+                invocationJson = invocation;
+                return """{"label":"safe"}""";
+            });
+
+        var verdict = await acs.InterceptAsync(Input("hello"));
+
+        Assert.Equal(Decision.Allow, verdict.Decision);
+        var invocation = JsonNode.Parse(invocationJson!)!.AsObject();
+        Assert.Equal("ACS_DOTNET_LOCAL_TEST_KEY", (string?)invocation["api_key_env"]);
+        Assert.False(invocation.ContainsKey("url_sourced"));
+    }
+
     public void Dispose() => Directory.Delete(_dir, recursive: true);
 }
