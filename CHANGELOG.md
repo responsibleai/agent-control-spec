@@ -23,14 +23,16 @@
   a manifest the file loader produced, a merged manifest, or one already
   URL sourced; a host composing a chain marks each fetched document, then
   merges. A binding overlays the declaration it names at dispatch, so the
-  loader also records which annotator declarations and bindings a fetched
-  document supplied: a fetched binding for a host declared annotator may
-  set only `from`, and a host binding for an annotator a fetched document
-  declared may not carry an inline credential field (`api_key`, `headers`,
-  `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`).
-  Either shape would let the fetched document pick the endpoint that
-  receives a host credential the host wrote inline. `AnnotatorInvocation`
-  gains a `url_sourced` field the runtime sets; it is skipped on the wire.
+  loader also records which annotator declarations and bindings only
+  fetched documents supplied: a fetched binding for a host declared
+  annotator may set only `from`, and a host binding for an annotator a
+  fetched document declared may not carry an inline credential field
+  (`api_key`, `headers`, `aws_access_key_id`, `aws_secret_access_key`,
+  `aws_session_token`). Either shape would let the fetched document pick
+  the endpoint that receives a host credential the host wrote inline. A
+  declaration or binding the host wrote stays the host's when a fetched
+  document repeats it byte for byte. `AnnotatorInvocation` gains a
+  `url_sourced` field the runtime sets; it is skipped on the wire.
   Rust hosts that build the struct with a literal must add the field or
   spread `..Default::default()`. Local only chains are unchanged.
   Closes #20.

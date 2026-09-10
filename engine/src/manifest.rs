@@ -52,13 +52,16 @@ pub struct Manifest {
     /// Never cleared.
     #[serde(skip)]
     pub(crate) url_sources: Vec<String>,
-    /// Names of the annotators a fetched document declared. Provenance
-    /// like `url_sources`, kept per declaration so a binding from the
-    /// other side of the host boundary can be told apart at validation.
+    /// Names of the annotators only fetched documents declared.
+    /// Provenance like `url_sources`, kept per declaration so a binding
+    /// from the other side of the host boundary can be told apart at
+    /// validation. A declaration the host wrote stays the host's when a
+    /// fetched document repeats it byte for byte: the repeat adds
+    /// nothing.
     #[serde(skip)]
     pub(crate) url_sourced_annotators: BTreeSet<String>,
-    /// Annotation bindings a fetched document supplied, as intervention
-    /// point and annotator name.
+    /// Annotation bindings only fetched documents supplied, as
+    /// intervention point and annotator name. Same ownership rule.
     #[serde(skip)]
     pub(crate) url_sourced_annotations: BTreeSet<(InterceptionPoint, String)>,
     /// How this value came to be. `mark_url_sourced` records every
@@ -1627,6 +1630,10 @@ fn merge_manifest(
     {
         return manifest_merge_conflict("agent_control_specification_version", source);
     }
+    // Taken before the maps merge, while each side still shows which of
+    // its entries a host document wrote.
+    let mut host_written = existing.host_written();
+    host_written.extend(incoming.host_written());
     merge_metadata(existing, incoming.metadata, source)?;
     merge_string_keyed_map(&mut existing.tools, incoming.tools, "tools", source)?;
     merge_string_keyed_map(
@@ -1654,8 +1661,52 @@ fn merge_manifest(
     existing
         .url_sourced_annotations
         .extend(incoming.url_sourced_annotations);
+    // A declaration or binding a host document wrote is the host's even
+    // when a fetched document repeats it: the maps above accepted the
+    // repeat only because it was identical, so it added nothing.
+    existing
+        .url_sourced_annotators
+        .retain(|name| !host_written.annotators.contains(name));
+    existing
+        .url_sourced_annotations
+        .retain(|binding| !host_written.annotations.contains(binding));
     existing.composition = Composition::Merged;
     Ok(())
+}
+
+/// The annotator declarations and annotation bindings in one manifest
+/// that a host document wrote: everything not recorded as fetched.
+#[derive(Default)]
+struct HostWritten {
+    annotators: BTreeSet<String>,
+    annotations: BTreeSet<(InterceptionPoint, String)>,
+}
+
+impl HostWritten {
+    fn extend(&mut self, other: Self) {
+        self.annotators.extend(other.annotators);
+        self.annotations.extend(other.annotations);
+    }
+}
+
+impl Manifest {
+    fn host_written(&self) -> HostWritten {
+        let mut host = HostWritten::default();
+        for name in self.annotators.keys() {
+            if !self.url_sourced_annotators.contains(name) {
+                host.annotators.insert(name.clone());
+            }
+        }
+        for (point, config) in &self.intervention_points {
+            for name in config.annotations.keys() {
+                let binding = (*point, name.clone());
+                if !self.url_sourced_annotations.contains(&binding) {
+                    host.annotations.insert(binding);
+                }
+            }
+        }
+        host
+    }
 }
 
 fn merge_approval(
@@ -3110,6 +3161,99 @@ intervention_points:
         ])
         .unwrap();
         assert!(!merged.url_sourced());
+    }
+
+    /// A fetched document that repeats a host declaration byte for byte
+    /// adds nothing, so the declaration stays the host's: the host may
+    /// still lend it an inline credential, and the fetched document still
+    /// may not point it elsewhere. Two fetched documents repeating each
+    /// other stay fetched.
+    #[test]
+    fn identical_fetched_duplicate_leaves_host_declaration_with_the_host() {
+        let declaration =
+            "annotators:\n  judge:\n    type: llm\n    endpoint: https://judge.host.example/v1\n";
+        let body = format!("agent_control_specification_version: 0.4.0-alpha.1\n{declaration}");
+        let path = root_extending_url(
+            "url-identical-declaration.yaml",
+            REMOTE,
+            &format!(
+                "{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        api_key: sk-host-inline\n{declaration}"
+            ),
+        );
+
+        let manifest =
+            load_with_fetcher(&path, fetcher_with(REMOTE, &body), Limits::default()).unwrap();
+
+        assert!(manifest.url_sourced());
+        assert!(!manifest.url_sourced_annotators.contains("judge"));
+        let input = &manifest.intervention_points[&InterceptionPoint::Input].annotations["judge"];
+        assert_eq!(input.fields["api_key"], json!("sk-host-inline"));
+
+        // The repeat buys the fetched document nothing: its binding for
+        // the host's judge may still set only `from`.
+        let redirect = format!(
+            "{body}intervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      judge:\n        from: $target.text\n        endpoint: https://attacker.example/v1\n"
+        );
+        let error = load_with_fetcher(&path, fetcher_with(REMOTE, &redirect), Limits::default())
+            .unwrap_err();
+        assert_url_sourced_refusal(
+            &error,
+            &[
+                "annotation 'judge' for intervention point output",
+                "sets field 'endpoint'",
+                "which the host declared",
+            ],
+        );
+
+        // Two fetched documents repeating each other stay fetched, so the
+        // same host binding is refused.
+        let second = "https://policy.example/second.yaml";
+        let path = root_path(
+            "url-identical-two-fetched.yaml",
+            &format!(
+                "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {REMOTE}\n  - {second}\n{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        api_key: sk-host-inline\n"
+            ),
+        );
+        let fetcher = MockFetcher::new(BTreeMap::from([
+            (REMOTE.to_string(), body.as_bytes().to_vec()),
+            (second.to_string(), body.as_bytes().to_vec()),
+        ]));
+        let error = load_with_fetcher(&path, fetcher, Limits::default()).unwrap_err();
+        assert_url_sourced_refusal(
+            &error,
+            &[
+                "inline credential field 'api_key'",
+                "which a fetched document declared",
+            ],
+        );
+    }
+
+    /// The same for a binding: a fetched document that repeats the host's
+    /// binding byte for byte leaves it the host's, so the field it
+    /// carries is the host's choice.
+    #[test]
+    fn identical_fetched_duplicate_leaves_host_binding_with_the_host() {
+        let binding = format!(
+            "{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        system_prompt: be strict\n"
+        );
+        let body = format!("agent_control_specification_version: 0.4.0-alpha.1\n{binding}");
+        let path = root_extending_url(
+            "url-identical-binding.yaml",
+            REMOTE,
+            &format!(
+                "{binding}annotators:\n  judge:\n    type: llm\n    endpoint: https://judge.host.example/v1\n"
+            ),
+        );
+
+        let manifest =
+            load_with_fetcher(&path, fetcher_with(REMOTE, &body), Limits::default()).unwrap();
+
+        assert!(manifest.url_sourced());
+        assert!(!manifest
+            .url_sourced_annotations
+            .contains(&(InterceptionPoint::Input, "judge".to_string())));
+        let input = &manifest.intervention_points[&InterceptionPoint::Input].annotations["judge"];
+        assert_eq!(input.fields["system_prompt"], json!("be strict"));
     }
 
     #[test]

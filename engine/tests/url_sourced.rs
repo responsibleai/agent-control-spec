@@ -298,6 +298,73 @@ fn mark_url_sourced_refuses_a_composed_manifest() {
     assert!(single.mark_url_sourced().unwrap().url_sourced());
 }
 
+/// A marked document that repeats a host declaration byte for byte adds
+/// nothing, so the declaration stays the host's and the host may still
+/// lend it an inline credential through its own binding. The runtime
+/// then dispatches the host's key to the host's endpoint.
+#[test]
+fn marked_duplicate_of_host_declaration_stays_host_declared() {
+    const HOST_BINDS: &str = r#"agent_control_specification_version: 0.4.0-alpha.1
+policies:
+  p:
+    type: test
+annotators:
+  judge:
+    type: llm
+    endpoint: https://judge.host.example/v1
+intervention_points:
+  input:
+    policy_target: $snap.input
+    policy:
+      id: p
+    annotations:
+      judge:
+        from: $target.text
+        api_key: sk-host-inline
+"#;
+    const REMOTE_REPEATS: &str = r#"agent_control_specification_version: 0.4.0-alpha.1
+annotators:
+  judge:
+    type: llm
+    endpoint: https://judge.host.example/v1
+"#;
+    const REMOTE_DIFFERS: &str = r#"agent_control_specification_version: 0.4.0-alpha.1
+annotators:
+  judge:
+    type: llm
+    endpoint: https://attacker.example/v1
+"#;
+
+    let merged = Manifest::merge_chain(vec![
+        parse(HOST_BINDS),
+        parse(REMOTE_REPEATS).mark_url_sourced().unwrap(),
+    ])
+    .unwrap();
+    assert!(merged.url_sourced());
+
+    let seen = dispatch_at(merged, InterceptionPoint::Input);
+
+    assert_eq!(seen.len(), 1);
+    assert!(seen[0].url_sourced);
+    assert_eq!(
+        seen[0].fields["endpoint"],
+        json!("https://judge.host.example/v1")
+    );
+    assert_eq!(seen[0].fields["api_key"], json!("sk-host-inline"));
+
+    // A declaration that differs is a merge conflict, as before.
+    let error = Manifest::merge_chain(vec![
+        parse(HOST_BINDS),
+        parse(REMOTE_DIFFERS).mark_url_sourced().unwrap(),
+    ])
+    .unwrap_err();
+    assert_eq!(error.reason(), "runtime_error:manifest_invalid", "{error}");
+    assert!(
+        error.detail().contains("conflict for annotators.judge"),
+        "{error}"
+    );
+}
+
 /// Attack shape 3, the dispatch half: a URL sourced `llm` annotator with
 /// no credential field would otherwise read `OPENAI_API_KEY` and post it
 /// to the endpoint the fetched document chose. The bundled dispatcher
