@@ -246,8 +246,16 @@ impl Manifest {
     /// produced (the loader records provenance itself), for a merged
     /// manifest, and for a manifest already URL sourced.
     ///
-    /// Does not validate; `Runtime::new` does, and a host that wants an
-    /// early answer calls `validate`.
+    /// The mark stands in for the loader's URL branch, so it holds the
+    /// document to the same rules as one fetched through `extends`: no
+    /// host environment variable field, no host filesystem path field, no
+    /// rego query that is not a plain rule path, no `approval` section,
+    /// and no remote `bundle_url`, since the mark carries no pin. Each is
+    /// refused with `runtime_error:manifest_invalid`.
+    ///
+    /// Does not run `validate`, which needs the merged whole; `merge_chain`
+    /// and `Runtime::new` do, and a host that wants an early answer calls
+    /// `validate`.
     pub fn mark_url_sourced(mut self) -> Result<Self, RuntimeError> {
         match self.composition {
             Composition::Document => {}
@@ -275,6 +283,12 @@ impl Manifest {
                 self.url_sources.join(", ")
             )));
         }
+        // The host cannot vouch for a pin through the mark, so the chain
+        // to this document counts as unpinned.
+        self.reject_fetched_document_local_access(
+            crate::constants::provenance::HOST_MARKED_SOURCE,
+            false,
+        )?;
         push_url_source(
             &mut self.url_sources,
             crate::constants::provenance::HOST_MARKED_SOURCE,
@@ -545,15 +559,17 @@ impl Manifest {
     /// not name a host environment variable, a host file, an approval
     /// resolver, or a Rego query that runs as code. It may name a remote
     /// `bundle_url` only when every URL hop from the root manifest to it
-    /// carried a pin (`chain_pinned`).
+    /// carried a pin (`chain_pinned`). `document` opens every refusal and
+    /// says which document: the loader passes `remote manifest '<url>'`,
+    /// the mark passes its own marker.
     pub(crate) fn reject_fetched_document_local_access(
         &self,
-        url: &str,
+        document: &str,
         chain_pinned: bool,
     ) -> Result<(), RuntimeError> {
         for (name, annotator) in &self.annotators {
             reject_fetched_annotator_fields(
-                url,
+                document,
                 &format!("annotator '{name}'"),
                 &annotator.fields,
             )?;
@@ -561,7 +577,7 @@ impl Manifest {
         for (point, config) in &self.intervention_points {
             for (annotation_name, annotation) in &config.annotations {
                 reject_fetched_annotator_fields(
-                    url,
+                    document,
                     &format!("annotation '{annotation_name}' for intervention point {point}"),
                     &annotation.fields,
                 )?;
@@ -569,41 +585,41 @@ impl Manifest {
         }
 
         for (name, policy) in &self.policies {
-            policy.reject_filesystem_path_fields(url, &format!("policy '{name}'"))?;
+            policy.reject_filesystem_path_fields(document, &format!("policy '{name}'"))?;
         }
         for (point, config) in &self.intervention_points {
             config.policy.reject_filesystem_path_fields(
-                url,
+                document,
                 &format!("intervention point {point} policy binding"),
             )?;
         }
 
         if !chain_pinned {
             for (name, policy) in &self.policies {
-                policy.reject_remote_bundle_field(url, &format!("policy '{name}'"))?;
+                policy.reject_remote_bundle_field(document, &format!("policy '{name}'"))?;
             }
             for (point, config) in &self.intervention_points {
                 config.policy.reject_remote_bundle_field(
-                    url,
+                    document,
                     &format!("intervention point {point} policy binding"),
                 )?;
             }
         }
 
         for (name, policy) in &self.policies {
-            policy.reject_non_rule_query(url, &format!("policy '{name}'"))?;
+            policy.reject_non_rule_query(document, &format!("policy '{name}'"))?;
         }
         for (point, config) in &self.intervention_points {
             config.policy.reject_non_rule_query(
-                url,
+                document,
                 &format!("intervention point {point} policy binding"),
             )?;
         }
 
         if self.approval.is_some() {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "remote manifest '{url}' declares an approval section; approval resolver \
-                 configuration is host configuration and a {} must not supply it",
+                "{document} declares an approval section; approval resolver configuration is \
+                 host configuration and a {} must not supply it",
                 crate::constants::provenance::MARKER
             )));
         }
@@ -701,17 +717,17 @@ impl Manifest {
 }
 
 fn reject_fetched_annotator_fields(
-    url: &str,
+    document: &str,
     label: &str,
     fields: &BTreeMap<String, JsonValue>,
 ) -> Result<(), RuntimeError> {
     for field in crate::constants::host_env_secret_field::ALL {
         if fields.contains_key(field) {
             return Err(RuntimeError::ManifestInvalid(format!(
-                "remote manifest '{url}': {label} declares host environment secret field \
-                 '{field}'; a {} must not read host secrets because it also chooses the endpoint \
-                 that receives them; supply the credential inline on a host declared annotator \
-                 or declare the annotator in a manifest with no URL extends",
+                "{document}: {label} declares host environment secret field '{field}'; a {} must \
+                 not read host secrets because it also chooses the endpoint that receives them; \
+                 supply the credential inline on a host declared annotator or declare the \
+                 annotator in a manifest with no URL extends",
                 crate::constants::provenance::MARKER
             )));
         }
@@ -1072,7 +1088,10 @@ impl ManifestLoader {
             // place provenance is recorded and the per document gate runs.
             push_url_source(&mut self.url_sources, url);
             manifest.record_fetched_declarations();
-            manifest.reject_fetched_document_local_access(url, chain_pinned)?;
+            manifest.reject_fetched_document_local_access(
+                &format!("remote manifest '{url}'"),
+                chain_pinned,
+            )?;
         }
         if let ManifestLocation::Path(canonical_path) = &location {
             let parent_dir_buf = canonical_path
@@ -2821,15 +2840,36 @@ intervention_points:
 
     /// Attack shape 4, the text boundary: the engine cannot see where a
     /// string came from, so parsed text is host authored until the host
-    /// says otherwise. Once it does, the whole document gate applies.
+    /// says otherwise. Once it does, the document is held to the fetched
+    /// document gate, and anything merged with it to the whole document
+    /// gate.
     #[test]
     fn from_yaml_str_stays_untainted_then_mark_is_gated() {
         let manifest = Manifest::from_yaml_str(&credentialed_attacker_manifest()).unwrap();
         assert!(manifest.url_sources().is_empty());
 
-        let marked = manifest.mark_url_sourced().unwrap();
+        // The mark refuses the field itself, in the loader's words, with
+        // its own marker where the loader names the URL.
+        let error = manifest.mark_url_sourced().unwrap_err();
+        assert_url_sourced_refusal(
+            &error,
+            &[
+                "host-marked remote content: annotator 'judge' declares host environment secret \
+                 field 'api_key_env'",
+                "URL sourced manifest",
+            ],
+        );
+
+        // A marked document with no such field of its own taints the
+        // merged whole, so the host root that names the variable is
+        // refused once the two are merged.
+        let host = Manifest::from_yaml_str(&credentialed_attacker_manifest()).unwrap();
+        let marked = Manifest::parse_yaml_str(&remote_output_binding(""))
+            .unwrap()
+            .mark_url_sourced()
+            .unwrap();
         assert!(marked.url_sourced());
-        let error = marked.validate().unwrap_err();
+        let error = Manifest::merge_chain(vec![host, marked.clone()]).unwrap_err();
         assert_url_sourced_refusal(
             &error,
             &[

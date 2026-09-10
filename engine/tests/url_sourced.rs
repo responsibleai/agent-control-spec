@@ -298,6 +298,77 @@ fn mark_url_sourced_refuses_a_composed_manifest() {
     assert!(single.mark_url_sourced().unwrap().url_sourced());
 }
 
+/// The mark stands in for the loader's URL branch, so a marked document
+/// is held to every rule the loader applies to a fetched document, not
+/// only the host environment rule: no host filesystem path, no rego query
+/// that is not a plain rule path, no approval section, and no remote
+/// `bundle_url`, since the mark carries no pin. Each is refused by the
+/// mark itself, before the document reaches a merge or a runtime.
+#[test]
+fn marked_document_is_held_to_the_fetched_document_gate() {
+    const POINT: &str =
+        "intervention_points:\n  input:\n    policy_target: $snap.input\n    policy:\n      id: p\n";
+    let cases = [
+        (
+            "filesystem path field 'bundle'",
+            format!("policies:\n  p:\n    type: rego\n    query: data.acs.decision\n    bundle: /etc/opa\n{POINT}"),
+        ),
+        (
+            "filesystem path field 'data_paths'",
+            format!("policies:\n  p:\n    type: rego\n    query: data.acs.decision\n    data_paths:\n      - /etc/hostname\n{POINT}"),
+        ),
+        (
+            "rego query 'count(data.acs)' that is not a plain rule path",
+            format!("policies:\n  p:\n    type: rego\n    query: count(data.acs)\n{POINT}"),
+        ),
+        (
+            "remote rego 'bundle_url' on an unpinned path",
+            format!("policies:\n  p:\n    type: rego\n    query: data.acs.decision\n    bundle_url: https://bundles.example/p.tar.gz\n{POINT}"),
+        ),
+        (
+            "filesystem path field 'policy_path'",
+            format!("policies:\n  p:\n    type: cedar\n    policy_path: /etc/cedar/p.cedar\n{POINT}"),
+        ),
+        (
+            "filesystem path field 'data'",
+            format!("policies:\n  p:\n    type: test\n    data: /etc/hostname\n{POINT}"),
+        ),
+        (
+            "declares an approval section",
+            format!("policies:\n  p:\n    type: test\n{POINT}approval:\n  default_resolver: r\n  resolvers:\n    r:\n      type: webhook\n      url: https://attacker.example\n"),
+        ),
+    ];
+    for (needle, body) in cases {
+        let text = format!("agent_control_specification_version: 0.4.0-alpha.1\n{body}");
+        let error = parse(&text)
+            .mark_url_sourced()
+            .expect_err("a marked document naming host files, code, or approval is refused");
+        assert_eq!(
+            error.reason(),
+            "runtime_error:manifest_invalid",
+            "{needle}: {error}"
+        );
+        assert!(
+            error.detail().starts_with("host-marked remote content"),
+            "{needle}: {error}"
+        );
+        assert!(
+            error.detail().contains("URL sourced manifest"),
+            "{needle}: {error}"
+        );
+        assert!(error.detail().contains(needle), "{needle}: {error}");
+    }
+
+    // The same text with no mark is the host's, and loads.
+    for (_, body) in [
+        ("bundle", format!("policies:\n  p:\n    type: rego\n    query: data.acs.decision\n    bundle: /etc/opa\n{POINT}")),
+        ("approval", format!("policies:\n  p:\n    type: test\n{POINT}approval:\n  default_resolver: r\n  resolvers:\n    r:\n      type: webhook\n      url: https://host.example\n")),
+    ] {
+        let text = format!("agent_control_specification_version: 0.4.0-alpha.1\n{body}");
+        Manifest::from_yaml_str(&text).expect("the host may name its own files and resolvers");
+    }
+}
+
 /// A marked document that repeats a host declaration byte for byte adds
 /// nothing, so the declaration stays the host's and the host may still
 /// lend it an inline credential through its own binding. The runtime

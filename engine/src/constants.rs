@@ -99,7 +99,9 @@ pub(crate) mod provenance {
     /// dispatch, so a host can recognise the class from the text.
     pub(crate) const MARKER: &str = "URL sourced manifest";
     /// Recorded as the source when a host marks a manifest it fetched
-    /// itself through `Manifest::mark_url_sourced`.
+    /// itself through `Manifest::mark_url_sourced`, and the document
+    /// label that opens each refusal the mark raises, where the loader
+    /// would name the URL.
     pub(crate) const HOST_MARKED_SOURCE: &str = "host-marked remote content";
 }
 

@@ -22,7 +22,11 @@
   one document parsed from text, before it is merged, and returns `Err` for
   a manifest the file loader produced, a merged manifest, or one already
   URL sourced; a host composing a chain marks each fetched document, then
-  merges. A binding overlays the declaration it names at dispatch, so the
+  merges. The mark holds the document to the same rules as one fetched
+  through `extends`, so it also returns `Err` for a `*_env` field, a
+  filesystem path field, a rego `query` that is not a plain rule path, an
+  `approval` section, or a `bundle_url`, since the mark carries no pin. A
+  binding overlays the declaration it names at dispatch, so the
   loader also records which annotator declarations and bindings only
   fetched documents supplied: a fetched binding for a host declared
   annotator may set only `from`, and a host binding for an annotator a
