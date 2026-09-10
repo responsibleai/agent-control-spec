@@ -27,8 +27,9 @@
   `aws_secret_access_key`, `aws_session_token`). Either shape would let the
   fetched document pick the endpoint that receives a host credential the
   host wrote inline. `AnnotatorInvocation` gains a `url_sourced` field the
-  runtime sets; it is skipped on the wire. Local only chains are unchanged.
-  Closes #20.
+  runtime sets; it is skipped on the wire. Rust hosts that build the struct
+  with a literal must add the field or spread `..Default::default()`.
+  Local only chains are unchanged. Closes #20.
 - Python evaluation no longer holds the GIL. `intercept` and `interceptor_new`
   drop it around engine work, matching what `policy_activate` and
   `policy_evaluate` already did. A manifest with an `llm`, `endpoint` or
