@@ -61,6 +61,24 @@ pub struct Manifest {
     /// point and annotator name.
     #[serde(skip)]
     pub(crate) url_sourced_annotations: BTreeSet<(InterceptionPoint, String)>,
+    /// How this value came to be. `mark_url_sourced` records every
+    /// declaration and binding in the document it is handed as fetched,
+    /// which is exact for one parsed document and wrong for anything the
+    /// loader or a merge produced, so it refuses those.
+    #[serde(skip)]
+    pub(crate) composition: Composition,
+}
+
+/// How a `Manifest` value came to be. Runtime provenance, not grammar.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum Composition {
+    /// One document deserialized from text.
+    #[default]
+    Document,
+    /// Read by the file loader from a host path, `extends` resolved.
+    Loaded,
+    /// Merged from more than one document by `merge_chain`.
+    Merged,
 }
 
 /// AGT D5: parsed shape of the manifest's optional `approval` block.
@@ -214,20 +232,58 @@ impl Manifest {
     }
 
     /// One way. For a host that fetched the YAML itself and hands the
-    /// runtime text it did not author. Does not validate; `Runtime::new`
-    /// does, and a host that wants an early answer calls `validate`.
-    pub fn mark_url_sourced(mut self) -> Self {
+    /// runtime text it did not author.
+    ///
+    /// Takes one document parsed from text, before it is merged. The mark
+    /// records every annotator declaration and annotation binding in the
+    /// document as fetched, and once documents are merged nothing can
+    /// tell the host's from the fetched ones, so a host composing a chain
+    /// marks each fetched document and then merges. Refused with
+    /// `runtime_error:manifest_invalid` for a manifest the file loader
+    /// produced (the loader records provenance itself), for a merged
+    /// manifest, and for a manifest already URL sourced.
+    ///
+    /// Does not validate; `Runtime::new` does, and a host that wants an
+    /// early answer calls `validate`.
+    pub fn mark_url_sourced(mut self) -> Result<Self, RuntimeError> {
+        match self.composition {
+            Composition::Document => {}
+            Composition::Loaded => {
+                return Err(RuntimeError::ManifestInvalid(
+                    "mark_url_sourced takes one document parsed from text; this manifest came \
+                     from the file loader, which records provenance itself; parse the fetched \
+                     text with parse_yaml_str and mark that"
+                        .to_string(),
+                ));
+            }
+            Composition::Merged => {
+                return Err(RuntimeError::ManifestInvalid(
+                    "mark_url_sourced takes one document parsed from text; this manifest was \
+                     merged from more than one document, so mark each fetched document before \
+                     merging it"
+                        .to_string(),
+                ));
+            }
+        }
+        if self.url_sourced() {
+            return Err(RuntimeError::ManifestInvalid(format!(
+                "mark_url_sourced applies once; this manifest is already URL sourced; fetched \
+                 documents: {}",
+                self.url_sources.join(", ")
+            )));
+        }
         push_url_source(
             &mut self.url_sources,
             crate::constants::provenance::HOST_MARKED_SOURCE,
         );
         self.record_fetched_declarations();
-        self
+        Ok(self)
     }
 
     /// Records every annotator declaration and annotation binding in this
     /// document as fetched. Called on a document the loader fetched, and
-    /// on a document the host marked, before either is merged.
+    /// on a document the host marked, before either is merged; the mark
+    /// refuses anything else, so the sets stay exact.
     fn record_fetched_declarations(&mut self) {
         self.url_sourced_annotators
             .extend(self.annotators.keys().cloned());
@@ -913,6 +969,7 @@ impl ManifestLoader {
         self.trust_root = previous_root;
         let mut manifest = result?;
         manifest.url_sources = std::mem::take(&mut self.url_sources);
+        manifest.composition = Composition::Loaded;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -1597,6 +1654,7 @@ fn merge_manifest(
     existing
         .url_sourced_annotations
         .extend(incoming.url_sourced_annotations);
+    existing.composition = Composition::Merged;
     Ok(())
 }
 
@@ -2697,7 +2755,7 @@ intervention_points:
         assert_eq!(merged.url_sources(), [REMOTE.to_string()]);
 
         // Two sources, one of them twice: a sorted, deduplicated union.
-        let marked = clean.mark_url_sourced();
+        let marked = clean.mark_url_sourced().unwrap();
         let merged = Manifest::merge_chain(vec![tainted.clone(), marked, tainted]).unwrap();
         let mut expected = vec![
             REMOTE.to_string(),
@@ -2718,7 +2776,7 @@ intervention_points:
         let manifest = Manifest::from_yaml_str(&credentialed_attacker_manifest()).unwrap();
         assert!(manifest.url_sources().is_empty());
 
-        let marked = manifest.mark_url_sourced();
+        let marked = manifest.mark_url_sourced().unwrap();
         assert!(marked.url_sourced());
         let error = marked.validate().unwrap_err();
         assert_url_sourced_refusal(
@@ -2730,8 +2788,43 @@ intervention_points:
             ],
         );
 
-        let twice = marked.mark_url_sourced();
-        assert_eq!(twice.url_sources().len(), 1);
+        // Marked once is marked.
+        let error = marked.mark_url_sourced().unwrap_err();
+        assert_url_sourced_refusal(
+            &error,
+            &["already URL sourced", "host-marked remote content"],
+        );
+    }
+
+    /// The mark is exact only for one parsed document. A manifest the
+    /// loader produced has host and fetched content mixed and its
+    /// provenance already recorded; a merged manifest has host and
+    /// fetched content mixed with no way left to tell them apart. Marking
+    /// either would tag the host's own declarations as fetched and disarm
+    /// the overlay rule between them, so both are refused. One document
+    /// that passed through the chain constructors is still one document.
+    #[test]
+    fn mark_url_sourced_refuses_loaded_and_merged_manifests() {
+        let loaded = Manifest::from_path(root_path("mark-loaded.yaml", base_manifest())).unwrap();
+        let error = loaded.mark_url_sourced().unwrap_err();
+        assert_url_sourced_refusal(&error, &["file loader", "parse_yaml_str"]);
+
+        let merged = Manifest::from_yaml_chain(&[base_manifest(), base_manifest()]).unwrap();
+        let error = merged.mark_url_sourced().unwrap_err();
+        assert_url_sourced_refusal(
+            &error,
+            &[
+                "merged from more than one document",
+                "mark each fetched document before merging it",
+            ],
+        );
+
+        let single = Manifest::from_yaml_chain(&[base_manifest()]).unwrap();
+        assert!(single.mark_url_sourced().unwrap().url_sourced());
+        let single =
+            Manifest::merge_chain(vec![Manifest::parse_yaml_str(base_manifest()).unwrap()])
+                .unwrap();
+        assert!(single.mark_url_sourced().unwrap().url_sourced());
     }
 
     #[test]
@@ -2977,7 +3070,8 @@ intervention_points:
             Manifest::parse_yaml_str(&host_declares).unwrap(),
             Manifest::parse_yaml_str(&remote_binds)
                 .unwrap()
-                .mark_url_sourced(),
+                .mark_url_sourced()
+                .unwrap(),
         ])
         .unwrap_err();
         assert_url_sourced_refusal(
@@ -2997,7 +3091,8 @@ intervention_points:
             Manifest::parse_yaml_str(&host_binds).unwrap(),
             Manifest::parse_yaml_str(remote_declares)
                 .unwrap()
-                .mark_url_sourced(),
+                .mark_url_sourced()
+                .unwrap(),
         ])
         .unwrap_err();
         assert_url_sourced_refusal(
