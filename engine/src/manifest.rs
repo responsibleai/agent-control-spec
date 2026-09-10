@@ -2796,7 +2796,10 @@ intervention_points:
         };
         let bundle = Path::new(rego.bundle.as_deref().unwrap());
         assert!(bundle.is_absolute());
-        assert!(bundle.starts_with(path.parent().unwrap()));
+        // The loader rebases against the canonical manifest directory, which
+        // on Windows carries the verbatim prefix the raw test path lacks.
+        let root_dir = fs::canonicalize(path.parent().unwrap()).unwrap();
+        assert!(bundle.starts_with(&root_dir), "{bundle:?} vs {root_dir:?}");
     }
 
     #[test]
