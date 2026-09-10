@@ -77,4 +77,16 @@ mod tests {
 
         assert_eq!(value, None);
     }
+
+    /// `read_optional` itself, against a variable that is set: the flag
+    /// must win over the process environment, and the host authored read
+    /// of the same variable proves the variable was there to leak.
+    #[test]
+    fn read_optional_ignores_a_set_variable_when_url_sourced() {
+        const NAME: &str = "ACS_HOST_ENV_READ_OPTIONAL_TEST";
+        std::env::set_var(NAME, "session-token");
+
+        assert_eq!(read_optional(true, NAME), None);
+        assert_eq!(read_optional(false, NAME).as_deref(), Some("session-token"));
+    }
 }

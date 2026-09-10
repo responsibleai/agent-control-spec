@@ -2686,9 +2686,25 @@ intervention_points:
         .unwrap();
         let clean = Manifest::from_yaml_str(base_manifest()).unwrap();
 
-        let merged = Manifest::merge_chain(vec![tainted, clean]).unwrap();
+        let merged = Manifest::merge_chain(vec![tainted.clone(), clean.clone()]).unwrap();
         assert!(merged.url_sourced());
         assert_eq!(merged.url_sources(), [REMOTE.to_string()]);
+
+        // The first entry is adopted as it is, so the reversed order is
+        // where the sources have to survive a merge.
+        let merged = Manifest::merge_chain(vec![clean.clone(), tainted.clone()]).unwrap();
+        assert!(merged.url_sourced());
+        assert_eq!(merged.url_sources(), [REMOTE.to_string()]);
+
+        // Two sources, one of them twice: a sorted, deduplicated union.
+        let marked = clean.mark_url_sourced();
+        let merged = Manifest::merge_chain(vec![tainted.clone(), marked, tainted]).unwrap();
+        let mut expected = vec![
+            REMOTE.to_string(),
+            crate::constants::provenance::HOST_MARKED_SOURCE.to_string(),
+        ];
+        expected.sort();
+        assert_eq!(merged.url_sources(), expected.as_slice());
 
         let texts = Manifest::from_yaml_chain(&[base_manifest(), base_manifest()]).unwrap();
         assert!(!texts.url_sourced());
@@ -2782,6 +2798,33 @@ intervention_points:
                 "annotator 'judge'",
                 "host environment secret field 'api_key_env'",
                 "URL sourced manifest",
+                "fetched documents: https://policy.example/base.yaml",
+            ],
+        );
+    }
+
+    /// The whole document gate scans each binding as dispatched, so a
+    /// `*_env` field the host root puts on a binding is caught even when
+    /// the declaration it overlays is the fetched one.
+    #[test]
+    fn local_binding_env_field_is_refused_when_declaration_is_fetched() {
+        let body = "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://attacker.example/v1\n";
+        let path = root_extending_url(
+            "url-binding-env-fetched-declaration.yaml",
+            REMOTE,
+            &format!(
+                "{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        api_key_env: ACS_TEST_KEY\n"
+            ),
+        );
+
+        let error =
+            load_with_fetcher(&path, fetcher_with(REMOTE, body), Limits::default()).unwrap_err();
+
+        assert_url_sourced_refusal(
+            &error,
+            &[
+                "annotation 'judge' for intervention point input",
+                "host environment secret field 'api_key_env'",
                 "fetched documents: https://policy.example/base.yaml",
             ],
         );

@@ -1010,6 +1010,11 @@ mod tests {
 
     #[test]
     fn url_sourced_bedrock_with_inline_credentials_signs_and_omits_session_token() {
+        // The variable is set, so the assertion below holds only if the
+        // dispatcher refused to look, not because there was nothing to find.
+        const SESSION_TOKEN_ENV: &str = "ACS_URL_SOURCED_SESSION_TOKEN";
+        std::env::set_var(SESSION_TOKEN_ENV, "host-session-token");
+
         let (output, request) = dispatch(
             tainted(&[
                 (FIELD_PROVIDER, json!("bedrock")),
@@ -1017,6 +1022,7 @@ mod tests {
                 (FIELD_AWS_REGION, json!("us-east-1")),
                 (FIELD_AWS_ACCESS_KEY_ID, json!("AKIDEXAMPLE")),
                 (FIELD_AWS_SECRET_ACCESS_KEY, json!("secret")),
+                (FIELD_AWS_SESSION_TOKEN_ENV, json!(SESSION_TOKEN_ENV)),
                 (FIELD_AWS_AMZ_DATE, json!("20240101T000000Z")),
                 (FIELD_AWS_DATE, json!("20240101")),
             ]),
@@ -1026,7 +1032,7 @@ mod tests {
         assert_eq!(output["label"], json!("safe"));
         assert!(request.headers[HEADER_AUTHORIZATION].starts_with("AWS4-HMAC-SHA256"));
         // The host's session token is never borrowed for a URL sourced
-        // manifest, whatever the process environment holds.
+        // manifest, even when the named variable is set.
         assert!(!request.headers.contains_key("x-amz-security-token"));
     }
 
