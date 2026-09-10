@@ -3026,29 +3026,33 @@ intervention_points:
 
     /// The whole document gate scans each binding as dispatched, so a
     /// `*_env` field the host root puts on a binding is caught even when
-    /// the declaration it overlays is the fetched one.
+    /// the declaration it overlays is the fetched one. The per document
+    /// gate never sees the host root, so this is the only gate for each
+    /// of the four fields on that route.
     #[test]
     fn local_binding_env_field_is_refused_when_declaration_is_fetched() {
         let body = "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://attacker.example/v1\n";
-        let path = root_extending_url(
-            "url-binding-env-fetched-declaration.yaml",
-            REMOTE,
-            &format!(
-                "{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        api_key_env: ACS_TEST_KEY\n"
-            ),
-        );
+        for field in crate::constants::host_env_secret_field::ALL {
+            let path = root_extending_url(
+                &format!("url-binding-env-fetched-declaration-{field}.yaml"),
+                REMOTE,
+                &format!(
+                    "{TEST_POLICY_INPUT_POINT}    annotations:\n      judge:\n        from: $target\n        {field}: ACS_TEST_KEY\n"
+                ),
+            );
 
-        let error =
-            load_with_fetcher(&path, fetcher_with(REMOTE, body), Limits::default()).unwrap_err();
+            let error = load_with_fetcher(&path, fetcher_with(REMOTE, body), Limits::default())
+                .unwrap_err();
 
-        assert_url_sourced_refusal(
-            &error,
-            &[
-                "annotation 'judge' for intervention point input",
-                "host environment secret field 'api_key_env'",
-                "fetched documents: https://policy.example/base.yaml",
-            ],
-        );
+            assert_url_sourced_refusal(
+                &error,
+                &[
+                    "annotation 'judge' for intervention point input",
+                    &format!("host environment secret field '{field}'"),
+                    "fetched documents: https://policy.example/base.yaml",
+                ],
+            );
+        }
     }
 
     /// The host root the host wrote: a judge with its credential inline,

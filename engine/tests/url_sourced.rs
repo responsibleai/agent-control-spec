@@ -201,6 +201,117 @@ fn invocation_json_has_no_provenance_key() {
     assert_eq!(wire["type"], json!("llm"));
 }
 
+/// Every host environment field, on the declaration and on the binding.
+/// The mark refuses it on the document it is handed, so text the host
+/// did not author never reaches a merge or a runtime with one. A host
+/// document that carries the field is refused once it is merged with a
+/// marked document, whichever side of the binding the field sits on,
+/// because the merged whole is URL sourced.
+#[test]
+fn host_env_fields_are_refused_on_the_mark_and_across_the_merge() {
+    const FIELDS: [&str; 4] = [
+        "api_key_env",
+        "aws_access_key_id_env",
+        "aws_secret_access_key_env",
+        "aws_session_token_env",
+    ];
+    const HOST_POINT: &str = "policies:\n  p:\n    type: test\nintervention_points:\n  input:\n    policy_target: $snap.input\n    policy:\n      id: p\n    annotations:\n      judge:\n        from: $target.text\n";
+    for field in FIELDS {
+        let needle = format!("host environment secret field '{field}'");
+
+        for (on_declaration, on_binding) in [
+            (format!("    {field}: HOST_SECRET\n"), String::new()),
+            (String::new(), format!("        {field}: HOST_SECRET\n")),
+        ] {
+            let text = format!(
+                "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://attacker.example/v1\n{on_declaration}{HOST_POINT}{on_binding}"
+            );
+            let error = parse(&text)
+                .mark_url_sourced()
+                .expect_err("the mark refuses a host environment field");
+            assert_eq!(
+                error.reason(),
+                "runtime_error:manifest_invalid",
+                "{field}: {error}"
+            );
+            assert!(
+                error.detail().starts_with("host-marked remote content: "),
+                "{field}: {error}"
+            );
+            assert!(error.detail().contains(&needle), "{field}: {error}");
+        }
+
+        // The host binds a fetched declaration and lends it the variable.
+        let host = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\n{HOST_POINT}        {field}: HOST_SECRET\n"
+        );
+        let fetched = "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://attacker.example/v1\n";
+        let error = Manifest::merge_chain(vec![
+            parse(&host),
+            parse(fetched).mark_url_sourced().unwrap(),
+        ])
+        .expect_err("a host binding may not lend a host variable to a fetched declaration");
+        assert_eq!(
+            error.reason(),
+            "runtime_error:manifest_invalid",
+            "{field}: {error}"
+        );
+        assert!(error.detail().contains(&needle), "{field}: {error}");
+        assert!(
+            error
+                .detail()
+                .contains("annotation 'judge' for intervention point input"),
+            "{field}: {error}"
+        );
+        assert!(
+            error
+                .detail()
+                .contains("fetched documents: host-marked remote content"),
+            "{field}: {error}"
+        );
+
+        // The host declares the variable and a fetched document binds
+        // the annotator at another point.
+        let host = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.host.example/v1\n    {field}: HOST_SECRET\n{HOST_POINT}"
+        );
+        let error = Manifest::merge_chain(vec![
+            parse(&host),
+            parse(FROM_ONLY).mark_url_sourced().unwrap(),
+        ])
+        .expect_err("a host variable may not travel in a URL sourced manifest");
+        assert!(error.detail().contains(&needle), "{field}: {error}");
+        assert!(
+            error.detail().contains("annotator 'judge'"),
+            "{field}: {error}"
+        );
+    }
+}
+
+/// `parse_yaml_str` does not validate and neither does the mark, so on
+/// the route the mark's rustdoc names (`parse_yaml_str`, mark,
+/// `Runtime::new`) the constructor is the only gate for what the merged
+/// whole has to satisfy. It runs before a runtime exists.
+#[test]
+fn runtime_new_validates_a_marked_document() {
+    // A binding for an annotator no document declares.
+    let text = "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  p:\n    type: test\nintervention_points:\n  input:\n    policy_target: $snap.input\n    policy:\n      id: p\n    annotations:\n      judge:\n        from: $target.text\n";
+    let marked = parse(text).mark_url_sourced().unwrap();
+    let error = match Runtime::new(
+        marked,
+        RecordingAnnotator::new(),
+        CountingAllowPolicy::new(),
+    ) {
+        Ok(_) => panic!("an unchecked document built a runtime"),
+        Err(error) => error,
+    };
+    assert_eq!(error.reason(), "runtime_error:manifest_invalid", "{error}");
+    assert!(
+        error.detail().contains("unknown annotator 'judge'"),
+        "{error}"
+    );
+}
+
 /// Attack shape 2 with an inline credential. The host root declares the
 /// judge with its key and binds it at `input`. A document the host fetched
 /// and marked adds a binding at `output` that names another endpoint.
