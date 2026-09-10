@@ -45,6 +45,66 @@ pub(crate) mod cedar_field {
     pub(crate) const ALL: [&str; 4] = [POLICY_SET, POLICY_PATH, ENTITIES_PATH, SCHEMA_PATH];
 }
 
+/// Annotator fields that name a host environment variable holding a
+/// credential. A manifest that folded in a fetched document may not use
+/// them: the fetched document can also pick the endpoint that receives
+/// the value. The bundled dispatcher constants alias these so the load
+/// time gate and the dispatch time sink agree on one list.
+pub(crate) mod host_env_secret_field {
+    pub(crate) const API_KEY_ENV: &str = "api_key_env";
+    pub(crate) const AWS_ACCESS_KEY_ID_ENV: &str = "aws_access_key_id_env";
+    pub(crate) const AWS_SECRET_ACCESS_KEY_ENV: &str = "aws_secret_access_key_env";
+    pub(crate) const AWS_SESSION_TOKEN_ENV: &str = "aws_session_token_env";
+
+    pub(crate) const ALL: [&str; 4] = [
+        API_KEY_ENV,
+        AWS_ACCESS_KEY_ID_ENV,
+        AWS_SECRET_ACCESS_KEY_ENV,
+        AWS_SESSION_TOKEN_ENV,
+    ];
+}
+
+/// Annotator fields that carry a credential inline. `headers` is here
+/// because a header value is where a bearer or API token usually goes.
+/// In a URL sourced manifest a host binding may not lay one of these
+/// over an annotator a fetched document declared: that document chose
+/// the endpoint that would receive the value. The bundled dispatcher
+/// constants alias these so both sides agree on one list.
+pub(crate) mod inline_credential_field {
+    pub(crate) const API_KEY: &str = "api_key";
+    pub(crate) const HEADERS: &str = "headers";
+    pub(crate) const AWS_ACCESS_KEY_ID: &str = "aws_access_key_id";
+    pub(crate) const AWS_SECRET_ACCESS_KEY: &str = "aws_secret_access_key";
+    pub(crate) const AWS_SESSION_TOKEN: &str = "aws_session_token";
+
+    pub(crate) const ALL: [&str; 5] = [
+        API_KEY,
+        HEADERS,
+        AWS_ACCESS_KEY_ID,
+        AWS_SECRET_ACCESS_KEY,
+        AWS_SESSION_TOKEN,
+    ];
+}
+
+/// Adapter config key that names a remote Rego bundle. Inert data to the
+/// core today; a fetched document may name it only when every URL hop
+/// from the root manifest to that document carries a pin.
+pub(crate) mod remote_bundle {
+    pub(crate) const BUNDLE_URL: &str = "bundle_url";
+}
+
+/// Manifest provenance markers.
+pub(crate) mod provenance {
+    /// Stable substring in every provenance refusal, at load or at
+    /// dispatch, so a host can recognise the class from the text.
+    pub(crate) const MARKER: &str = "URL sourced manifest";
+    /// Recorded as the source when a host marks a manifest it fetched
+    /// itself through `Manifest::mark_url_sourced`, and the document
+    /// label that opens each refusal the mark raises, where the loader
+    /// would name the URL.
+    pub(crate) const HOST_MARKED_SOURCE: &str = "host-marked remote content";
+}
+
 pub(crate) mod policy_input {
     pub(crate) const ANNOTATIONS: &str = "annotations";
     pub(crate) const INTERVENTION_POINT: &str = "intervention_point";

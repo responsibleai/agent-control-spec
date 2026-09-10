@@ -2421,6 +2421,85 @@ intervention_points:
 
     /// Malformed JSON is a boundary error, not a policy that quietly
     /// activates without the modules the host meant to supply.
+    static LAST_INVOCATION: Mutex<Option<String>> = Mutex::new(None);
+
+    unsafe extern "C" fn recording_annotator(
+        _ctx: *mut c_void,
+        _annotator_name: *const c_char,
+        invocation_json: *const c_char,
+        _policy_input_json: *const c_char,
+        _err_out: *mut *mut c_char,
+    ) -> *mut c_char {
+        let invocation = CStr::from_ptr(invocation_json).to_str().unwrap().to_owned();
+        *LAST_INVOCATION.lock().unwrap() = Some(invocation);
+        CString::new(r#"{"label":"safe"}"#).unwrap().into_raw()
+    }
+
+    unsafe extern "C" fn free_hook_string(_ctx: *mut c_void, value: *mut c_char) {
+        if !value.is_null() {
+            drop(CString::from_raw(value));
+        }
+    }
+
+    /// Manifest provenance stays inside the engine. A local manifest may
+    /// name a host environment variable, and a host dispatcher receives
+    /// the invocation the manifest wrote, with no provenance key added.
+    #[test]
+    fn local_manifest_naming_api_key_env_constructs_without_a_provenance_key() {
+        let dir = std::env::temp_dir().join(format!("acs-ffi-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm-env-manifest.yaml");
+        std::fs::write(
+            &path,
+            concat!(
+                "agent_control_specification_version: \"0.4.0-alpha.1\"\n",
+                "policies:\n  allow:\n    type: test\n    verdict:\n      decision: allow\n",
+                "annotators:\n  judge:\n    type: llm\n    api_key_env: ACS_FFI_LOCAL_TEST_KEY\n",
+                "intervention_points:\n  input:\n    policy_target: \"$.input\"\n",
+                "    policy:\n      id: allow\n",
+                "    annotations:\n      judge:\n        from: \"$target\"\n"
+            ),
+        )
+        .unwrap();
+        let path = path.to_str().unwrap().as_bytes();
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_interceptor_new_with_hooks(
+                path.as_ptr(),
+                path.len(),
+                Some(recording_annotator),
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+                Some(free_hook_string),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        if !err.is_null() {
+            let msg = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+            unsafe { acs_free_string(err) };
+            panic!("constructor failed: {msg}");
+        }
+        assert!(!handle.is_null());
+
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hi","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+
+        assert_eq!(verdict["decision"], "allow");
+        let invocation: Value =
+            serde_json::from_str(LAST_INVOCATION.lock().unwrap().as_deref().unwrap()).unwrap();
+        assert_eq!(invocation["api_key_env"], "ACS_FFI_LOCAL_TEST_KEY");
+        assert!(invocation.get("url_sourced").is_none(), "{invocation}");
+    }
+
     #[test]
     fn activating_from_memory_rejects_malformed_bundles_json() {
         let manifest =

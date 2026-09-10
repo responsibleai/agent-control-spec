@@ -405,6 +405,73 @@ fn extends_root_confinement_rejects_escape_and_unsupported_url_extends() {
     assert_eq!(url.reason(), "runtime_error:manifest_invalid");
 }
 
+/// A chain of local files is host authored. It may name host environment
+/// variables, host files and an approval resolver, and it is not URL
+/// sourced. The gates for fetched documents do not touch it.
+#[test]
+fn local_chain_with_env_fields_and_paths_loads_untainted() {
+    let root = target_dir("security-conformance-local-chain");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("base.yaml"),
+        r#"agent_control_specification_version: 0.4.0-alpha.1
+policies:
+  gate:
+    type: rego
+    query: data.acs.decision
+    bundle: ./policy
+    data_paths: [./data.json]
+  guard:
+    type: cedar
+    policy_path: ./p.cedar
+    entities_path: ./e.json
+    schema_path: ./s.cedarschema
+annotators:
+  judge:
+    type: llm
+    api_key_env: ACS_LOCAL_CHAIN_TEST_KEY
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("root.yaml"),
+        r#"agent_control_specification_version: 0.4.0-alpha.1
+extends:
+  - ./base.yaml
+intervention_points:
+  input:
+    policy_target: $snap.input
+    policy:
+      id: gate
+      data: ./binding.json
+    annotations:
+      judge:
+        from: $target
+  output:
+    policy_target: $snap.output
+    policy:
+      id: guard
+approval:
+  default_resolver: r
+  resolvers:
+    r:
+      type: webhook
+"#,
+    )
+    .unwrap();
+
+    let manifest = Manifest::from_path(root.join("root.yaml")).unwrap();
+
+    assert!(!manifest.url_sourced());
+    assert!(manifest.url_sources().is_empty());
+    assert_eq!(
+        manifest.annotators["judge"].fields["api_key_env"],
+        json!("ACS_LOCAL_CHAIN_TEST_KEY")
+    );
+    assert!(manifest.approval().is_some());
+}
+
 #[test]
 fn annotator_outputs_are_confined_and_bad_outputs_fail_closed() {
     let yaml = manifest_yaml(

@@ -54,7 +54,7 @@
       "additionalProperties": true
     },
     "extends": {
-      "description": "Ordered array of manifest path or HTTPS URL references. File-based loaders resolve entries relative to the including manifest, merge additively, and validate the resolved manifest. URL object entries may include an optional sha256 or SRI integrity pin.",
+      "description": "Ordered array of manifest path or HTTPS URL references. File-based loaders resolve entries relative to the including manifest, merge additively, and validate the resolved manifest. URL object entries may include an optional sha256 or SRI integrity pin. A pin fixes the fetched bytes; it does not grant fetched content access to host environment variables or host files.",
       "type": "array",
       "default": [],
       "items": {

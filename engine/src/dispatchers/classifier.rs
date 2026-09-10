@@ -74,7 +74,7 @@ fn dispatch_generic(
     let url = http::required_string_field(annotator_name, &annotator.fields, FIELD_URL)?;
     let input_field = http::optional_string_field(&annotator.fields, FIELD_INPUT_FIELD)
         .unwrap_or(DEFAULT_INPUT_FIELD);
-    let api_key = http::env_api_key(annotator_name, &annotator.fields)?;
+    let api_key = http::env_api_key(annotator_name, annotator)?;
     let timeout_ms = http::timeout_ms(annotator_name, &annotator.fields)?;
     let response = http::post_json(
         annotator_name,
@@ -97,8 +97,11 @@ fn dispatch_bundled_with_transport(
     policy_target: &str,
     transport: &dyn HttpTransport,
 ) -> Result<JsonValue, RuntimeError> {
-    let cfg = ResolvedClassifierConfig::from_fields(&annotator.fields)
-        .map_err(|error| resolve::failed(annotator_name, error))?;
+    let cfg = ResolvedClassifierConfig::from_fields_with_provenance(
+        &annotator.fields,
+        annotator.url_sourced,
+    )
+    .map_err(|error| resolve::failed(annotator_name, error))?;
     bundled::classify(&cfg, policy_target, transport)
         .map(|verdict| verdict.to_json())
         .map_err(|error| resolve::failed(annotator_name, error))
@@ -111,17 +114,22 @@ mod tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
-    #[test]
-    fn provider_field_routes_to_bundled_classifier() {
-        std::env::set_var("ACS_AACS_TEST_KEY", "test-key");
-        let annotator = AnnotatorInvocation {
+    fn aacs_annotator() -> AnnotatorInvocation {
+        AnnotatorInvocation {
             fields: BTreeMap::from([
                 (ANNOTATOR_TYPE.to_string(), json!(TYPE_CLASSIFIER)),
                 (FIELD_PROVIDER.to_string(), json!("aacs")),
                 (FIELD_ENDPOINT.to_string(), json!("https://example.test")),
                 (FIELD_API_KEY_ENV.to_string(), json!("ACS_AACS_TEST_KEY")),
             ]),
-        };
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn provider_field_routes_to_bundled_classifier() {
+        std::env::set_var("ACS_AACS_TEST_KEY", "test-key");
+        let annotator = aacs_annotator();
         let transport = StubHttpTransport::with_response(
             200,
             r#"{"categoriesAnalysis":[{"category":"Hate","severity":0},{"category":"SelfHarm","severity":0},{"category":"Sexual","severity":0},{"category":"Violence","severity":0}]}"#,
@@ -132,5 +140,25 @@ mod tests {
 
         assert_eq!(output["verdict"], json!("allow"));
         assert_eq!(output["flagged"], json!(false));
+    }
+
+    /// The untainted test above is the control. The same fields from a
+    /// URL sourced manifest are refused before any request is sent, so
+    /// no host secret can reach the endpoint the manifest picked.
+    #[test]
+    fn url_sourced_bundled_provider_refuses_api_key_env() {
+        let annotator = AnnotatorInvocation {
+            url_sourced: true,
+            ..aacs_annotator()
+        };
+        let transport = StubHttpTransport::with_response(200, "{}");
+
+        let error = dispatch_bundled_with_transport("classifier", &annotator, "hello", &transport)
+            .expect_err("URL sourced credential read is refused");
+
+        assert_eq!(error.reason(), "runtime_error:annotation_failed");
+        assert!(error.detail().contains("URL sourced manifest"), "{error}");
+        assert!(error.detail().contains("ACS_AACS_TEST_KEY"), "{error}");
+        assert!(transport.last_request().is_none(), "no request may be sent");
     }
 }

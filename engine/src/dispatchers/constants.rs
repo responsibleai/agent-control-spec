@@ -11,8 +11,8 @@ pub const FIELD_BASE_URL: &str = "base_url";
 pub const FIELD_MODEL: &str = "model";
 pub const FIELD_PROMPT: &str = "prompt";
 pub const FIELD_SYSTEM_PROMPT: &str = "system_prompt";
-pub const FIELD_API_KEY_ENV: &str = "api_key_env";
-pub const FIELD_API_KEY: &str = "api_key";
+pub const FIELD_API_KEY_ENV: &str = crate::constants::host_env_secret_field::API_KEY_ENV;
+pub const FIELD_API_KEY: &str = crate::constants::inline_credential_field::API_KEY;
 pub const FIELD_API_KEY_HEADER: &str = "api_key_header";
 pub const FIELD_INPUT_FIELD: &str = "input_field";
 pub const FIELD_RESPONSE_FIELD: &str = "response_field";
@@ -21,17 +21,23 @@ pub const FIELD_PROVIDER: &str = "provider";
 pub const FIELD_TIMEOUT_MS: &str = "timeout_ms";
 pub const FIELD_THRESHOLD: &str = "threshold";
 pub const FIELD_CATEGORY_THRESHOLDS: &str = "category_thresholds";
-pub const FIELD_HEADERS: &str = "headers";
+pub const FIELD_HEADERS: &str = crate::constants::inline_credential_field::HEADERS;
 pub const FIELD_PROVIDER_CONFIG: &str = "provider_config";
 pub const FIELD_DEPLOYMENT: &str = "deployment";
 pub const FIELD_API_VERSION: &str = "api_version";
 pub const FIELD_AWS_REGION: &str = "aws_region";
-pub const FIELD_AWS_ACCESS_KEY_ID: &str = "aws_access_key_id";
-pub const FIELD_AWS_SECRET_ACCESS_KEY: &str = "aws_secret_access_key";
-pub const FIELD_AWS_SESSION_TOKEN: &str = "aws_session_token";
-pub const FIELD_AWS_ACCESS_KEY_ID_ENV: &str = "aws_access_key_id_env";
-pub const FIELD_AWS_SECRET_ACCESS_KEY_ENV: &str = "aws_secret_access_key_env";
-pub const FIELD_AWS_SESSION_TOKEN_ENV: &str = "aws_session_token_env";
+pub const FIELD_AWS_ACCESS_KEY_ID: &str =
+    crate::constants::inline_credential_field::AWS_ACCESS_KEY_ID;
+pub const FIELD_AWS_SECRET_ACCESS_KEY: &str =
+    crate::constants::inline_credential_field::AWS_SECRET_ACCESS_KEY;
+pub const FIELD_AWS_SESSION_TOKEN: &str =
+    crate::constants::inline_credential_field::AWS_SESSION_TOKEN;
+pub const FIELD_AWS_ACCESS_KEY_ID_ENV: &str =
+    crate::constants::host_env_secret_field::AWS_ACCESS_KEY_ID_ENV;
+pub const FIELD_AWS_SECRET_ACCESS_KEY_ENV: &str =
+    crate::constants::host_env_secret_field::AWS_SECRET_ACCESS_KEY_ENV;
+pub const FIELD_AWS_SESSION_TOKEN_ENV: &str =
+    crate::constants::host_env_secret_field::AWS_SESSION_TOKEN_ENV;
 pub const FIELD_AWS_AMZ_DATE: &str = "aws_amz_date";
 pub const FIELD_AWS_DATE: &str = "aws_date";
 

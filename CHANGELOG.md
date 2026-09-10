@@ -2,6 +2,49 @@
 
 ## Unreleased
 
+- A manifest chain that fetches any `extends` URL is now URL sourced, and a
+  URL sourced manifest may not read host secrets. A fetched document could
+  name a host environment variable through `api_key_env` or one of the
+  `aws_*_env` fields, or lean on a provider default such as `OPENAI_API_KEY`,
+  while also choosing the endpoint that received the value. The loader now
+  refuses, at load and with `runtime_error:manifest_invalid`, any `*_env`
+  field anywhere in a chain that fetched a document, and refuses in a fetched
+  document any filesystem path field (`bundle`, `data`, `data_paths`,
+  `policy_path`, `entities_path`, `schema_path`), a rego `query` that is not
+  a plain rule path, an `approval` section, and a rego `bundle_url` unless
+  every URL hop from the root is pinned. The bundled dispatchers refuse every
+  host environment read for a URL sourced invocation, provider defaults
+  included, and fail closed with `runtime_error:annotation_failed` before
+  any request is sent. A pin vouches for the fetched bytes, not for host
+  access. `Manifest::url_sourced`, `Manifest::url_sources` and the one way
+  `Manifest::mark_url_sourced` expose and set the provenance for Rust hosts;
+  manifests parsed from text stay host authored. `mark_url_sourced` takes
+  one document parsed from text, before it is merged, and returns `Err` for
+  a manifest the file loader produced, a merged manifest, or one already
+  URL sourced; a host composing a chain marks each fetched document, then
+  merges. The mark holds the document to the same rules as one fetched
+  through `extends`, so it also returns `Err` for a `*_env` field, a
+  filesystem path field, a rego `query` that is not a plain rule path, an
+  `approval` section, or a `bundle_url`, since the mark carries no pin.
+  `Manifest` equality now includes provenance: a marked manifest is not
+  equal to the same text unmarked. It ignores how the value was built, so a
+  local manifest read from a file still equals the same text parsed. A
+  binding overlays the declaration it names at dispatch, so the
+  loader also records which annotator declarations and bindings only
+  fetched documents supplied: a fetched binding for a host declared
+  annotator may set only `from`, and a host binding for an annotator a
+  fetched document declared may not carry an inline credential field
+  (`api_key`, `headers`, `aws_access_key_id`, `aws_secret_access_key`,
+  `aws_session_token`). Either shape would let the fetched document pick
+  the endpoint that receives a host credential the host wrote inline. A
+  declaration or binding the host wrote stays the host's when a fetched
+  document repeats it byte for byte. `AnnotatorInvocation` gains a
+  `url_sourced` field the runtime sets; it is skipped on the wire.
+  `AnnotatorInvocation::from_annotation_in` builds an invocation with the
+  manifest's provenance; `from_annotation` alone leaves the field false.
+  Rust hosts that build the struct with a literal must add the field or
+  spread `..Default::default()`. Local only chains are unchanged.
+  Closes #20.
 - Python evaluation no longer holds the GIL. `intercept` and `interceptor_new`
   drop it around engine work, matching what `policy_activate` and
   `policy_evaluate` already did. A manifest with an `llm`, `endpoint` or

@@ -13,6 +13,7 @@ mod classifier;
 mod constants;
 mod default;
 mod endpoint;
+mod host_env;
 mod http;
 mod llm;
 mod resolve;
