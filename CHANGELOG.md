@@ -25,7 +25,10 @@
   merges. The mark holds the document to the same rules as one fetched
   through `extends`, so it also returns `Err` for a `*_env` field, a
   filesystem path field, a rego `query` that is not a plain rule path, an
-  `approval` section, or a `bundle_url`, since the mark carries no pin. A
+  `approval` section, or a `bundle_url`, since the mark carries no pin.
+  `Manifest` equality now includes provenance: a marked manifest is not
+  equal to the same text unmarked. It ignores how the value was built, so a
+  local manifest read from a file still equals the same text parsed. A
   binding overlays the declaration it names at dispatch, so the
   loader also records which annotator declarations and bindings only
   fetched documents supplied: a fetched binding for a host declared

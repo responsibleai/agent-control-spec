@@ -506,3 +506,69 @@ fn marked_manifest_default_env_denies_at_verdict() {
     );
     assert_eq!(events[0].error_class.as_deref(), Some("runtime_error"));
 }
+
+/// Equality compares what a manifest says and where it came from, not
+/// how the value was built. A local file the loader read equals the same
+/// text parsed, and a chain of one document equals that document.
+/// Provenance is part of the comparison: a URL sourced manifest validates
+/// and dispatches differently from the same text the host authored, and
+/// so does the same merged text once the host and the fetched document
+/// swap what each declared.
+#[test]
+fn equality_ignores_composition_and_keeps_provenance() {
+    let dir = std::env::temp_dir().join(format!("acs-url-sourced-eq-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("host.yaml");
+    std::fs::write(&path, MANIFEST).unwrap();
+    let loaded = Manifest::from_path(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let parsed = Manifest::from_yaml_str(MANIFEST).unwrap();
+    assert_eq!(loaded, parsed);
+    assert_eq!(Manifest::from_yaml_chain(&[MANIFEST]).unwrap(), parsed);
+    assert_eq!(
+        Manifest::merge_chain(vec![parse(MANIFEST), parse(MANIFEST)]).unwrap(),
+        parsed
+    );
+
+    // The mark alone tells two copies of the same text apart, with no
+    // annotator or binding for the mark to record.
+    const BARE: &str = "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  p:\n    type: test\nintervention_points:\n  input:\n    policy_target: $snap.input\n    policy:\n      id: p\n";
+    let marked = parse(BARE).mark_url_sourced().unwrap();
+    assert_ne!(marked, parse(BARE));
+    assert_eq!(marked, parse(BARE).mark_url_sourced().unwrap());
+    assert_eq!(
+        serde_json::to_value(&marked).unwrap(),
+        serde_json::to_value(&parse(BARE)).unwrap(),
+        "the mark is not grammar"
+    );
+
+    // Same merged text, same sources, different owners. In one the host
+    // declares the judge and the fetched document binds it; in the other
+    // the fetched document declares it and the host binds it. The overlay
+    // rules treat the two differently, so they are not equal.
+    const DECLARATION: &str =
+        "annotators:\n  judge:\n    type: llm\n    endpoint: https://judge.example/v1\n";
+    const HOST_BINDS_OUTPUT: &str = "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  p:\n    type: test\nintervention_points:\n  input:\n    policy_target: $snap.input\n    policy:\n      id: p\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      judge:\n        from: $target.text\n";
+    let host_declares = Manifest::merge_chain(vec![
+        parse(&format!("{BARE}{DECLARATION}")),
+        parse(FROM_ONLY).mark_url_sourced().unwrap(),
+    ])
+    .unwrap();
+    let fetched_declares = Manifest::merge_chain(vec![
+        parse(HOST_BINDS_OUTPUT),
+        parse(&format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\n{DECLARATION}"
+        ))
+        .mark_url_sourced()
+        .unwrap(),
+    ])
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&host_declares).unwrap(),
+        serde_json::to_value(&fetched_declares).unwrap(),
+        "the same text"
+    );
+    assert_eq!(host_declares.url_sources(), fetched_declares.url_sources());
+    assert_ne!(host_declares, fetched_declares);
+}

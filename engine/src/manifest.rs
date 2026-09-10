@@ -22,7 +22,7 @@ use std::{
 /// set without hardcoding a copy that silently drifts from the engine.
 pub const SUPPORTED_VERSIONS: &[&str] = &manifest_version::SUPPORTED;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub agent_control_specification_version: String,
@@ -70,6 +70,43 @@ pub struct Manifest {
     /// loader or a merge produced, so it refuses those.
     #[serde(skip)]
     pub(crate) composition: Composition,
+}
+
+/// Two manifests are equal when they say the same thing and carry the
+/// same provenance. Provenance counts because a URL sourced manifest
+/// validates and dispatches differently from the same grammar the host
+/// authored. `composition` does not: it records how the value was built,
+/// which changes nothing the runtime does, so a local file the loader
+/// read equals the same text parsed. Written out field by field so a new
+/// field has to be placed here on purpose.
+impl PartialEq for Manifest {
+    fn eq(&self, other: &Self) -> bool {
+        let Self {
+            agent_control_specification_version,
+            metadata,
+            extends,
+            policies,
+            intervention_points,
+            tools,
+            annotators,
+            approval,
+            url_sources,
+            url_sourced_annotators,
+            url_sourced_annotations,
+            composition: _,
+        } = self;
+        *agent_control_specification_version == other.agent_control_specification_version
+            && *metadata == other.metadata
+            && *extends == other.extends
+            && *policies == other.policies
+            && *intervention_points == other.intervention_points
+            && *tools == other.tools
+            && *annotators == other.annotators
+            && *approval == other.approval
+            && *url_sources == other.url_sources
+            && *url_sourced_annotators == other.url_sourced_annotators
+            && *url_sourced_annotations == other.url_sourced_annotations
+    }
 }
 
 /// How a `Manifest` value came to be. Runtime provenance, not grammar.
