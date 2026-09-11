@@ -9,7 +9,9 @@
 // non-object context JSON).
 
 use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
-use agent_control_spec::dispatchers::{default_annotator_dispatcher_with_limits, BindingPolicyDispatcher,};
+use agent_control_spec::dispatchers::{
+    default_annotator_dispatcher_with_limits, BindingPolicyDispatcher,
+};
 use agent_control_spec::policy::PreparedPolicyInvocation;
 use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
