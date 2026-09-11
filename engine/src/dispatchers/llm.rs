@@ -4,7 +4,7 @@ use crate::dispatchers::{
     http, resolve,
 };
 use crate::hex::lower as hex;
-use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, RuntimeError};
+use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, Limits, RuntimeError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -12,11 +12,23 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LlmAnnotator;
 
+/// An LLM annotator whose pinned prompt fetches use the host's URL limits.
+#[derive(Debug, Clone, Copy)]
+pub struct ConfiguredLlmAnnotator {
+    limits: Limits,
+}
+
 impl LlmAnnotator {
     pub fn new() -> Self {
         Self
     }
 
+    pub fn with_limits(self, limits: Limits) -> ConfiguredLlmAnnotator {
+        ConfiguredLlmAnnotator { limits }
+    }
+
+    /// Uses the supplied transport for inference POST requests only.
+    /// Pinned prompt GET requests use the HTTPS fetcher with default URL limits.
     pub fn dispatch_with_transport(
         &self,
         annotator_name: &str,
@@ -29,6 +41,7 @@ impl LlmAnnotator {
             annotator,
             preliminary_policy_input,
             transport,
+            Limits::default(),
         )
     }
 }
@@ -45,6 +58,43 @@ impl AnnotatorDispatcher for LlmAnnotator {
             annotator,
             preliminary_policy_input,
             &UreqHttpTransport,
+            Limits::default(),
+        )
+    }
+}
+
+impl ConfiguredLlmAnnotator {
+    /// Uses the supplied transport for inference POST requests only.
+    /// Pinned prompt GET requests use the HTTPS fetcher with this annotator's URL limits.
+    pub fn dispatch_with_transport(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &JsonValue,
+        transport: &dyn HttpTransport,
+    ) -> Result<JsonValue, RuntimeError> {
+        dispatch_with_transport(
+            annotator_name,
+            annotator,
+            preliminary_policy_input,
+            transport,
+            self.limits,
+        )
+    }
+}
+
+impl AnnotatorDispatcher for ConfiguredLlmAnnotator {
+    fn dispatch(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &JsonValue,
+    ) -> Result<JsonValue, RuntimeError> {
+        self.dispatch_with_transport(
+            annotator_name,
+            annotator,
+            preliminary_policy_input,
+            &UreqHttpTransport,
         )
     }
 }
@@ -54,6 +104,7 @@ fn dispatch_with_transport(
     annotator: &AnnotatorInvocation,
     preliminary_policy_input: &JsonValue,
     transport: &dyn HttpTransport,
+    limits: Limits,
 ) -> Result<JsonValue, RuntimeError> {
     if annotator.field(ANNOTATOR_TYPE).and_then(JsonValue::as_str) != Some(TYPE_LLM) {
         return Err(resolve::failed(
@@ -61,7 +112,7 @@ fn dispatch_with_transport(
             "LLM dispatcher received a non-LLM annotator",
         ));
     }
-    let cfg = LlmConfig::from_fields(annotator_name, &annotator.fields)?;
+    let cfg = LlmConfig::from_fields(annotator_name, &annotator.fields, limits)?;
     let policy_target =
         resolve::policy_target_text(annotator_name, annotator, preliminary_policy_input)?;
     let request = request_for_provider(annotator_name, &cfg, &policy_target)?;
@@ -133,6 +184,7 @@ impl LlmConfig {
     fn from_fields(
         annotator_name: &str,
         fields: &BTreeMap<String, JsonValue>,
+        limits: Limits,
     ) -> Result<Self, RuntimeError> {
         let provider = LlmProvider::parse(http::optional_string_field(fields, FIELD_PROVIDER))
             .map_err(|error| resolve::failed(annotator_name, error))?;
@@ -143,10 +195,16 @@ impl LlmConfig {
                 _ => DEFAULT_MODEL,
             })
             .to_string();
-        let prompt = http::optional_string_field(fields, FIELD_SYSTEM_PROMPT)
-            .or_else(|| http::optional_string_field(fields, FIELD_PROMPT))
-            .unwrap_or(DEFAULT_SYSTEM_PROMPT)
-            .to_string();
+        let prompt = match crate::annotation::system_prompt_source(fields)
+            .map_err(|err| resolve::failed(annotator_name, err.detail()))?
+        {
+            Some(source) => crate::manifest::fetch_pinned_https_text(&source, limits)
+                .map_err(|err| resolve::failed(annotator_name, err.detail()))?,
+            None => http::optional_string_field(fields, FIELD_SYSTEM_PROMPT)
+                .or_else(|| http::optional_string_field(fields, FIELD_PROMPT))
+                .unwrap_or(DEFAULT_SYSTEM_PROMPT)
+                .to_string(),
+        };
         Ok(Self {
             provider,
             endpoint: opt_string(fields, FIELD_ENDPOINT),

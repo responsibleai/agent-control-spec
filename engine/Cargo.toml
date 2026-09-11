@@ -34,7 +34,7 @@ crate-type = ["lib"]
 #   available under no-default-features.
 default = ["rego", "cedar"]
 rego = ["dep:regorus"]
-opa = []
+opa = ["dep:tempfile"]
 cedar = ["dep:cedar-policy"]
 # NOTE: because this gate is off by default, `cargo test` without
 # `--all-features` compiles the streaming test binaries to nothing and reports
@@ -74,11 +74,13 @@ url = "2"
 ureq = "3"
 cedar-policy = { version = "4", optional = true }
 regorus = { version = "0.11", features = ["arc"], optional = true }
+tempfile = { version = "3.20", optional = true }
 
 [dev-dependencies]
 agent-hooks-sdk = { version = "0.1.0-alpha.3", features = ["ctk"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 jsonschema = { version = "0.47", default-features = false }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 # The benchmark drives `ActivatedPolicy::activate_manifest`, which needs
 # the bundled dispatchers, so it is built only when they are on. Without

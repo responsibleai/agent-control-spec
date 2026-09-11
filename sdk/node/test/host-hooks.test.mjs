@@ -28,6 +28,8 @@ const { AgentContextBuilder } = require("@responsibleai/agent-hooks");
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixtureManifestPath = path.join(here, "fixtures", "manifest.yaml");
+const sharedFixtures = path.resolve(here, "..", "..", "..", "fixtures");
+const pinnedPromptManifest = path.join(sharedFixtures, "pinned-prompt.yaml");
 
 const builder = () =>
   new AgentContextBuilder({ agentId: "a", framework: "test", sessionId: "s" });
@@ -535,17 +537,80 @@ test("a lowered snapshot cap flips the verdict from allow to fail-closed deny", 
 test("no limits option matches the baseline zero-config path", () => {
   const baseline = AcsInterceptor.fromPath(fixtureManifestPath);
   const empty = AcsInterceptor.fromPath(fixtureManifestPath, { limits: {} });
-  for (const ctx of [
-    builder().input("hi"),
-    builder().preToolCall("t1", "search", { q: "x" }),
+  const explicitDefaults = AcsInterceptor.fromPath(fixtureManifestPath, {
+    limits: DEFAULT_LIMITS,
+  });
+  for (const [ctx, decision] of [
+    [builder().input("hi"), "allow"],
+    [builder().preToolCall("t1", "search", { q: "x" }), "deny"],
   ]) {
-    // Two independent Contexts of the same shape.
-    assert.deepEqual(
-      empty.intercept(ctx),
-      baseline.intercept(ctx),
-      "an empty limits object must be identical to no limits option",
-    );
+    const expected = baseline.intercept(ctx);
+    assert.equal(expected.decision, decision);
+    for (const configured of [empty, explicitDefaults]) {
+      assert.deepEqual(configured.intercept(ctx), expected);
+    }
   }
+});
+
+for (const customPolicy of [false, true]) {
+  test(`prompt fetch uses limits while custom annotators retain control (${customPolicy ? "host" : "bundled"} policy)`, () => {
+    // Zero timeout rejects before GET; a host policy cannot skip this gate.
+    const limits = { manifest_url_timeout_ms: 0 };
+    const policyCalls = [];
+    const policyOptions = customPolicy ? {
+      policyDispatcher: (invocation) => {
+        policyCalls.push(invocation);
+        return { decision: "allow" };
+      },
+    } : {};
+    const defaults = AcsInterceptor.fromPath(pinnedPromptManifest, {
+      limits,
+      ...policyOptions,
+    });
+    const verdict = defaults.intercept(builder().input("hello"));
+    assert.equal(verdict.decision, "deny");
+    assert.equal(verdict.reason, "runtime_error:annotation_failed");
+    assert.match(verdict.message, /timeout of 0 ms/);
+    assert.equal(policyCalls.length, 0);
+
+    const seen = [];
+    const custom = AcsInterceptor.fromPath(pinnedPromptManifest, {
+      limits,
+      ...policyOptions,
+      annotatorDispatcher: (name, invocation) => {
+        seen.push({ name, invocation });
+        return { label: "safe" };
+      },
+    });
+    assert.equal(custom.intercept(builder().input("hello")).decision, "allow");
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].name, "judge");
+    assert.match(seen[0].invocation.system_prompt_url.url, /^https:\/\//);
+    assert.equal(policyCalls.length, Number(customPolicy));
+    if (customPolicy) {
+      assert.deepEqual(policyCalls[0].input.annotations.judge, { label: "safe" });
+    }
+  });
+}
+
+test("conflicting prompt sources are rejected even with host callbacks", () => {
+  let annotatorCalls = 0;
+  let policyCalls = 0;
+  assert.throws(
+    () => AcsInterceptor.fromPath(path.join(sharedFixtures, "pinned-prompt-conflict.yaml"), {
+      limits: { manifest_url_timeout_ms: 0 },
+      annotatorDispatcher: () => {
+        annotatorCalls++;
+        return { label: "safe" };
+      },
+      policyDispatcher: () => {
+        policyCalls++;
+        return { decision: "allow" };
+      },
+    }),
+    /must not be combined/,
+  );
+  assert.deepEqual([annotatorCalls, policyCalls], [0, 0]);
 });
 
 test("overriding one limit leaves the others at their defaults", () => {

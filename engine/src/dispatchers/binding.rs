@@ -10,7 +10,7 @@
 
 use crate::policy::PreparedPolicyInvocation;
 use crate::runtime::PolicyDispatcher;
-use crate::{JsonValue, RuntimeError};
+use crate::{JsonValue, Limits, RuntimeError};
 
 #[cfg(feature = "cedar")]
 use crate::cedar::CedarBuiltinDispatcher;
@@ -37,6 +37,12 @@ pub struct BindingPolicyDispatcher {
 
 impl BindingPolicyDispatcher {
     pub fn new() -> Self {
+        Self::with_limits(Limits::default())
+    }
+
+    /// URL limits apply to OPA remote bundles; other policy routes are unchanged.
+    pub fn with_limits(limits: Limits) -> Self {
+        let _ = limits;
         Self {
             // Bindings are long-lived processes evaluating the same
             // manifest repeatedly, so the compiled policy cache is worth
@@ -46,7 +52,9 @@ impl BindingPolicyDispatcher {
                 RegorusRegoRunner::from_environment().with_policy_cache(true),
             ),
             #[cfg(all(not(feature = "rego"), feature = "opa"))]
-            opa: OpaPolicyDispatcher::with_runner(OpaRegoRunner::from_environment()),
+            opa: OpaPolicyDispatcher::with_runner(
+                OpaRegoRunner::from_environment().with_limits(limits),
+            ),
             #[cfg(feature = "cedar")]
             cedar: CedarBuiltinDispatcher::new(),
         }

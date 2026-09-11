@@ -137,6 +137,34 @@ pub struct RegoPolicyConfig {
     pub adapter_config: BTreeMap<String, JsonValue>,
 }
 
+impl RegoPolicyConfig {
+    /// Validates mutually exclusive policy sources without adding fields to the
+    /// public struct-literal API. `bundle_url` lives in the flattened adapter map.
+    pub fn bundle_url(&self) -> Result<Option<crate::manifest::PinnedHttpsSource>, RuntimeError> {
+        rego_bundle_url(
+            self.bundle.as_deref(),
+            self.inline_bundle.is_some(),
+            &self.adapter_config,
+        )
+    }
+}
+
+fn rego_bundle_url(
+    bundle: Option<&str>,
+    inline: bool,
+    adapter: &BTreeMap<String, JsonValue>,
+) -> Result<Option<crate::manifest::PinnedHttpsSource>, RuntimeError> {
+    let remote = adapter.get("bundle_url");
+    if usize::from(bundle.is_some()) + usize::from(inline) + usize::from(remote.is_some()) > 1 {
+        return Err(RuntimeError::ManifestInvalid(
+            "Rego policy must not combine bundle, inline_bundle, and bundle_url".to_string(),
+        ));
+    }
+    remote
+        .map(crate::manifest::PinnedHttpsSource::from_value)
+        .transpose()
+}
+
 /// AGT D3.1 Cedar policy definition. Either `policy_set` (inline Cedar text)
 /// or `policy_path` (filesystem location) MUST be provided; never both.
 /// Unknown fields are rejected per ACS schema strictness.
@@ -391,6 +419,17 @@ pub struct RegoPolicyInvocation {
     pub canonical_input: String,
 }
 
+impl RegoPolicyInvocation {
+    pub fn bundle_url(&self) -> Result<Option<crate::manifest::PinnedHttpsSource>, RuntimeError> {
+        rego_bundle_url(
+            self.bundle.as_deref(),
+            self.inline_bundle.is_some(),
+            &self.adapter_config,
+        )
+        .map_err(|err| RuntimeError::PolicyInvocationFailed(err.detail().to_string()))
+    }
+}
+
 /// AGT D3 prepared cedar invocation. Carries the resolved cedar policy
 /// source (inline `policy_set` text or a `policy_path` location), the
 /// optional `entities_path` / `schema_path` artefacts, the optional
@@ -436,6 +475,7 @@ pub fn validate_policy_definition(name: &str, config: &PolicyConfig) -> Result<(
         PolicyConfig::Rego(config) => {
             validate_optional_string("rego.query", config.query.as_deref())?;
             validate_optional_string("rego.bundle", config.bundle.as_deref())?;
+            config.bundle_url()?;
             for field in cedar_field::ALL {
                 if config.adapter_config.contains_key(field) {
                     return Err(RuntimeError::ManifestInvalid(format!(
@@ -497,12 +537,18 @@ pub fn validate_policy_binding(
             error.detail()
         ))
     })?;
-    if matches!(config, PolicyConfig::Rego(_)) {
-        let top_level_query = match config {
-            PolicyConfig::Rego(config) => config.query.as_deref(),
-            _ => None,
-        };
-        if binding.query.as_deref().or(top_level_query).is_none() {
+    if let PolicyConfig::Rego(config) = config {
+        rego_bundle_url(
+            config.bundle.as_deref(),
+            config.inline_bundle.is_some(),
+            &merge_adapter_config(&config.adapter_config, &binding.adapter_config),
+        )?;
+        if binding
+            .query
+            .as_deref()
+            .or(config.query.as_deref())
+            .is_none()
+        {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "rego policy for intervention point {} requires policy.query",
                 intervention_point
@@ -518,22 +564,29 @@ pub fn prepare_policy_invocation(
     final_policy_input: &JsonValue,
 ) -> Result<PreparedPolicyInvocation, RuntimeError> {
     match config {
-        PolicyConfig::Rego(config) => Ok(PreparedPolicyInvocation::Rego(RegoPolicyInvocation {
-            query: binding
-                .query
-                .clone()
-                .or_else(|| config.query.clone())
-                .ok_or_else(|| {
-                    RuntimeError::PolicyInvocationFailed(
-                        "rego policy invocation requires a query".to_string(),
-                    )
-                })?,
-            bundle: config.bundle.clone(),
-            inline_bundle: config.inline_bundle.clone(),
-            adapter_config: merge_adapter_config(&config.adapter_config, &binding.adapter_config),
-            input: final_policy_input.clone(),
-            canonical_input: canonical_policy_input(final_policy_input)?,
-        })),
+        PolicyConfig::Rego(config) => {
+            let invocation = RegoPolicyInvocation {
+                query: binding
+                    .query
+                    .clone()
+                    .or_else(|| config.query.clone())
+                    .ok_or_else(|| {
+                        RuntimeError::PolicyInvocationFailed(
+                            "rego policy invocation requires a query".to_string(),
+                        )
+                    })?,
+                bundle: config.bundle.clone(),
+                inline_bundle: config.inline_bundle.clone(),
+                adapter_config: merge_adapter_config(
+                    &config.adapter_config,
+                    &binding.adapter_config,
+                ),
+                input: final_policy_input.clone(),
+                canonical_input: canonical_policy_input(final_policy_input)?,
+            };
+            invocation.bundle_url()?;
+            Ok(PreparedPolicyInvocation::Rego(invocation))
+        }
         PolicyConfig::Cedar(config) => Ok(PreparedPolicyInvocation::Cedar(CedarPolicyInvocation {
             policy_set: config.policy_set.clone(),
             policy_path: config.policy_path.clone(),

@@ -88,3 +88,5 @@ pub use stream_session::{
     MAX_RUNE_OFFSET, STREAMING_FAIL_CLOSED_REASON, VERDICT_INVALID_REASON,
 };
 pub use telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetryEventType, TelemetrySink};
+#[cfg(test)]
+mod artifact_tests;

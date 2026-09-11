@@ -9,7 +9,9 @@
 // non-object context JSON).
 
 use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
-use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
+use agent_control_spec::dispatchers::{
+    default_annotator_dispatcher_with_limits, BindingPolicyDispatcher,
+};
 use agent_control_spec::policy::PreparedPolicyInvocation;
 use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetrySink};
@@ -317,16 +319,30 @@ impl TelemetrySink for PyTelemetrySink {
 }
 
 fn resolve_annotator_dispatcher(dispatcher: Option<Py<PyAny>>) -> Arc<dyn AnnotatorDispatcher> {
+    resolve_annotator_dispatcher_with_limits(dispatcher, Limits::default())
+}
+
+fn resolve_annotator_dispatcher_with_limits(
+    dispatcher: Option<Py<PyAny>>,
+    limits: Limits,
+) -> Arc<dyn AnnotatorDispatcher> {
     match dispatcher {
         Some(callback) => Arc::new(PyAnnotatorDispatcher { callback }),
-        None => default_annotator_dispatcher(),
+        None => default_annotator_dispatcher_with_limits(limits),
     }
 }
 
 fn resolve_policy_dispatcher(dispatcher: Option<Py<PyAny>>) -> Arc<dyn PolicyDispatcher> {
+    resolve_policy_dispatcher_with_limits(dispatcher, Limits::default())
+}
+
+fn resolve_policy_dispatcher_with_limits(
+    dispatcher: Option<Py<PyAny>>,
+    limits: Limits,
+) -> Arc<dyn PolicyDispatcher> {
     match dispatcher {
         Some(callback) => Arc::new(PyPolicyDispatcher { callback }),
-        None => Arc::new(BindingPolicyDispatcher::new()),
+        None => Arc::new(BindingPolicyDispatcher::with_limits(limits)),
     }
 }
 
@@ -449,13 +465,13 @@ fn interceptor_new(
     limits: Option<Py<PyAny>>,
 ) -> PyResult<RuntimeHandle> {
     let manifest_path = manifest_path.to_string();
-    let annotations = resolve_annotator_dispatcher(annotator_dispatcher);
-    let policy = resolve_policy_dispatcher(policy_dispatcher);
     let perf = wire::parse_perf_telemetry(perf_telemetry)
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let telemetry = resolve_telemetry_sink(telemetry_sink);
     // Reads Python, so it happens before the GIL is dropped.
     let limits = resolve_limits(limits)?;
+    let annotations = resolve_annotator_dispatcher_with_limits(annotator_dispatcher, limits);
+    let policy = resolve_policy_dispatcher_with_limits(policy_dispatcher, limits);
     let telemetry_arc: Arc<dyn TelemetrySink> =
         telemetry.unwrap_or_else(|| Arc::new(NoopTelemetrySink));
     // Loading reads the manifest from disk and follows its `extends`
