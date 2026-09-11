@@ -1340,10 +1340,9 @@ impl HttpExtendsFetcher {
             ))
         })?;
         if body.len() > limits.max_manifest_url_bytes {
-            let label = if require_success {
-                "artifact URL"
-            } else {
-                "manifest URL extends"
+            let label = match context {
+                "extends" => "manifest URL extends".to_string(),
+                context => format!("{context} URL"),
             };
             return Err(RuntimeError::ResourceLimitExceeded(format!(
                 "{label} body from '{url}' exceeds limit {}",
