@@ -73,7 +73,7 @@ base64 = "0.23"
 url = "2"
 ureq = "3"
 cedar-policy = { version = "4", optional = true }
-regorus = { version = "0.11", features = ["arc"], optional = true }
+regorus = { version = "0.12", features = ["arc"], optional = true }
 
 [dev-dependencies]
 agent-hooks-sdk = { version = "0.1.0-alpha.3", features = ["ctk"] }
