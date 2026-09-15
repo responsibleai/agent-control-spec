@@ -11,9 +11,9 @@
   field anywhere in a chain that fetched a document, and refuses in a fetched
   document any filesystem path field (`bundle`, `data`, `data_paths`,
   `policy_path`, `entities_path`, `schema_path`), a rego `query` that is not
-  a plain rule path, an   `approval` section, and a rego `bundle_url` or annotator
-  `system_prompt_url` unless
-  every URL hop from the root is pinned. The bundled dispatchers refuse every
+  a plain rule path, an `approval` section, and a rego `bundle_url` or
+  annotator `system_prompt_url` unless every URL hop from the root is pinned.
+  The bundled dispatchers refuse every
   host environment read for a URL sourced invocation, provider defaults
   included, and fail closed with `runtime_error:annotation_failed` before
   any request is sent. A pin vouches for the fetched bytes, not for host
