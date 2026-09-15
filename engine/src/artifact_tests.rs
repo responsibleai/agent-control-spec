@@ -321,6 +321,7 @@ pub(crate) fn manifest() -> Manifest {
 #[cfg(feature = "default-dispatchers")]
 fn annotator(pinned: &PinnedHttpsSource, endpoint: &str) -> crate::AnnotatorInvocation {
     crate::AnnotatorInvocation {
+        url_sourced: false,
         fields: BTreeMap::from([
             ("type".into(), json!("llm")),
             ("provider".into(), json!("openai_compatible")),

@@ -384,8 +384,9 @@ impl Manifest {
     /// document to the same rules as one fetched through `extends`: no
     /// host environment variable field, no host filesystem path field, no
     /// rego query that is not a plain rule path, no `approval` section,
-    /// and no remote `bundle_url`, since the mark carries no pin. Each is
-    /// refused with `runtime_error:manifest_invalid`.
+    /// and no remote `bundle_url` or `system_prompt_url`, since the mark
+    /// carries no pin. Each is refused with
+    /// `runtime_error:manifest_invalid`.
     ///
     /// Does not run `validate`, which needs the merged whole; `merge_chain`
     /// and `Runtime::new` do, and a host that wants an early answer calls
@@ -708,10 +709,10 @@ impl Manifest {
     /// document has no directory and did not come from the host, so it may
     /// not name a host environment variable, a host file, an approval
     /// resolver, or a Rego query that runs as code. It may name a remote
-    /// `bundle_url` only when every URL hop from the root manifest to it
-    /// carried a pin (`chain_pinned`). `document` opens every refusal and
-    /// says which document: the loader passes `remote manifest '<url>'`,
-    /// the mark passes its own marker.
+    /// `bundle_url` or `system_prompt_url` only when every URL hop from the
+    /// root manifest to it carried a pin (`chain_pinned`). `document` opens
+    /// every refusal and says which document: the loader passes `remote
+    /// manifest '<url>'`, the mark passes its own marker.
     pub(crate) fn reject_fetched_document_local_access(
         &self,
         document: &str,
@@ -722,6 +723,7 @@ impl Manifest {
                 document,
                 &format!("annotator '{name}'"),
                 &annotator.fields,
+                chain_pinned,
             )?;
         }
         for (point, config) in &self.intervention_points {
@@ -730,6 +732,7 @@ impl Manifest {
                     document,
                     &format!("annotation '{annotation_name}' for intervention point {point}"),
                     &annotation.fields,
+                    chain_pinned,
                 )?;
             }
         }
@@ -870,6 +873,7 @@ fn reject_fetched_annotator_fields(
     document: &str,
     label: &str,
     fields: &BTreeMap<String, JsonValue>,
+    chain_pinned: bool,
 ) -> Result<(), RuntimeError> {
     for field in crate::constants::host_env_secret_field::ALL {
         if fields.contains_key(field) {
@@ -881,6 +885,14 @@ fn reject_fetched_annotator_fields(
                 crate::constants::provenance::MARKER
             )));
         }
+    }
+    if !chain_pinned && fields.contains_key("system_prompt_url") {
+        return Err(RuntimeError::ManifestInvalid(format!(
+            "{document}: {label} declares a remote 'system_prompt_url' on an unpinned path; a {} \
+             may name one only when every URL extends from the root manifest to this document is \
+             pinned with sha256 or integrity, and a document the host marked carries no pin",
+            crate::constants::provenance::MARKER
+        )));
     }
     Ok(())
 }
@@ -3737,6 +3749,90 @@ intervention_points:
         assert!(manifest
             .intervention_points
             .contains_key(&InterceptionPoint::Output));
+    }
+
+    #[test]
+    fn fetched_document_system_prompt_url_requires_pinned_path() {
+        let prompt_source = format!(
+            "system_prompt_url:\n      url: https://prompts.example/system.txt\n      sha256: {}",
+            "00".repeat(32)
+        );
+        let declaration_body = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\n{TEST_POLICY_INPUT_POINT}    \
+             annotations:\n      judge:\n        from: $target\nannotators:\n  judge:\n    type: \
+             llm\n    provider: openai_compatible\n    endpoint: https://judge.example/v1\n    \
+             {prompt_source}\n"
+        );
+        let binding_body = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\n{TEST_POLICY_INPUT_POINT}    \
+             annotations:\n      judge:\n        from: $target\n        {}\nannotators:\n  judge:\n    \
+             type: llm\n    provider: openai_compatible\n    endpoint: https://judge.example/v1\n",
+            prompt_source.replace('\n', "\n    ")
+        );
+
+        for (name, body, context) in [
+            (
+                "url-system-prompt-declaration",
+                declaration_body.as_str(),
+                "annotator 'judge'",
+            ),
+            (
+                "url-system-prompt-binding",
+                binding_body.as_str(),
+                "annotation 'judge' for intervention point input",
+            ),
+        ] {
+            let path = root_extending_url(&format!("{name}-unpinned.yaml"), REMOTE, "");
+            let error = load_with_fetcher(&path, fetcher_with(REMOTE, body), Limits::default())
+                .unwrap_err();
+            assert_url_sourced_refusal(
+                &error,
+                &[
+                    "system_prompt_url",
+                    "unpinned",
+                    "remote manifest 'https://policy.example/base.yaml'",
+                    context,
+                    "URL sourced manifest",
+                ],
+            );
+
+            let path = root_extending_pinned_url(&format!("{name}-pinned.yaml"), REMOTE, body, "");
+            load_with_fetcher(&path, fetcher_with(REMOTE, body), Limits::default())
+                .expect("a fetched system_prompt_url on an entirely pinned path loads");
+
+            let error = Manifest::parse_yaml_str(body)
+                .unwrap()
+                .mark_url_sourced()
+                .unwrap_err();
+            assert_url_sourced_refusal(
+                &error,
+                &[
+                    "system_prompt_url",
+                    "unpinned",
+                    "host-marked remote content",
+                    context,
+                ],
+            );
+        }
+
+        let hop_one =
+            "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - ./more.yaml\n";
+        let more_url = "https://policy.example/more.yaml";
+        let fetcher = MockFetcher::new(BTreeMap::from([
+            (REMOTE.to_string(), hop_one.as_bytes().to_vec()),
+            (more_url.to_string(), declaration_body.as_bytes().to_vec()),
+        ]));
+        let path =
+            root_extending_pinned_url("url-system-prompt-transitive.yaml", REMOTE, hop_one, "");
+        let error = load_with_fetcher(&path, fetcher, Limits::default()).unwrap_err();
+        assert_url_sourced_refusal(
+            &error,
+            &[
+                "system_prompt_url",
+                "unpinned",
+                "remote manifest 'https://policy.example/more.yaml'",
+            ],
+        );
     }
 
     /// On `opa` builds the query string is argv to `opa eval`, which has

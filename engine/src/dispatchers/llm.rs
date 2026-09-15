@@ -112,10 +112,14 @@ fn dispatch_with_transport(
             "LLM dispatcher received a non-LLM annotator",
         ));
     }
-    let cfg = LlmConfig::from_fields(annotator_name, &annotator.fields, limits)?;
+    let cfg = LlmConfig::from_fields(
+        annotator_name,
+        &annotator.fields,
+        annotator.url_sourced,
+        limits,
+    )?;
     let policy_target =
         resolve::policy_target_text(annotator_name, annotator, preliminary_policy_input)?;
-    let cfg = cfg.with_provenance(annotator.url_sourced);
     let request = request_for_provider(annotator_name, &cfg, &policy_target)?;
     let response = transport
         .send(request)
@@ -188,6 +192,7 @@ impl LlmConfig {
     fn from_fields(
         annotator_name: &str,
         fields: &BTreeMap<String, JsonValue>,
+        url_sourced: bool,
         limits: Limits,
     ) -> Result<Self, RuntimeError> {
         let provider = LlmProvider::parse(http::optional_string_field(fields, FIELD_PROVIDER))
@@ -199,6 +204,7 @@ impl LlmConfig {
                 _ => DEFAULT_MODEL,
             })
             .to_string();
+        Self::reject_pre_fetch_host_env_access(annotator_name, provider, fields, url_sourced)?;
         let prompt = match crate::annotation::system_prompt_source(fields)
             .map_err(|err| resolve::failed(annotator_name, err.detail()))?
         {
@@ -238,15 +244,8 @@ impl LlmConfig {
             aws_session_token_env: opt_string(fields, FIELD_AWS_SESSION_TOKEN_ENV),
             aws_amz_date: opt_string(fields, FIELD_AWS_AMZ_DATE),
             aws_date: opt_string(fields, FIELD_AWS_DATE),
-            url_sourced: false,
+            url_sourced,
         })
-    }
-
-    /// Provenance is applied after construction so `from_fields` keeps
-    /// treating the fields alone as its input.
-    fn with_provenance(mut self, url_sourced: bool) -> Self {
-        self.url_sourced = url_sourced;
-        self
     }
 
     fn secret_from_field_or_env(
@@ -269,6 +268,58 @@ impl LlmConfig {
                 })
                 .map(Some),
             None => Ok(None),
+        }
+    }
+
+    fn reject_pre_fetch_host_env_access(
+        annotator_name: &str,
+        provider: LlmProvider,
+        fields: &BTreeMap<String, JsonValue>,
+        url_sourced: bool,
+    ) -> Result<(), RuntimeError> {
+        if !url_sourced {
+            return Ok(());
+        }
+
+        let api_key = http::optional_string_field(fields, FIELD_API_KEY);
+        let api_key_env = http::optional_string_field(fields, FIELD_API_KEY_ENV);
+        let reject_api_key_env = |default_env: Option<&str>| -> Result<(), RuntimeError> {
+            if api_key.is_none() {
+                if let Some(env_name) = api_key_env.or(default_env) {
+                    host_env::read(url_sourced, env_name)
+                        .map_err(|message| resolve::failed(annotator_name, message))?;
+                }
+            }
+            Ok(())
+        };
+
+        match provider {
+            LlmProvider::OpenAi => reject_api_key_env(Some(DEFAULT_OPENAI_API_KEY_ENV)),
+            LlmProvider::OpenAiCompatible => reject_api_key_env(None),
+            LlmProvider::AzureOpenAi => reject_api_key_env(Some(DEFAULT_AZURE_OPENAI_API_KEY_ENV)),
+            LlmProvider::Gemini => reject_api_key_env(Some(DEFAULT_GEMINI_API_KEY_ENV)),
+            LlmProvider::Ollama => Ok(()),
+            LlmProvider::Bedrock => {
+                if http::optional_string_field(fields, FIELD_AWS_REGION).is_none() {
+                    host_env::read(url_sourced, "AWS_REGION")
+                        .map_err(|message| resolve::failed(annotator_name, message))?;
+                }
+                secret_field_or_env(
+                    annotator_name,
+                    http::optional_string_field(fields, FIELD_AWS_ACCESS_KEY_ID),
+                    http::optional_string_field(fields, FIELD_AWS_ACCESS_KEY_ID_ENV),
+                    DEFAULT_AWS_ACCESS_KEY_ID_ENV,
+                    url_sourced,
+                )?;
+                secret_field_or_env(
+                    annotator_name,
+                    http::optional_string_field(fields, FIELD_AWS_SECRET_ACCESS_KEY),
+                    http::optional_string_field(fields, FIELD_AWS_SECRET_ACCESS_KEY_ENV),
+                    DEFAULT_AWS_SECRET_ACCESS_KEY_ENV,
+                    url_sourced,
+                )?;
+                Ok(())
+            }
         }
     }
 }
@@ -996,6 +1047,33 @@ mod tests {
             ]),
             DEFAULT_GEMINI_API_KEY_ENV,
         );
+    }
+
+    #[test]
+    fn url_sourced_provenance_is_checked_before_pinned_prompt_fetch() {
+        let transport = StubHttpTransport::with_response(200, "{}");
+        let error = LlmAnnotator::new()
+            .dispatch_with_transport(
+                "judge",
+                &tainted(&[(
+                    "system_prompt_url",
+                    json!({
+                        "url": "https://127.0.0.1:1/system.txt",
+                        "sha256": "00".repeat(32),
+                    }),
+                )]),
+                &pi(),
+                &transport,
+            )
+            .expect_err("provenance must be refused before fetching the prompt");
+
+        assert!(error.detail().contains("URL sourced manifest"), "{error}");
+        assert!(
+            error.detail().contains(DEFAULT_OPENAI_API_KEY_ENV),
+            "{error}"
+        );
+        assert!(!error.detail().contains("connect"), "{error}");
+        assert!(transport.last_request().is_none());
     }
 
     /// Defence in depth: the loader refuses an explicit `api_key_env` in

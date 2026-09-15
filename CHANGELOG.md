@@ -11,7 +11,8 @@
   field anywhere in a chain that fetched a document, and refuses in a fetched
   document any filesystem path field (`bundle`, `data`, `data_paths`,
   `policy_path`, `entities_path`, `schema_path`), a rego `query` that is not
-  a plain rule path, an `approval` section, and a rego `bundle_url` unless
+  a plain rule path, an   `approval` section, and a rego `bundle_url` or annotator
+  `system_prompt_url` unless
   every URL hop from the root is pinned. The bundled dispatchers refuse every
   host environment read for a URL sourced invocation, provider defaults
   included, and fail closed with `runtime_error:annotation_failed` before
@@ -25,7 +26,8 @@
   merges. The mark holds the document to the same rules as one fetched
   through `extends`, so it also returns `Err` for a `*_env` field, a
   filesystem path field, a rego `query` that is not a plain rule path, an
-  `approval` section, or a `bundle_url`, since the mark carries no pin.
+  `approval` section, a `bundle_url`, or a `system_prompt_url`, since the
+  mark carries no pin.
   `Manifest` equality now includes provenance: a marked manifest is not
   equal to the same text unmarked. It ignores how the value was built, so a
   local manifest read from a file still equals the same text parsed. A
