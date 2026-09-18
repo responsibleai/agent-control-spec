@@ -86,6 +86,184 @@ public sealed class HostHooksTests : IDisposable
         Assert.Equal("unsafe_content", denied.Reason);
     }
 
+    private string WriteChainedFixture()
+    {
+        var bundle = Path.Combine(_dir, "chain-bundle");
+        Directory.CreateDirectory(bundle);
+        File.WriteAllText(Path.Combine(bundle, "policy.rego"), """
+            package acs
+
+            decision := {"decision": "deny", "reason": "judge_blocked"} if {
+                input.annotations.judge.blocked == true
+            } else := {"decision": "allow"}
+            """);
+
+        // `judge` is listed first and sorts first, so only `needs` can
+        // produce the order this test asserts.
+        var manifest = Path.Combine(_dir, "chained-manifest.yaml");
+        File.WriteAllText(manifest, """
+            agent_control_specification_version: "0.5.0-alpha.1"
+            metadata:
+              name: host-hooks-chaining
+            annotators:
+              judge:
+                type: classifier
+              scan:
+                type: classifier
+            policies:
+              gate:
+                type: rego
+                bundle: ./chain-bundle
+            intervention_points:
+              input:
+                policy_target: "$snap.input"
+                annotations:
+                  judge:
+                    needs: [scan]
+                    from: "$pi.annotations.scan.spans"
+                  scan:
+                    from: "$target"
+                policy:
+                  id: gate
+                  query: data.acs.decision
+            """);
+        return manifest;
+    }
+
+    [Fact]
+    public async Task AnAnnotationWithNeedsRunsAfterAndSeesItsDependency()
+    {
+        var manifest = WriteChainedFixture();
+        var order = new List<string>();
+        var seen = new List<string>();
+
+        using var interceptor = AcsHostInterceptor.FromPath(
+            manifest,
+            annotator: (name, _, policyInputJson) =>
+            {
+                order.Add(name);
+                var annotations = JsonNode.Parse(policyInputJson)!["annotations"]!;
+                seen.Add(annotations.ToJsonString());
+                if (name == "scan")
+                {
+                    return """{"spans":[1]}""";
+                }
+
+                var spans = annotations["scan"]!["spans"]!.AsArray();
+                return $$"""{"blocked":{{(spans.Count > 0 ? "true" : "false")}}}""";
+            });
+
+        var verdict = await interceptor.InterceptAsync(Input("leak"));
+
+        Assert.Equal(new[] { "scan", "judge" }, order);
+        // `scan` declares no dependency, so it is shown nothing.
+        Assert.Equal("{}", seen[0]);
+        // `judge` is shown exactly what it declared, and nothing else.
+        Assert.Equal("""{"scan":{"spans":[1]}}""", seen[1]);
+        Assert.Equal(Decision.Deny, verdict.Decision);
+        Assert.Equal("judge_blocked", verdict.Reason);
+    }
+
+    [Fact]
+    public async Task ADependencyFailureSkipsItsDependentAndPolicy()
+    {
+        var manifest = WriteChainedFixture();
+        var order = new List<string>();
+        var policyCalled = false;
+
+        using var interceptor = AcsHostInterceptor.FromPath(
+            manifest,
+            annotator: (name, _, _) =>
+            {
+                order.Add(name);
+                if (name == "scan")
+                {
+                    throw new InvalidOperationException("classifier unreachable");
+                }
+                return """{"blocked":false}""";
+            },
+            policy: _ =>
+            {
+                policyCalled = true;
+                return """{"decision":"allow"}""";
+            });
+
+        var verdict = await interceptor.InterceptAsync(Input("leak"));
+
+        Assert.Equal(new[] { "scan" }, order);
+        Assert.False(policyCalled);
+        Assert.Equal(Decision.Deny, verdict.Decision);
+        Assert.Equal("runtime_error:annotation_failed", verdict.Reason);
+    }
+
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void AnUndeclaredAnnotationReadIsRejectedBeforeDispatch(string lineEnding)
+    {
+        var manifest = WriteChainedFixture();
+        var source = File.ReadAllText(manifest).ReplaceLineEndings(lineEnding);
+        var normalized = source.ReplaceLineEndings("\n");
+        var invalid = normalized.Replace("        needs: [scan]\n", "");
+        Assert.NotEqual(normalized, invalid);
+        File.WriteAllText(manifest, invalid.ReplaceLineEndings(lineEnding));
+        var calls = new List<string>();
+
+        var error = Assert.Throws<AgentControlSpecNativeException>(() =>
+            AcsHostInterceptor.FromPath(
+                manifest,
+                annotator: (name, _, _) =>
+                {
+                    calls.Add(name);
+                    return "{}";
+                },
+                policy: _ =>
+                {
+                    calls.Add("policy");
+                    return """{"decision":"allow"}""";
+                }));
+
+        Assert.Equal(
+            "runtime_error:manifest_invalid: annotation 'judge' for intervention point input reads annotation 'scan' without naming it in needs",
+            error.Message);
+        Assert.Empty(calls);
+    }
+
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void AnAnnotationDependencyCycleIsRejectedBeforeDispatch(string lineEnding)
+    {
+        var manifest = WriteChainedFixture();
+        var source = File.ReadAllText(manifest).ReplaceLineEndings(lineEnding);
+        var normalized = source.ReplaceLineEndings("\n");
+        var invalid = normalized.Replace(
+            "      scan:\n        from: \"$target\"",
+            "      scan:\n        needs: [judge]\n        from: \"$target\"");
+        Assert.NotEqual(normalized, invalid);
+        File.WriteAllText(manifest, invalid.ReplaceLineEndings(lineEnding));
+        var calls = new List<string>();
+
+        var error = Assert.Throws<AgentControlSpecNativeException>(() =>
+            AcsHostInterceptor.FromPath(
+                manifest,
+                annotator: (name, _, _) =>
+                {
+                    calls.Add(name);
+                    return "{}";
+                },
+                policy: _ =>
+                {
+                    calls.Add("policy");
+                    return """{"decision":"allow"}""";
+                }));
+
+        Assert.Equal("runtime_error:manifest_invalid", error.Message.Split(": ")[0]);
+        Assert.Contains("cycle", error.Message);
+        Assert.Contains("judge, scan", error.Message);
+        Assert.Empty(calls);
+    }
+
     [Fact]
     public async Task AClassifierThatFailsDeniesRatherThanFindingNothing()
     {

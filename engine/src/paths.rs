@@ -206,6 +206,20 @@ impl JsonPath {
             && matches!(self.segments.first(), Some(PathSegment::Field(field)) if field == pi_key::ANNOTATIONS)
     }
 
+    /// The annotator name a `$pi.annotations.<name>...` path reads, when
+    /// the path names one. `$pi.annotations` on its own reads the whole
+    /// map and names nobody, so it yields `None` and callers that require
+    /// a declared dependency reject it.
+    pub fn pi_annotation_reference(&self) -> Option<&str> {
+        if !self.references_pi_annotations() {
+            return None;
+        }
+        match self.segments.get(1) {
+            Some(PathSegment::Field(name)) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+
     pub fn resolve(&self, env: &PathEnv<'_>) -> Result<JsonValue, RuntimeError> {
         let mut current = env.root_value(self.root).ok_or_else(|| {
             RuntimeError::PathMissing(format!(

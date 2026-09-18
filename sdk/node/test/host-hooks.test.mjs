@@ -139,6 +139,152 @@ test("host annotator dispatcher return value drives the policy verdict", () => {
 });
 
 // ---------------------------------------------------------------------
+// 1b. An annotation that declares `needs` runs after its dependency and
+// is shown that result. The manifest lists the dependent first, so map
+// order cannot be what produces the ordering.
+// ---------------------------------------------------------------------
+
+function writeChainedAnnotatorManifest(tmpdir) {
+  const src = `agent_control_specification_version: "0.5.0-alpha.1"
+metadata:
+  name: node-annotator-chaining
+policies:
+  gate:
+    type: custom
+    adapter: host_gate
+annotators:
+  judge:
+    type: classifier
+  scan:
+    type: classifier
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    annotations:
+      judge:
+        needs: [scan]
+        from: "$pi.annotations.scan.spans"
+      scan:
+        from: "$target.content"
+    policy:
+      id: gate
+`;
+  const p = path.join(tmpdir, "chained-annotator-manifest.yaml");
+  fs.writeFileSync(p, src, "utf8");
+  return p;
+}
+
+test("an annotation with needs runs after its dependency and sees it", () => {
+  const manifest = writeChainedAnnotatorManifest(workdir);
+  const seen = [];
+  const annotatorDispatcher = (name, _invocation, policyInput) => {
+    seen.push({ name, annotations: policyInput.annotations });
+    if (name === "scan") {
+      return { spans: [{ start: 0, end: 4 }] };
+    }
+    return { blocked: policyInput.annotations.scan.spans.length > 0 };
+  };
+  const policyDispatcher = (invocation) =>
+    invocation.input?.annotations?.judge?.blocked
+      ? { decision: "deny", reason: "judge_blocked" }
+      : { decision: "allow" };
+
+  const acs = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher,
+    policyDispatcher,
+  });
+  const verdict = acs.intercept(builder().input("leak"));
+
+  assert.deepEqual(
+    seen.map((call) => call.name),
+    ["scan", "judge"],
+  );
+  // `scan` declares nothing, so it is shown nothing.
+  assert.deepEqual(seen[0].annotations, {});
+  // `judge` is shown exactly what it declared, and nothing else.
+  assert.deepEqual(seen[1].annotations, {
+    scan: { spans: [{ start: 0, end: 4 }] },
+  });
+  assert.equal(verdict.decision, "deny");
+  assert.equal(verdict.reason, "judge_blocked");
+});
+
+test("a dependency that throws never runs the annotation that needs it", () => {
+  const manifest = writeChainedAnnotatorManifest(workdir);
+  const seen = [];
+  const acs = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher: (name) => {
+      seen.push(name);
+      if (name === "scan") {
+        throw new Error("classifier unreachable");
+      }
+      return { blocked: false };
+    },
+    policyDispatcher: () => ({ decision: "allow" }),
+  });
+
+  const verdict = acs.intercept(builder().input("leak"));
+  assert.deepEqual(seen, ["scan"]);
+  assert.equal(verdict.decision, "deny");
+  assert.equal(verdict.reason, "runtime_error:annotation_failed");
+});
+
+test("reading an annotation without declaring it in needs is refused", () => {
+  const src = fs
+    .readFileSync(writeChainedAnnotatorManifest(workdir), "utf8")
+    .replace("        needs: [scan]\n", "");
+  const p = path.join(workdir, "undeclared-annotation-manifest.yaml");
+  fs.writeFileSync(p, src, "utf8");
+
+  assert.throws(
+    () =>
+      AcsInterceptor.fromPath(p, {
+        annotatorDispatcher: () => ({}),
+        policyDispatcher: () => ({ decision: "allow" }),
+      }),
+    /manifest_invalid|needs/,
+  );
+});
+
+test("an annotation dependency cycle is refused before dispatch", () => {
+  const src = fs
+    .readFileSync(writeChainedAnnotatorManifest(workdir), "utf8")
+    .replace(
+      '      scan:\n        from: "$target.content"',
+      '      scan:\n        needs: [judge]\n        from: "$target.content"',
+    );
+  const p = path.join(workdir, "cyclic-annotation-manifest.yaml");
+  fs.writeFileSync(p, src, "utf8");
+  const calls = [];
+
+  assert.throws(
+    () =>
+      AcsInterceptor.fromPath(p, {
+        annotatorDispatcher: (name) => {
+          calls.push(name);
+          return {};
+        },
+        policyDispatcher: () => {
+          calls.push("policy");
+          return { decision: "allow" };
+        },
+      }),
+    (error) => {
+      assert.equal(error.constructor, Error);
+      assert.equal(
+        error.message.split(": ").shift(),
+        "runtime_error:manifest_invalid",
+      );
+      assert.match(error.message, /cycle/);
+      assert.match(error.message, /judge, scan/);
+      return true;
+    },
+  );
+  assert.deepEqual(calls, []);
+});
+
+// ---------------------------------------------------------------------
 // 2. An annotator that throws fails CLOSED. The verdict is a deny with
 // `runtime_error:annotation_failed`. The engine never treats a thrown
 // callback as "no annotation".

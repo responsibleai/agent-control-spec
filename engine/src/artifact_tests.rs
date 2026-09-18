@@ -773,6 +773,176 @@ fn artifact_schema_agrees_on_pin_and_source_conflicts() {
     }
 }
 
+/// The schema is the contract authoring tools read, so it has to admit
+/// the same `needs` shapes the engine does and refuse the ones it
+/// rejects. The engine stays authoritative; this keeps the published
+/// document from disagreeing with it.
+#[test]
+fn artifact_schema_admits_annotation_needs() {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("spec")
+        .join("schema");
+    let load = |name| -> JsonValue {
+        serde_json::from_reader(std::fs::File::open(directory.join(name)).unwrap()).unwrap()
+    };
+    let schema = load("manifest.schema.json");
+    let approval = load("approval.schema.json");
+    let registry = jsonschema::Registry::new()
+        .add(approval["$id"].as_str().unwrap(), &approval)
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let validator = jsonschema::options()
+        .with_registry(&registry)
+        .build(&schema)
+        .unwrap();
+
+    let mut document = serde_json::to_value(manifest()).unwrap();
+    document["agent_control_specification_version"] = json!("0.5.0-alpha.1");
+    document["annotators"] =
+        json!({"scan": {"type": "classifier"}, "judge": {"type": "classifier"}});
+    let annotations = |judge: JsonValue| {
+        json!({
+            "scan": {"from": "$target.text"},
+            "judge": judge,
+        })
+    };
+
+    let spec = std::fs::read_to_string(directory.join("../SPECIFICATION.md")).unwrap();
+    let changelog = std::fs::read_to_string(directory.join("../../CHANGELOG.md")).unwrap();
+    assert_eq!(
+        crate::SUPPORTED_VERSIONS
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        crate::SUPPORTED_VERSIONS.len(),
+        "contract names must be unique"
+    );
+    assert!(spec.lines().take(4).any(|line| line.contains(&format!(
+        "version `{}`",
+        crate::constants::manifest_version::ANNOTATION_CHAINING
+    ))));
+    for version in crate::SUPPORTED_VERSIONS {
+        let contract = crate::constants::manifest_version::contract(version).unwrap();
+        assert!(
+            changelog.contains(version),
+            "document supported contract {version}"
+        );
+        document["agent_control_specification_version"] = json!(version);
+        for needs in [json!(["scan"]), json!(null)] {
+            document["intervention_points"]["input"]["annotations"] =
+                annotations(json!({"needs": needs, "from": "$target"}));
+            let valid = needs.is_array() || !contract.annotation_chaining;
+            assert_eq!(
+                validator.is_valid(&document),
+                valid,
+                "schema contract {version}"
+            );
+            assert_eq!(
+                Manifest::from_json_str(&document.to_string()).is_ok(),
+                valid,
+                "engine contract {version}"
+            );
+        }
+        document["intervention_points"]["input"]["annotations"] =
+            annotations(json!({"needs": ["missing"], "from": "$target"}));
+        assert_eq!(
+            Manifest::from_json_str(&document.to_string()).is_err(),
+            contract.annotation_chaining,
+            "unknown dependency in {version}"
+        );
+    }
+    document["agent_control_specification_version"] =
+        json!(crate::constants::manifest_version::ANNOTATION_CHAINING);
+
+    // An annotation with no `needs` at all stays valid, as every
+    // manifest written before `needs` existed is.
+    document["intervention_points"]["input"]["annotations"] =
+        annotations(json!({"from": "$target.text"}));
+    assert!(validator.is_valid(&document));
+
+    document["intervention_points"]["input"]["annotations"] =
+        annotations(json!({"needs": ["scan"], "from": "$pi.annotations.scan.spans"}));
+    assert!(validator.is_valid(&document));
+
+    // An empty list is a declaration of no dependencies, which is the
+    // same as omitting it.
+    document["intervention_points"]["input"]["annotations"] =
+        annotations(json!({"needs": [], "from": "$target.text"}));
+    assert!(validator.is_valid(&document));
+
+    for invalid in [
+        json!({"needs": ["scan", "scan"], "from": "$target.text"}),
+        json!({"needs": [""], "from": "$target.text"}),
+        json!({"needs": ["  "], "from": "$target.text"}),
+        json!({"needs": null, "from": "$target.text"}),
+        json!({"needs": "scan", "from": "$target.text"}),
+        json!({"needs": [{"name": "scan"}], "from": "$target.text"}),
+    ] {
+        document["intervention_points"]["input"]["annotations"] = annotations(invalid.clone());
+        assert!(
+            !validator.is_valid(&document),
+            "schema should refuse annotation {invalid}"
+        );
+        document["agent_control_specification_version"] = json!(" 0.5.0-alpha.1 ");
+        assert!(
+            !validator.is_valid(&document),
+            "version whitespace must not bypass needs validation"
+        );
+        document["agent_control_specification_version"] = json!("0.4.0-alpha.1");
+        assert!(
+            validator.is_valid(&document),
+            "legacy extension must remain valid"
+        );
+        document["agent_control_specification_version"] = json!("0.5.0-alpha.1");
+    }
+
+    // ECMAScript regex whitespace differs from Rust's trim/is_whitespace.
+    let mut boundary_chars: Vec<char> = (0..=0x10ffff)
+        .filter_map(char::from_u32)
+        .filter(|c| c.is_whitespace())
+        .collect();
+    boundary_chars.extend(['\u{feff}', '\u{180e}', '\u{200b}']);
+    for c in boundary_chars {
+        for version in crate::SUPPORTED_VERSIONS {
+            document["agent_control_specification_version"] = json!(format!("{c}{version}{c}"));
+            for needs in [json!(["scan"]), json!(null)] {
+                document["intervention_points"]["input"]["annotations"] =
+                    annotations(json!({"needs": needs, "from": "$target"}));
+                assert_eq!(
+                    validator.is_valid(&document),
+                    Manifest::from_json_str(&document.to_string()).is_ok(),
+                    "version padding U+{:04X} in {version}",
+                    c as u32,
+                );
+            }
+        }
+        document["agent_control_specification_version"] = json!("0.5.0-alpha.1");
+        let mut named = document.clone();
+        let name = c.to_string();
+        let source = named["annotators"]
+            .as_object_mut()
+            .unwrap()
+            .remove("scan")
+            .unwrap();
+        named["annotators"]
+            .as_object_mut()
+            .unwrap()
+            .insert(name.clone(), source);
+        named["intervention_points"]["input"]["annotations"] = json!({
+            name.clone(): {"from": "$target"},
+            "judge": {"needs": [name], "from": "$target"},
+        });
+        assert_eq!(
+            validator.is_valid(&named),
+            Manifest::from_json_str(&named.to_string()).is_ok(),
+            "dependency name U+{:04X}",
+            c as u32,
+        );
+    }
+}
+
 #[cfg(all(feature = "rego", feature = "default-dispatchers"))]
 #[test]
 fn regorus_rejects_remote_bundles_in_evaluate_warm_and_activation() {

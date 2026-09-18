@@ -167,9 +167,17 @@ class AcsInterceptor:
     Host hooks are supplied by keyword:
 
     - ``annotator_dispatcher``: object with a ``dispatch(annotator_name,
-      annotator, preliminary_policy_input)`` method or a plain callable
+      annotator, policy_input)`` method or a plain callable
       with the same signature. Return value is the annotation payload
       that reaches the policy under ``input.annotations[<name>]``.
+      With manifest contract ``0.5.0-alpha.1``, ``policy_input.annotations``
+      holds the full outputs of direct ``needs`` dependencies only, or
+      is empty when there are none. The full snapshot remains available;
+      ``from`` selects a value without redacting the dispatcher input.
+      The engine removes ``needs`` from the invocation fields. With legacy
+      ``0.4.0-alpha.1``, annotations is always empty, dispatch is lexical,
+      and ``needs`` remains an arbitrary host-defined JSON extension
+      passed to the dispatcher.
     - ``policy_dispatcher``: object with an ``evaluate(invocation)``
       method (and optionally a ``warm(invocation)`` method) or a plain
       callable. Return value is the raw policy output normalized into a

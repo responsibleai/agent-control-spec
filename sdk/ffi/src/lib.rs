@@ -860,6 +860,16 @@ pub type AcsHookFree = unsafe extern "C" fn(ctx: *mut c_void, value: *mut c_char
 
 /// Classify one annotation. Returns the annotation value as JSON, or
 /// NULL with `*err_out` set.
+///
+/// With manifest contract `0.5.0-alpha.1`, `policy_input_json` is staged:
+/// `annotations` contains the full outputs of direct `needs` dependencies
+/// only, or is empty when there are none. The full snapshot remains
+/// available; `from` selects a value without redacting the callback input.
+/// The engine omits `needs` from `invocation_json`.
+///
+/// Legacy `0.4.0-alpha.1` behavior is unchanged: `annotations` is empty,
+/// dispatch order is lexical, and `needs` passes through as a host-defined
+/// invocation field.
 pub type AcsAnnotatorFn = unsafe extern "C" fn(
     ctx: *mut c_void,
     annotator_name: *const c_char,
@@ -2578,6 +2588,174 @@ intervention_points:
             serde_json::from_str(LAST_INVOCATION.lock().unwrap().as_deref().unwrap()).unwrap();
         assert_eq!(invocation["api_key_env"], "ACS_FFI_LOCAL_TEST_KEY");
         assert!(invocation.get("url_sourced").is_none(), "{invocation}");
+    }
+
+    #[test]
+    fn host_hooks_chain_annotations_through_the_c_abi() {
+        #[derive(Default)]
+        struct Calls {
+            annotations: Vec<(String, Value, Value)>,
+            policies: Vec<Value>,
+        }
+
+        unsafe extern "C" fn annotate(
+            ctx: *mut c_void,
+            name: *const c_char,
+            invocation: *const c_char,
+            input: *const c_char,
+            _error: *mut *mut c_char,
+        ) -> *mut c_char {
+            let calls = &mut *ctx.cast::<Calls>();
+            let name = CStr::from_ptr(name).to_str().unwrap();
+            let invocation: Value =
+                serde_json::from_str(CStr::from_ptr(invocation).to_str().unwrap()).unwrap();
+            let input: Value =
+                serde_json::from_str(CStr::from_ptr(input).to_str().unwrap()).unwrap();
+            let output = match name {
+                "seed" => serde_json::json!({"spans": [1], "source": "host"}),
+                "scan" => serde_json::json!({
+                    "spans": input["annotations"]["seed"]["spans"],
+                    "label": "unsafe",
+                }),
+                "judge" => serde_json::json!({
+                    "blocked": input["annotations"]["scan"]["spans"] == serde_json::json!([1]),
+                }),
+                _ => Value::Null,
+            };
+            calls.annotations.push((name.to_owned(), invocation, input));
+            CString::new(output.to_string()).unwrap().into_raw()
+        }
+
+        unsafe extern "C" fn policy(
+            ctx: *mut c_void,
+            invocation: *const c_char,
+            _error: *mut *mut c_char,
+        ) -> *mut c_char {
+            let calls = &mut *ctx.cast::<Calls>();
+            let invocation: Value =
+                serde_json::from_str(CStr::from_ptr(invocation).to_str().unwrap()).unwrap();
+            let output = if invocation["input"]["annotations"]["judge"]["blocked"] == true {
+                r#"{"decision":"deny","reason":"judge_blocked"}"#
+            } else {
+                r#"{"decision":"allow"}"#
+            };
+            calls.policies.push(invocation);
+            CString::new(output).unwrap().into_raw()
+        }
+
+        let dir = std::env::temp_dir().join(format!("acs-ffi-chain-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("manifest.yaml");
+        std::fs::write(
+            &path,
+            r#"
+agent_control_specification_version: "0.5.0-alpha.1"
+policies:
+  gate:
+    type: custom
+    adapter: host_gate
+annotators:
+  judge:
+    type: classifier
+  scan:
+    type: classifier
+  seed:
+    type: classifier
+intervention_points:
+  input:
+    policy_target: "$.input"
+    annotations:
+      judge:
+        needs: [scan]
+        from: "$pi.annotations.scan.spans"
+      scan:
+        needs: [seed]
+        from: "$pi.annotations.seed.spans"
+      seed:
+        from: "$target.content"
+    policy:
+      id: gate
+"#,
+        )
+        .unwrap();
+        let path = path.to_str().unwrap().as_bytes();
+        let mut calls = Calls::default();
+        let ctx = (&mut calls as *mut Calls).cast::<c_void>();
+        let mut err = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_interceptor_new_with_hooks(
+                path.as_ptr(),
+                path.len(),
+                Some(annotate),
+                ctx,
+                Some(policy),
+                ctx,
+                None,
+                std::ptr::null_mut(),
+                Some(free_hook_string),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        std::fs::remove_file(dir.join("manifest.yaml")).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        if !err.is_null() {
+            let message = unsafe { CStr::from_ptr(err) }
+                .to_string_lossy()
+                .into_owned();
+            unsafe { acs_free_string(err) };
+            panic!("constructor failed: {message}");
+        }
+        assert!(!handle.is_null());
+
+        let snapshot = serde_json::json!({
+            "interception_point": "input",
+            "input": {"content": "leak", "role": "user"},
+            "metadata": {"trace": "kept"},
+        });
+        let verdict = intercept(handle, &snapshot.to_string());
+        unsafe { acs_interceptor_free(handle) };
+
+        assert_eq!(verdict["decision"], "deny");
+        assert_eq!(verdict["reason"], "judge_blocked");
+        assert_eq!(
+            calls
+                .annotations
+                .iter()
+                .map(|(name, _, _)| name.as_str())
+                .collect::<Vec<_>>(),
+            ["seed", "scan", "judge"]
+        );
+        assert_eq!(calls.annotations[0].2["annotations"], serde_json::json!({}));
+        assert_eq!(
+            calls.annotations[1].2["annotations"],
+            serde_json::json!({"seed": {"spans": [1], "source": "host"}})
+        );
+        assert_eq!(
+            calls.annotations[2].2["annotations"],
+            serde_json::json!({"scan": {"spans": [1], "label": "unsafe"}})
+        );
+        for ((_, invocation, input), from) in calls.annotations.iter().zip([
+            "$target.content",
+            "$pi.annotations.seed.spans",
+            "$pi.annotations.scan.spans",
+        ]) {
+            assert_eq!(invocation["type"], "classifier");
+            assert_eq!(invocation["from"], from);
+            assert!(invocation.get("needs").is_none(), "{invocation}");
+            assert_eq!(input["snapshot"], snapshot);
+            assert_eq!(input["policy_target"]["value"], snapshot["input"]);
+        }
+        assert_eq!(calls.policies.len(), 1);
+        assert_eq!(
+            calls.policies[0]["input"]["annotations"],
+            serde_json::json!({
+                "seed": {"spans": [1], "source": "host"},
+                "scan": {"spans": [1], "label": "unsafe"},
+                "judge": {"blocked": true},
+            })
+        );
     }
 
     #[test]

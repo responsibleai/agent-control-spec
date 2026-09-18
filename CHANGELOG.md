@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- Manifest contract `0.5.0-alpha.1` adds annotator chaining through point-binding
+  `needs`: dependencies run first, and consumers can read their outputs through
+  `$pi.annotations.<name>`. Legacy `0.4.0-alpha.1` semantics stay unchanged.
+  Migrate an entire `extends` chain together and rename any host-specific
+  `needs` setting first; see specification sections 2.1 and 10.1.
+  This is an unreleased contract change, not a release or package bump;
+  package versions remain `0.4.0-alpha.3`.
+  The manifest schema now rejects unsupported versions rather than leaving that
+  check solely to the runtime. Version validation and composition use the Unicode
+  `White_Space` property when trimming surrounding characters.
+  The runtime prepares dependency order and metadata once at construction and
+  reuses one staged snapshot copy per evaluation. Consumers still copy their
+  dependency outputs, so dispatch cost grows with the volume of those outputs.
+  Staged depth checks visit only the replaced annotations member, preserving
+  its depth under the policy-input root without rescanning the snapshot.
+  In a local release benchmark with 50 no-op annotators, a 50,000-element
+  array snapshot, and 100 measured evaluations after warmup, median chain/flat
+  time fell from 2.92x to 1.45x (51.3/17.6 ms to 25.4/17.6 ms).
+  Those figures describe that workload, not a general latency guarantee.
+
 - A manifest chain that fetches any `extends` URL is now URL sourced, and a
   URL sourced manifest may not read host secrets. A fetched document could
   name a host environment variable through `api_key_env` or one of the
