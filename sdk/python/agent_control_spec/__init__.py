@@ -9,6 +9,10 @@ never raise into the host: the runtime normalizes them into fail-closed
 ``deny`` verdicts with ``runtime_error:*`` reasons (the engine's own
 reason namespace; the ``host_error:*`` namespace stays reserved for
 hosts, per AGENT-HOOKS-0.1 §5/§11).
+
+Async hosts use :class:`AsyncAcsInterceptor`. :class:`Scope` selects
+which intervention points this control evaluates; :class:`Saturation`
+selects reject or bounded-wait admission.
 """
 
 from __future__ import annotations
@@ -23,6 +27,13 @@ from typing import Any, Self
 from agent_hooks import Verdict
 
 from agent_control_spec import _native
+from agent_control_spec._evaluation import evaluate_wire as _evaluate_wire
+from agent_control_spec.async_interceptor import (
+    AsyncAcsInterceptor,
+    AsyncAcsLoopMismatchError,
+    Saturation,
+    Scope,
+)
 
 __all__ = [
     "DEFAULT_LIMITS",
@@ -30,8 +41,12 @@ __all__ = [
     "AcsInterceptor",
     "ActivatedPolicy",
     "ArtifactDiagnostic",
+    "AsyncAcsInterceptor",
+    "AsyncAcsLoopMismatchError",
     "ManifestInvalidError",
     "RegoBundle",
+    "Saturation",
+    "Scope",
     "StreamSession",
     "TelemetryEvent",
     "ValidationDiagnostic",
@@ -66,7 +81,8 @@ RegoBundle = Mapping[str, Any]
 PERF_TELEMETRY_LEVELS: tuple[str, ...] = ("off", "external", "full")
 
 #: The engine's shipped resource caps, as a read-only mapping. A host
-#: passing ``limits=`` to :class:`AcsInterceptor` reads this to see what
+#: passing ``limits=`` to :class:`AcsInterceptor` or :class:`ActivatedPolicy`
+#: reads this to see what
 #: it is overriding — a shipping change to another default cannot then
 #: be silently absorbed. Frozen at import time so a caller cannot mutate
 #: a shared default. Fields:
@@ -159,6 +175,9 @@ class AcsInterceptor:
     Register an instance with any agent-hooks host emitter. The manifest
     is loaded once at construction.
 
+    This is synchronous: GIL release does not yield the calling event
+    loop. Async hosts should use :class:`AsyncAcsInterceptor` instead.
+
     Zero-config path (the default): bundled annotators; Rego in process,
     Cedar through the built-in evaluator, ``test`` policies through
     their embedded verdict; no-op telemetry; the engine's default
@@ -184,9 +203,11 @@ class AcsInterceptor:
       defaults field by field. Absent means keep every default; each
       field is individually optional, so a host raising one cap does
       not restate the other nine. A host feeding large payloads raises
-      ``max_snapshot_bytes``; one hardening against a hostile manifest
-      lowers ``max_extends_depth`` or ``manifest_url_timeout_ms``. Read
-      :data:`DEFAULT_LIMITS` to see the shipped values.
+      ``max_snapshot_bytes``. This synchronous constructor applies the
+      overrides to evaluation and bundled dispatchers, not manifest
+      loading. Use :class:`ActivatedPolicy` when loader caps such as
+      ``max_extends_depth`` must also apply. Read :data:`DEFAULT_LIMITS`
+      to see the shipped values.
 
     A dispatcher that raises does not silently no-op: the engine
     normalizes the failure into a fail-closed ``deny`` verdict with a
@@ -270,6 +291,9 @@ class ActivatedPolicy:
         *,
         annotator_dispatcher: object | None = None,
         policy_dispatcher: object | None = None,
+        telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
+        perf_telemetry: str = "off",
+        limits: Mapping[str, int] | None = None,
     ) -> None:
         """Activate the manifest at ``manifest_path``.
 
@@ -285,7 +309,12 @@ class ActivatedPolicy:
         merely needs real input to produce a verdict activates fine.
         """
         self._handle = _native.policy_activate(
-            manifest_path, annotator_dispatcher, policy_dispatcher
+            manifest_path,
+            annotator_dispatcher,
+            policy_dispatcher,
+            telemetry_sink,
+            _normalize_perf_telemetry(perf_telemetry),
+            limits,
         )
 
     @classmethod
@@ -295,6 +324,9 @@ class ActivatedPolicy:
         *,
         annotator_dispatcher: object | None = None,
         policy_dispatcher: object | None = None,
+        telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
+        perf_telemetry: str = "off",
+        limits: Mapping[str, int] | None = None,
     ) -> ActivatedPolicy:
         """Activate the manifest at ``manifest_path``.
 
@@ -304,6 +336,9 @@ class ActivatedPolicy:
             manifest_path,
             annotator_dispatcher=annotator_dispatcher,
             policy_dispatcher=policy_dispatcher,
+            telemetry_sink=telemetry_sink,
+            perf_telemetry=perf_telemetry,
+            limits=limits,
         )
 
     @classmethod
@@ -314,6 +349,9 @@ class ActivatedPolicy:
         *,
         annotator_dispatcher: object | None = None,
         policy_dispatcher: object | None = None,
+        telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
+        perf_telemetry: str = "off",
+        limits: Mapping[str, int] | None = None,
     ) -> ActivatedPolicy:
         """Activate a manifest and its Rego supplied as values.
 
@@ -338,6 +376,9 @@ class ActivatedPolicy:
             json.dumps(bundles, allow_nan=False),
             annotator_dispatcher,
             policy_dispatcher,
+            telemetry_sink,
+            _normalize_perf_telemetry(perf_telemetry),
+            limits,
         )
         return policy
 
@@ -352,16 +393,13 @@ class ActivatedPolicy:
         version does not bind. Raises only on boundary problems: an
         unknown point name or a context that will not serialize.
         """
-        wire = _native.policy_evaluate(
-            self._handle, point, json.dumps(context, allow_nan=False)
-        )
-        return Verdict.from_wire(json.loads(wire))
+        return _evaluate_wire(self._handle, point, json.dumps(context, allow_nan=False))
 
     @property
     def intervention_points(self) -> tuple[str, ...]:
         """The intervention points this policy version binds, in manifest
-        order. Read it to skip emitting points the policy does not
-        govern.
+        order. Use it to scope this control explicitly, not to stop
+        emitting points that other controls may govern.
         """
         return tuple(_native.policy_intervention_points(self._handle))
 

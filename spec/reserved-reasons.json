@@ -82,6 +82,21 @@
       "cause": "An SDK adapter detected an unmediated framework method or unsupported call shape and failed closed instead of invoking upstream code."
     },
     {
+      "reason": "runtime_error:acs_async_capacity_exceeded",
+      "producer": "sdk-adapter",
+      "cause": "The ACS async adapter could not admit a call because its worker or waiter capacity was exhausted."
+    },
+    {
+      "reason": "runtime_error:acs_async_admission_timeout",
+      "producer": "sdk-adapter",
+      "cause": "A queued ACS async call exceeded its admission deadline before native evaluation could start."
+    },
+    {
+      "reason": "runtime_error:acs_async_closed",
+      "producer": "sdk-adapter",
+      "cause": "The ACS async adapter refused a call because closing had started."
+    },
+    {
       "reason": "runtime_error:request_invalid",
       "producer": "sdk-wire",
       "cause": "A JSON wire binding received a malformed intervention request envelope and failed closed before policy input construction."

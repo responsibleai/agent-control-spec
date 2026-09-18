@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- Python adds `AsyncAcsInterceptor` over an `ActivatedPolicy`: awaitable
+  interception, a dedicated bounded worker pool, reject or bounded-wait
+  admission, and draining async shutdown. Emitter timeout/cancellation
+  does not free capacity until native evaluation returns. Strict scope
+  remains the default; `Scope.BOUND_POINTS_ONLY` explicitly skips valid
+  lifecycle points outside this control without weakening bound-point
+  failures or suppressing other controls. This is separate from the GIL
+  fix below and does not change the manifest grammar.
+  Scope bypasses carry `acs_point_unbound` in per-interceptor records;
+  that allow label remains diagnostic. The three adapter admission
+  denials use reserved `runtime_error:acs_async_*` reasons attributed
+  to `sdk-adapter`, which policy output cannot imitate.
+  `Saturation` names the admission modes, and read-only `in_flight`,
+  `waiting`, and `closed` properties expose pool state. Each admitted
+  call serializes the context once on the loop thread; workers receive
+  an immutable string.
+  WAIT admission is FIFO, reserves slots before waking callers, and
+  defaults to five seconds. Cancellation or failed submission returns
+  an unused reservation to the next eligible waiter.
+  If the owning loop has already closed, `close()` joins workers
+  synchronously; `aclose()` on a replacement loop performs that recovery
+  off-loop. Cross-loop evaluation remains rejected.
+- All Python `ActivatedPolicy` constructors now accept `telemetry_sink`,
+  `perf_telemetry`, and `limits`, preserving these settings through
+  async evaluation. Both file and in-memory activation apply host limits
+  to bundled dispatchers. File activation also applies them to manifest
+  loading. Existing calls keep their defaults.
+- Regenerated the Python development lockfile from its requirements:
+  it now installs the declared Agent Hooks `0.1.0a5` and maturin
+  `1.15.0`, rather than the stale `0.1.0a3` / `1.8.7` pins.
+
 - A manifest chain that fetches any `extends` URL is now URL sourced, and a
   URL sourced manifest may not read host secrets. A fetched document could
   name a host environment variable through `api_key_env` or one of the

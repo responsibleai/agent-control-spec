@@ -51,7 +51,8 @@ use crate::{
     manifest::Manifest,
     policy::prepare_policy_invocation,
     runtime::{EvaluationResult, PolicyDispatcher, Runtime},
-    AnnotatorDispatcher, InterceptionPoint, JsonValue, RuntimeError,
+    AnnotatorDispatcher, InterceptionPoint, JsonValue, Limits, NoopTelemetrySink, PerfTelemetry,
+    RuntimeError, TelemetrySink,
 };
 use std::sync::Arc;
 
@@ -157,11 +158,37 @@ impl ActivatedPolicy {
         annotations: Arc<dyn AnnotatorDispatcher>,
         policy: Arc<dyn PolicyDispatcher>,
     ) -> Result<Self, RuntimeError> {
-        Self::activate_with(
+        Self::activate_from_memory_with_telemetry_perf_and_limits(
+            manifest_yaml,
+            bundles,
+            annotations,
+            policy,
+            Arc::new(NoopTelemetrySink),
+            PerfTelemetry::default(),
+            Limits::default(),
+        )
+    }
+
+    /// In-memory activation with the same runtime configuration as
+    /// [`Runtime::with_telemetry_perf_and_limits`]. Bundle validation and
+    /// readying are identical to [`Self::activate_from_memory_with`].
+    pub fn activate_from_memory_with_telemetry_perf_and_limits(
+        manifest_yaml: &str,
+        bundles: std::collections::BTreeMap<String, crate::policy::InMemoryRegoBundle>,
+        annotations: Arc<dyn AnnotatorDispatcher>,
+        policy: Arc<dyn PolicyDispatcher>,
+        telemetry: Arc<dyn TelemetrySink>,
+        perf_telemetry: PerfTelemetry,
+        limits: Limits,
+    ) -> Result<Self, RuntimeError> {
+        Self::activate(Runtime::with_telemetry_perf_and_limits(
             manifest_from_memory(manifest_yaml, bundles)?,
             annotations,
             policy,
-        )
+            telemetry,
+            perf_telemetry,
+            limits,
+        )?)
     }
 
     /// Activates an already-parsed `manifest` against the bundled

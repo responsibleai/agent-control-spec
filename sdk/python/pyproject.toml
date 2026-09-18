@@ -29,3 +29,8 @@ features = ["pyo3/extension-module", "pyo3/abi3-py311"]
 module-name = "agent_control_spec._native"
 python-source = "."
 manifest-path = "Cargo.toml"
+
+[tool.pytest.ini_options]
+# Prepending this SDK directory would shadow an installed wheel with the
+# source package, which has no native extension in a clean checkout.
+addopts = ["--import-mode=importlib"]

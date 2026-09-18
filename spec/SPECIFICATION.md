@@ -365,7 +365,7 @@ A runtime failure yields a `deny` verdict whose `reason` is one of the identifie
 | `runtime_error:resolution_invalid_governance` | AGT host side resolution failed to validate a `governance.yaml` during merge. |
 | `runtime_error:resolution_merge_conflict` | AGT host side resolution found two non rule sections that could not be merged. |
 
-Approval binding, resolver failures, streaming assembly, and adapter mediation are host obligations under AGENT-HOOKS-0.1, whose section 11 reserves the corresponding `host_error:*` reasons. The SDK-layer reasons below predate that split and remain reserved only for compatibility while the language SDKs are rebuilt on agent-hooks; new code MUST use the agent-hooks reasons.
+Approval binding, resolver failures, streaming assembly, and adapter mediation are host obligations under AGENT-HOOKS-0.1, whose section 11 reserves the corresponding `host_error:*` reasons. The legacy SDK-layer reasons below remain reserved for compatibility while the language SDKs are rebuilt on agent-hooks; new host orchestration code MUST use the agent-hooks reasons. The explicitly listed `runtime_error:acs_async_*` reasons are adapter-produced admission failures, not emitter-synthesized failures. They distinguish the adapter's capacity, admission deadline and closed state from policy denials. An emitter timeout or invocation exception still uses its corresponding `host_error:*` reason.
 
 An SDK enforcement layer MAY also fail closed with a reserved `runtime_error:` reason that the core runtime never produces. Such a reason is SDK produced and is attributed to its producing layer. The reasons below are reserved for SDK enforcement helpers.
 
@@ -374,9 +374,14 @@ An SDK enforcement layer MAY also fail closed with a reserved `runtime_error:` r
 | `runtime_error:approval_resolver_failed` | `sdk-approval` | An SDK approval resolver raised, returned an unrecognized result, or otherwise failed closed. |
 | `runtime_error:streaming_unsupported` | `sdk-streaming` | An SDK streaming helper could not assemble a complete response snapshot for evaluation and failed closed. |
 | `runtime_error:adapter_unsupported` | `sdk-adapter` | An SDK adapter detected an unmediated framework method or unsupported call shape and failed closed instead of invoking upstream code. |
+| `runtime_error:acs_async_capacity_exceeded` | `sdk-adapter` | The ACS async adapter could not admit a call because its worker or waiter capacity was exhausted. |
+| `runtime_error:acs_async_admission_timeout` | `sdk-adapter` | A queued ACS async call exceeded its admission deadline before native evaluation could start. |
+| `runtime_error:acs_async_closed` | `sdk-adapter` | The ACS async adapter refused a call because closing had started. |
 | `runtime_error:request_invalid` | `sdk-wire` | A JSON wire binding received a malformed intervention request envelope and failed closed before policy input construction. |
 
 A machine readable inventory of every reserved reason with producer attribution lives in [`spec/reserved-reasons.json`](reserved-reasons.json). A policy MUST NOT emit any reason that starts with `runtime_error:`, including the SDK layer reasons.
+
+An intentional scope bypass is an `allow`, not a runtime error. The Python adapter's `acs_point_unbound` label is diagnostic and is not added to the reserved error inventory. A policy can emit that ordinary label; it is not authenticated producer attribution.
 
 ## 17. Host obligations
 

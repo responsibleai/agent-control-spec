@@ -7,13 +7,16 @@
 #![cfg(all(feature = "rego", feature = "default-dispatchers"))]
 
 use agent_control_spec::{
-    ActivatedPolicy, InMemoryRegoBundle, InterceptionPoint, JsonValue, MountedRegoData,
+    dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher},
+    ActivatedPolicy, Decision, InMemoryRegoBundle, InterceptionPoint, JsonValue, Limits,
+    MountedRegoData, PerfTelemetry, TelemetryEvent, TelemetryEventType, TelemetrySink,
 };
 use serde_json::json;
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 const MANIFEST: &str = r#"
@@ -97,6 +100,55 @@ fn a_bundle_held_only_in_memory_decides() {
     let verdict = verdict(&policy);
     assert_eq!(verdict["decision"], json!("allow"));
     assert_eq!(verdict["reason"], json!("permitted"));
+}
+
+#[test]
+fn configured_activation_preserves_limits_and_telemetry() {
+    #[derive(Default)]
+    struct Sink(Mutex<Vec<TelemetryEvent>>);
+
+    impl TelemetrySink for Sink {
+        fn emit(&self, event: TelemetryEvent) {
+            self.0.lock().unwrap().push(event);
+        }
+    }
+
+    for (cap, decision) in [
+        (Limits::default().max_snapshot_bytes, Decision::Allow),
+        (1, Decision::Deny),
+    ] {
+        let sink = Arc::new(Sink::default());
+        let policy = ActivatedPolicy::activate_from_memory_with_telemetry_perf_and_limits(
+            MANIFEST,
+            BTreeMap::from([("gate".to_string(), bundle(true))]),
+            default_annotator_dispatcher(),
+            Arc::new(BindingPolicyDispatcher::new()),
+            sink.clone(),
+            PerfTelemetry::Full,
+            Limits {
+                max_snapshot_bytes: cap,
+                ..Limits::default()
+            },
+        )
+        .expect("configured activation");
+        let result = policy.evaluate(InterceptionPoint::Input, snapshot());
+        assert_eq!(result.verdict.decision, decision);
+        if decision == Decision::Deny {
+            assert_eq!(
+                result.verdict.reason.as_deref(),
+                Some("runtime_error:resource_limit_exceeded")
+            );
+        }
+        let events = sink.0.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type == TelemetryEventType::Decision
+                && event.decision == Some(decision)
+                && event.reason_code == result.verdict.reason
+        }));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == TelemetryEventType::EvaluationTiming));
+    }
 }
 
 /// Data documents mount where the caller says, since no directory
