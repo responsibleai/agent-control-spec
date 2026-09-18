@@ -41,5 +41,9 @@ those are host obligations defined by agent-hooks.
 
 ## Status
 
+Rust builds require Rust 1.89 or newer. See
+[manifest parsing](docs/manifest-parsing.md) for YAML typing rules, host-controlled
+parsing budgets and parser dependency details.
+
 `0.4.0-alpha.3`, an alpha of the re-based runtime. Depends on
 `agent-hooks-sdk 0.1.0-alpha.5`.

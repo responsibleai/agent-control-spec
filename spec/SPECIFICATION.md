@@ -339,7 +339,7 @@ In `enforce` mode the runtime applies the transform and the result is the transf
 
 ## 15. Resource limits
 
-A runtime MUST enforce finite limits while loading file based manifest extends, fetching HTTPS manifest extends, building policy input, serializing policy input, invoking annotators, normalizing policy output, and validating or applying a transform. A host MAY configure those limits. Policy output is measured as canonical JSON before verdict normalization. A transformed policy target produced by an applied transform MUST be reinserted into the request snapshot for snapshot limit validation before the runtime returns it to the host. A limit breach MUST fail closed with `runtime_error:resource_limit_exceeded`, except an individual annotator output limit breach MUST fail closed with `runtime_error:annotation_failed`.
+A runtime MUST enforce finite limits while parsing a manifest document, loading file based manifest extends, fetching HTTPS manifest extends, building policy input, serializing policy input, invoking annotators, normalizing policy output, and validating or applying a transform. A host MAY configure those limits. Policy output is measured as canonical JSON before verdict normalization. A transformed policy target produced by an applied transform MUST be reinserted into the request snapshot for snapshot limit validation before the runtime returns it to the host. A limit breach MUST fail closed with `runtime_error:resource_limit_exceeded`, except an individual annotator output limit breach MUST fail closed with `runtime_error:annotation_failed`.
 
 ## 16. Reserved reasons
 

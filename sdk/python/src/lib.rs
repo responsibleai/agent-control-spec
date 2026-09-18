@@ -534,11 +534,12 @@ create_exception!(
 /// bundled dispatchers and, for Rego, a loadable policy bundle. Fails
 /// closed with the engine's own error text.
 #[pyfunction]
-fn validate_manifest(source: &str) -> PyResult<()> {
+#[pyo3(signature = (source, limits=None))]
+fn validate_manifest(source: &str, limits: Option<Py<PyAny>>) -> PyResult<()> {
     // A dedicated type, so the wrapper never has to infer whether a
     // ValueError came from the grammar or from argument conversion.
-    let manifest =
-        Manifest::parse_yaml_str(source).map_err(|e| ManifestInvalid::new_err(format!("{e}")))?;
+    let manifest = Manifest::parse_yaml_str_with_limits(source, resolve_limits(limits)?)
+        .map_err(manifest_error)?;
     if !manifest.extends.is_empty() {
         // `validate` checks references across the merged document, so
         // judging this fragment alone would reject it for something its
@@ -554,20 +555,30 @@ fn validate_manifest(source: &str) -> PyResult<()> {
         .map_err(|e| ManifestInvalid::new_err(format!("{e}")))
 }
 
+fn manifest_error(error: RuntimeError) -> PyErr {
+    match error {
+        error @ RuntimeError::ManifestInvalid(_) => ManifestInvalid::new_err(format!("{error}")),
+        other => PyValueError::new_err(format!("{other}")),
+    }
+}
+
 /// Validate a manifest file, resolving `extends` first.
 ///
 /// This is the entry point for a manifest that inherits, and it reads
 /// from disk and may fetch URL `extends`, exactly as loading a runtime
 /// would.
 #[pyfunction]
-fn validate_manifest_file(path: &str) -> PyResult<()> {
-    Manifest::from_path(path).map(|_| ()).map_err(|e| match e {
-        // Only a grammar rejection is a verdict on the document.
-        // Everything else, including a breached resource limit and any
-        // variant added later, is a boundary problem.
-        RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
-        other => PyValueError::new_err(format!("{other}")),
-    })
+#[pyo3(signature = (path, limits=None))]
+fn validate_manifest_file(path: &str, limits: Option<Py<PyAny>>) -> PyResult<()> {
+    Manifest::from_path_with_limits(path, resolve_limits(limits)?)
+        .map(|_| ())
+        .map_err(|e| match e {
+            // Only a grammar rejection is a verdict on the document.
+            // Everything else, including a breached resource limit and any
+            // variant added later, is a boundary problem.
+            RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
+            other => PyValueError::new_err(format!("{other}")),
+        })
 }
 
 /// The manifest grammar versions this engine accepts.
@@ -590,9 +601,10 @@ fn supported_manifest_versions() -> Vec<String> {
 /// `validate_manifest` does, so a caller does not have to distinguish
 /// grammar failures by exception class.
 #[pyfunction]
-fn parse_manifest(source: &str) -> PyResult<String> {
-    let manifest =
-        Manifest::parse_yaml_str(source).map_err(|e| ManifestInvalid::new_err(format!("{e}")))?;
+#[pyo3(signature = (source, limits=None))]
+fn parse_manifest(source: &str, limits: Option<Py<PyAny>>) -> PyResult<String> {
+    let manifest = Manifest::parse_yaml_str_with_limits(source, resolve_limits(limits)?)
+        .map_err(manifest_error)?;
     serde_json::to_string(&manifest)
         .map_err(|e| PyRuntimeError::new_err(format!("manifest serialization failed: {e}")))
 }
@@ -608,12 +620,11 @@ fn parse_manifest(source: &str) -> PyResult<String> {
 /// Empty chains and chains whose entries do not parse raise
 /// `ManifestInvalid`.
 #[pyfunction]
-fn merge_manifests(sources: Vec<String>) -> PyResult<String> {
+#[pyo3(signature = (sources, limits=None))]
+fn merge_manifests(sources: Vec<String>, limits: Option<Py<PyAny>>) -> PyResult<String> {
     let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
-    let manifest = Manifest::from_yaml_chain(&refs).map_err(|e| match e {
-        RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
-        other => PyValueError::new_err(format!("{other}")),
-    })?;
+    let manifest = Manifest::from_yaml_chain_with_limits(&refs, resolve_limits(limits)?)
+        .map_err(manifest_error)?;
     serde_json::to_string(&manifest)
         .map_err(|e| PyRuntimeError::new_err(format!("merged manifest serialization failed: {e}")))
 }
@@ -631,31 +642,35 @@ fn merge_manifests(sources: Vec<String>) -> PyResult<String> {
 /// A manifest that uses `extends` returns a single diagnostic pointing
 /// the caller at file-based validation, matching `validate_manifest`.
 #[pyfunction]
-fn validate_manifest_diagnostics(source: &str) -> PyResult<String> {
-    let findings: Vec<Value> = match Manifest::parse_yaml_str(source) {
-        Ok(manifest) => {
-            if !manifest.extends.is_empty() {
-                let msg = "manifest extends other manifests; validation needs the merged \
+#[pyo3(signature = (source, limits=None))]
+fn validate_manifest_diagnostics(source: &str, limits: Option<Py<PyAny>>) -> PyResult<String> {
+    let findings: Vec<Value> =
+        match Manifest::parse_yaml_str_with_limits(source, resolve_limits(limits)?) {
+            Ok(manifest) => {
+                if !manifest.extends.is_empty() {
+                    let msg = "manifest extends other manifests; validation needs the merged \
                            document. Use validate_manifest_file or merge_manifests, both of \
                            which resolve the chain.";
-                vec![wire::diagnostic_json(&RuntimeError::ManifestInvalid(
-                    msg.to_string(),
-                ))]
-            } else {
-                match manifest.validate() {
-                    Ok(()) => Vec::new(),
-                    Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
-                    Err(other) => {
-                        return Err(PyValueError::new_err(format!("{other}")));
+                    vec![wire::diagnostic_json(&RuntimeError::ManifestInvalid(
+                        msg.to_string(),
+                    ))]
+                } else {
+                    match manifest.validate() {
+                        Ok(()) => Vec::new(),
+                        Err(e @ RuntimeError::ManifestInvalid(_)) => {
+                            vec![wire::diagnostic_json(&e)]
+                        }
+                        Err(other) => {
+                            return Err(PyValueError::new_err(format!("{other}")));
+                        }
                     }
                 }
             }
-        }
-        Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
-        Err(other) => {
-            return Err(PyValueError::new_err(format!("{other}")));
-        }
-    };
+            Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+            Err(other) => {
+                return Err(PyValueError::new_err(format!("{other}")));
+            }
+        };
     serde_json::to_string(&findings)
         .map_err(|e| PyRuntimeError::new_err(format!("diagnostics serialization failed: {e}")))
 }
@@ -694,7 +709,8 @@ fn validate_artifacts_diagnostics(manifest_yaml: &str, bundles_json: &str) -> Py
     // failure. The diagnostic shape is owned by the core so every
     // binding renders artifact findings the same way.
     let findings = match Manifest::from_yaml_str(manifest_yaml) {
-        Err(e) => vec![wire::diagnostic_json(&e)],
+        Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+        Err(other) => return Err(PyValueError::new_err(format!("{other}"))),
         Ok(manifest) => match manifest.validate() {
             Err(e) => vec![wire::diagnostic_json(&e)],
             Ok(()) => match ActivatedPolicy::activate_from_memory(manifest_yaml, bundles) {

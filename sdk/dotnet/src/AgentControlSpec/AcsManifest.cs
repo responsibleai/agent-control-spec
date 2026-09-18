@@ -30,6 +30,15 @@ public static class AcsManifest
         Native.ValidateManifest(source);
     }
 
+    /// <summary>Validates source with explicit manifest resource limit overrides.</summary>
+    /// <remarks>Exceeded budgets are boundary failures, not grammar rejections.</remarks>
+    public static void Validate(string source, IReadOnlyDictionary<string, ulong> limits)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(limits);
+        Native.ValidateManifest(source, JsonSerializer.Serialize(limits));
+    }
+
     /// <summary>Validates a manifest file, resolving <c>extends</c> first.</summary>
     /// <remarks>
     /// Use this for a manifest that inherits. It reads from disk and may

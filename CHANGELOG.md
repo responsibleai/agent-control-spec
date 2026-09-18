@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- Replace archived `serde_yaml` and its transpiled libyaml dependency with
+  `serde-saphyr` (caret `1.2`, locked to `1.2.0`) and `granit-parser` `1.2.1`.
+  Building the engine requires Rust 1.89, now checked in CI. Regorus YAML
+  capabilities remain unchanged and may use a different YAML implementation.
+- YAML manifest parsing rejects duplicate keys, unsupported tags (including
+  non-specific `!`), non-finite numbers and positional sequences in place of
+  structs. YAML merge keys remain ordinary keys. Typed string fields and mapping
+  keys spelled like numbers, booleans or null must be quoted; an empty plain
+  value is null, not an empty string. Use `policy_target: ""` to leave an overlay
+  target unset. Legacy spellings such as `010`, `1_000`, `0X1F` and `tRuE` retain
+  their string types, including when used as keys. Numeric fields do not coerce
+  these strings or ordinary quoted strings.
+- Explicit core tags determine scalar types: `!!int "1"` is numeric and
+  `!!null ""` or an empty `!!null` block is null. An optional string set to an
+  explicitly tagged null is absent. Parsing unsigned `-0` yields zero (fields
+  requiring positive values still reject it at validation). A leading UTF-8 BOM
+  and tabs separating mapping colons from values are accepted. Unknown reserved
+  directives, space-then-tab indentation and tabs after sequence dashes are
+  accepted; a tab starting block indentation and embedded BOMs remain invalid.
+  `intervention_points: null` remains invalid, unlike an omitted or empty map.
+  Diagnostics retain field paths and
+  line/column locations without source snippets or parser-configuration advice.
+- Manifest source and expanded scalar bytes are bounded by
+  `Limits.max_merged_manifest_bytes` (1 MiB), also used for composed manifests.
+  Text-chain composition intentionally checks the serialized combined size:
+  individually admissible overlays can exceed the cap when merged.
+  Local YAML **and JSON** reads stop after this cap plus one byte. YAML budgets
+  default to depth 64 (formerly the old parser's fixed 128), 100,000 expanded
+  nodes including keys, 300,000 scanned/replayed events excluding comments, 50,000 aliases and
+  anchors, and 10,000 retained anchor event copies. Each is configurable through
+  a dedicated `max_manifest_*` limit; manifest depth is independent of
+  `max_policy_input_depth`. Every anchor retains at least one event, so the
+  retained-event budget limits default anchor definitions to at most 10,000,
+  even though the nominal anchor limit is 50,000.
+  Alias reuse is not limited by a ratio heuristic.
+  Exceeded budgets retain `runtime_error:resource_limit_exceeded`, not grammar
+  rejection, across Rust, Python, Node, FFI and .NET text validation, including
+  manifest and artifact diagnostics. Budget messages name the exceeded count
+  and limit field with at most one location, not parser debug variants or
+  repeated alias locations. Diagnostics omit unknown path segments and the
+  root placeholder without stripping punctuation from actual keys.
+  Python/Node parse, validate and merge exceptions consistently retain the
+  `runtime_error:manifest_invalid:` prefix; findings carry a separate code.
+- Specify manifest parsing among the activities that runtimes MUST bound;
+  engine limit fields and defaults remain documented implementation choices.
+- Fix the existing no-default-features build by making manifest Rego adapter
+  path validation available without enabling Rego or OPA dispatchers.
+- Add Rust `parse_yaml_str_with_limits`, `from_yaml_str_with_limits` and
+  `from_yaml_chain_with_limits`; Python/Node manifest tooling accepts optional
+  limits, FFI has additive `_with_limits` text functions, and .NET
+  `AcsManifest.Validate` and `AcsManifestTools.Parse`/`Merge` accept a limits dictionary. Existing no-options calls
+  use defaults. Rust `Limits` gains six fields; exhaustive struct literals must
+  supply them or use `..Limits::default()`. See [manifest parsing](docs/manifest-parsing.md) for contracts and
+  dependency evidence.
 - A manifest chain that fetches any `extends` URL is now URL sourced, and a
   URL sourced manifest may not read host secrets. A fetched document could
   name a host environment variable through `api_key_env` or one of the

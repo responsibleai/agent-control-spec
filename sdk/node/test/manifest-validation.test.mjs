@@ -6,7 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 
 const require = (await import("node:module")).createRequire(import.meta.url);
-const { validateManifest, validateManifestFile, supportedManifestVersions, ManifestInvalidError } =
+const { validateManifest, validateManifestFile, supportedManifestVersions, ManifestInvalidError,
+  parseManifest, mergeManifests, validateManifestDetailed, validateArtifacts } =
   require("../dist/index.js");
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -19,6 +20,24 @@ test("a valid manifest is accepted", () => {
   assert.equal(validateManifest(valid), undefined);
 });
 
+test("text resource limits stay boundary errors and can be configured", () => {
+  const source = valid + "\n# " + "x".repeat(1_048_576);
+  for (const operation of [
+    validateManifest, parseManifest, validateManifestDetailed,
+    (text, limits) => mergeManifests([text], limits),
+  ]) {
+    assert.throws(() => operation(source), (error) => {
+      assert.ok(!(error instanceof ManifestInvalidError));
+      assert.match(error.message, /runtime_error:resource_limit_exceeded/);
+      return true;
+    });
+    operation(source, { max_merged_manifest_bytes: 2_097_152 });
+    assert.throws(() => operation(valid, { max_manifest_nodes: 1 }),
+      /runtime_error:resource_limit_exceeded/);
+    operation(valid, { max_policy_input_depth: 0 });
+  }
+});
+
 test("an unsupported version is rejected with the engine message", () => {
   const source = valid.replace('"0.4.0-alpha.1"', '"0.3.1-beta"');
   assert.throws(() => validateManifest(source), (error) => {
@@ -26,6 +45,37 @@ test("an unsupported version is rejected with the engine message", () => {
     assert.match(error.message, /0\.3\.1-beta/);
     return true;
   });
+});
+
+test("diagnostics throw resource failures instead of returning findings", () => {
+  for (const operation of [validateManifestDetailed, validateArtifacts]) {
+    for (const source of [
+      valid + "\n# " + "x".repeat(1_048_576),
+      "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: " + "[".repeat(65) + "0" + "]".repeat(65),
+    ]) {
+      assert.throws(() => operation(source), (error) => {
+        assert.ok(!(error instanceof ManifestInvalidError));
+        assert.match(error.message, /^runtime_error:resource_limit_exceeded:/);
+        return true;
+      });
+    }
+    assert.equal(operation("x: [")[0].code, "runtime_error:manifest_invalid");
+  }
+});
+
+test("parse and validation failures keep the runtime reason prefix", () => {
+  for (const operation of [validateManifest, parseManifest, (source) => mergeManifests([source])]) {
+    assert.throws(() => operation("x: ["), (error) => {
+      assert.match(error.message, /^runtime_error:manifest_invalid:/);
+      return true;
+    });
+  }
+  for (const operation of [validateManifest, (source) => mergeManifests([source])]) {
+    assert.throws(() => operation(valid.replace('"0.4.0-alpha.1"', '"0.3.1-beta"')), (error) => {
+      assert.match(error.message, /^runtime_error:manifest_invalid:/);
+      return true;
+    });
+  }
 });
 
 test("the retired $policy_target root is rejected", () => {

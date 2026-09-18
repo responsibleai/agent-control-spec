@@ -24,6 +24,7 @@ mod hex;
 pub mod interceptor;
 pub mod limits;
 pub mod manifest;
+mod manifest_deserializer;
 #[cfg(feature = "opa")]
 pub mod opa;
 pub mod paths;

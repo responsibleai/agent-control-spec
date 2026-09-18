@@ -857,8 +857,8 @@ fn merge_adapter_config(
 /// Extra Rego data paths declared through `adapter_config`, under either the
 /// `data` or the `data_paths` key. Shared by both bundled Rego dispatchers so
 /// the in-process `regorus` path and the legacy `opa` CLI path accept exactly
-/// the same manifest surface.
-#[cfg(any(feature = "rego", feature = "opa"))]
+/// the same manifest surface. Manifest-only hosts also use this to reject
+/// unresolved relative paths before in-memory activation.
 pub(crate) fn rego_adapter_data_paths(
     adapter_config: &BTreeMap<String, JsonValue>,
 ) -> Result<Vec<std::path::PathBuf>, RuntimeError> {
@@ -871,7 +871,6 @@ pub(crate) fn rego_adapter_data_paths(
     Ok(paths)
 }
 
-#[cfg(any(feature = "rego", feature = "opa"))]
 fn push_adapter_data_paths(
     key: &str,
     value: &JsonValue,
@@ -899,7 +898,6 @@ fn push_adapter_data_paths(
     }
 }
 
-#[cfg(any(feature = "rego", feature = "opa"))]
 fn push_data_path(
     key: &str,
     path: &str,
