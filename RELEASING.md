@@ -35,3 +35,20 @@ manifests (`scripts/check-version-consistency.py`, enforced in CI).
 Registry credentials: OIDC trusted publishing everywhere; the one-time
 first-publish bootstraps for crates.io and npm are described in the
 `release.yml` header. Publish jobs run in the `release` environment.
+
+## Python documentation baseline
+
+The Python CI job runs the documentation examples against both the checkout
+build and a published package. The consumer-side pin lives in
+`examples/python_composition/requirements.txt`; it deliberately may lag the
+version in `pyproject.toml`.
+
+After the new package is available on PyPI, update that pin in a follow-up PR,
+run `python -m unittest discover -s examples/python_composition -v` in a clean
+environment, and refresh the tested-version statement in the example README.
+Do not advance the consumer pin in the pre-publication version bump: CI
+cannot install a release that does not exist yet.
+
+When changing `sdk/python/requirements-dev.in`, regenerate its lock with
+`uv pip compile requirements-dev.in -o requirements-dev.lock --universal`
+from `sdk/python/`. The checkout tests use that lock, not the consumer pin.

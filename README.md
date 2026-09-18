@@ -41,5 +41,8 @@ those are host obligations defined by agent-hooks.
 
 ## Status
 
+Python: [SDK quickstart](sdk/python/README.md) and
+[composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
+
 `0.4.0-alpha.3`, an alpha of the re-based runtime. Depends on
 `agent-hooks-sdk 0.1.0-alpha.5`.

@@ -61,6 +61,12 @@
 
 ## 0.4.0-alpha.3
 
+- Python interception is synchronous in this release. `AcsInterceptor`
+  holds the GIL during evaluation; `ActivatedPolicy.evaluate()` releases it.
+  The GIL-release fix listed under Unreleased and the async-interceptor
+  proposal [#68](https://github.com/responsibleai/agent-control-spec/pull/68)
+  are not included in this release.
+
 - Python `__version__` is read from the installed distribution instead of being
   written into `__init__.py`. The literal was a seventh version surface, covered
   by neither `scripts/check-version-consistency.py` nor RELEASING.md, so it held

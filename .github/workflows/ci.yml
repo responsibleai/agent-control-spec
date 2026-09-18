@@ -54,8 +54,17 @@ jobs:
         run: |
           uv pip install --system -r sdk/python/requirements-dev.lock
           uv pip install --system --no-deps --no-build-isolation -e ./sdk/python
+      - run: uv pip check --system
       - run: ruff format --check sdk/python scripts && ruff check sdk/python scripts
       - run: pytest sdk/python/tests -v
+      - name: Test documentation with the checkout build
+        run: python -m unittest discover -s examples/python_composition -v
+      - name: Test documentation with the published Python packages
+        run: |
+          python -m venv "$RUNNER_TEMP/acs-docs"
+          "$RUNNER_TEMP/acs-docs/bin/python" -m pip install -r examples/python_composition/requirements.txt
+          "$RUNNER_TEMP/acs-docs/bin/python" -m pip check
+          "$RUNNER_TEMP/acs-docs/bin/python" -m unittest discover -s examples/python_composition -v
 
   # Cross-platform build+test of the Rust workspace plus one binding's
   # suite (Python: the maturin wheel builds and pytest runs on every OS).

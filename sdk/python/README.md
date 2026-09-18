@@ -6,59 +6,124 @@ policy decision engine that plugs into any
 interceptor.
 
 ```bash
-pip install --pre agent-control-spec
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --pre agent-control-spec
+python -m pip check
 ```
+
+ACS requires Python 3.11 or newer. `--pre` includes prereleases.
+Use normal dependency resolution, not `--no-deps`.
+
+The example files are not included in the wheel. From the repository root,
+run the complete
+[two-policy example](https://github.com/responsibleai/agent-control-spec/blob/main/examples/python_composition/README.md):
+
+```bash
+python examples/python_composition/compose.py
+python -m unittest discover -s examples/python_composition -v
+```
+
+It includes both manifests, their Rego policies, an evaluation context,
+and an inert operation. For the composition logic, see
+[ACS and Agent Hooks](https://github.com/responsibleai/agent-control-spec/blob/main/docs/ACS-AND-AGENT-HOOKS.md).
+
+The Python snippets below build on one another. Run them in the same
+interpreter from the repository root. First, register one policy:
 
 ```python
 from agent_hooks import InterceptionEmitter, EnforcementMode
 from agent_control_spec import AcsInterceptor
 
 emitter = InterceptionEmitter(mode=EnforcementMode.ENFORCE)
-emitter.register(AcsInterceptor("manifest.yaml"), "acs")
+emitter.register(AcsInterceptor("examples/python_composition/limits.yaml"), "limits")
 ```
 
 The manifest binds policies (Rego and Cedar through their built-in
 evaluators, or `test` doubles) to interception points; the
 runtime evaluates each context and returns an agent-hooks verdict.
-Engine failures never raise into the host loop: they normalize into
-fail-closed `deny` verdicts with `runtime_error:*` reasons.
+Evaluation failures normalize into fail-closed `deny` verdicts with
+`runtime_error:*` reasons. Construction raises on loading errors, and
+`intercept()` raises if the context cannot be serialized. An unknown or
+missing point name in that context returns a fail-closed deny.
+Do not catch failures and return an allow.
 
 ## Activating a policy version
 
 A host that pins a policy version and serves traffic against it wants
 the expensive work done once, at a moment of its choosing.
 `ActivatedPolicy` reads the manifest, loads every Rego module and data
-document, and compiles the entrypoint each intervention point queries;
-every later `evaluate` costs no I/O and no compile.
+document, and compiles the entrypoint each intervention point queries,
+avoiding repeated bundle loading and compilation.
 
 Compiling is bounded by the eval timeout. A policy too slow to compile in
 that window activates anyway, not necessarily fully readied, and pays compilation
 on its first decision instead.
 
-
 ```python
+from pathlib import Path
 from agent_control_spec import ActivatedPolicy
+from agent_hooks import AgentContextBuilder
 
-policy = ActivatedPolicy("manifest.yaml")  # once per policy version
-verdict = policy.evaluate("input", context)  # many times, hot path
-policy.intervention_points  # what this version governs
+manifest_path = Path("examples/python_composition/limits.yaml")
+policy = ActivatedPolicy(str(manifest_path))  # once per policy version
+builder = AgentContextBuilder(
+    agent_id="refund-assistant", framework="example", session_id="evaluation"
+)
+for amount in (40, 150):
+    context = builder.pre_tool_call(
+        call_id=f"refund-{amount}",
+        name="issue_refund",
+        args={"order_id": "A-1001", "amount": amount},
+    )
+    verdict = policy.evaluate("pre_tool_call", context)
+    print(verdict.to_wire())
 ```
+
+This returns `allow` for 40 and a `transform` setting `$target.amount`
+to 100 for 150. Evaluation alone neither changes the context nor runs
+the operation. The host must prevent denied calls and apply permitted
+transforms. An Agent Hooks emitter applies them and returns
+`outcome.target`; the operation must use that value. `emit()` raises
+`InterceptionBlocked` on denial. The complete example handles both paths.
+In `EVALUATE_ONLY` mode, denies and transforms are recorded but not enforced.
+
+`warn` policy output becomes an allow carrying warnings; `escalate`
+becomes a deny carrying an `approval` block. Without a resolver, an
+enforcing host treats a liftable deny as a deny.
 
 The instance is immutable and evaluation releases the GIL, so one
 instance serves concurrent threads. A policy edit on disk needs a new
 activation: the host decides when a version changes. Evaluation stays
 fail-closed, including for a point the version does not bind; only
 boundary problems (an unknown point name, a context that will not
-serialize) raise.
+serialize) raise. A known unbound point returns
+`runtime_error:intervention_point_unknown`. Read
+`policy.intervention_points` or `policy.governs(point)` to inspect an
+activation's scope. These methods belong to `ActivatedPolicy`, not
+`AcsInterceptor`. When registering interceptors, either bind every point
+the emitter receives or use a dedicated emitter for each point, containing
+the controls that bind it.
 
-A service that keeps manifests and Rego in a database has no directory
-to point a manifest at. `from_memory` takes both as values, so nothing
-is staged to a temporary directory per activation:
+`evaluate()` and `AcsInterceptor.intercept()` are synchronous. GIL
+release is not an asyncio yield, and the emitter's timeout cannot
+preempt an inline synchronous call. In an async service, offload
+evaluation with bounded admission and drain outstanding work at shutdown;
+cancelling the await does not stop the worker. This release does not provide
+an async interceptor.
+
+The supplied policies have no annotators. A manifest that opts into
+bundled annotators can make network requests during evaluation.
+
+`from_memory` takes manifest text and Rego sources as values, so nothing
+is staged to a temporary directory per activation. Using the files above:
 
 ```python
+manifest_yaml = manifest_path.read_text()
+rego_source = (manifest_path.parent / "policy" / "limits.rego").read_text()
 policy = ActivatedPolicy.from_memory(
     manifest_yaml,
-    {"gate": {"modules": {"gate.rego": rego_source}}},
+    {"limits": {"modules": {"limits.rego": rego_source}}},
 )
 ```
 
@@ -75,9 +140,10 @@ or resolving a policy bundle. Useful when generating or migrating manifests:
 from agent_control_spec import ManifestInvalidError, validate_manifest
 
 try:
-    validate_manifest(source)
+    validate_manifest(manifest_path.read_text())
 except ManifestInvalidError as error:
-    print(error)  # names the offending field
+    print(error)  # names the offending field; do not serve this version
+    raise
 ```
 
 A manifest that uses `extends` cannot be judged from its own source,
@@ -87,14 +153,15 @@ path instead and the chain is resolved first:
 ```python
 from agent_control_spec import validate_manifest_file
 
-validate_manifest_file("manifest.yaml")
+validate_manifest_file(str(manifest_path))
 ```
 
 `supported_manifest_versions()` reports the grammar versions this
 engine accepts. Read it rather than hardcoding the set.
 
-Trust model: a cooperative contract, not a security boundary — the host
-is fully trusted. See the repository's SECURITY.md.
+Trust model: a cooperative contract, not a security boundary. The host
+is fully trusted. See the
+[Agent Hooks threat model](https://github.com/responsibleai/agent-hooks/blob/main/docs/THREAT-MODEL.md).
 
 Benchmark: `python sdk/python/bench/activation_bench.py` runs against
 `examples/bank_agent`, reporting activation cost, first-evaluate cost,
