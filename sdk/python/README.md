@@ -93,6 +93,39 @@ validate_manifest_file("manifest.yaml")
 `supported_manifest_versions()` reports the grammar versions this
 engine accepts. Read it rather than hardcoding the set.
 
+## Authoring inspection
+
+This checkout adds an in-process Rego parser for Python authoring tools:
+
+```python
+from agent_control_spec.authoring import REGORUS_AST_VERSION, parse_rego_ast
+
+policies = parse_rego_ast("package example\nallow if { input.approved == true }\n")
+assert REGORUS_AST_VERSION == "0.12.0"
+module = policies[0]["ast"]
+```
+
+The helper calls Regorus's `add_policy` and `get_ast_as_json` without evaluating
+the policy, fetching imports or reading files. It releases the GIL and raises
+`ValueError` for malformed source or exceeded authoring limits. Input is capped
+at 64 KiB and serialized output at 8 MiB; Regorus's parser limits also apply.
+Before parsing, a conservative guard rejects nesting beyond 12 levels, more
+than 1,024 structural tokens, or more than 262,144 depth-weighted byte units.
+Each byte costs `2^nesting_depth` units. Delimiters inside strings and comments
+do not change depth, but their bytes still count toward the work budget.
+This bounds admission to parser paths that can otherwise backtrack excessively
+on tiny nested arrays. Budget failures are ordinary `ValueError` exceptions.
+
+The returned structure is the pinned Regorus AST, not a stable ACS wire format.
+It is separate from the runtime API and intended for inspection rather than
+cross-SDK interchange or persistent artifacts. The generator uses it instead
+of an external OPA installation.
+
+This helper first ships in SDK `0.4.0a4`; it is not in the previously published
+0.4.0a3 wheel. Until alpha.4 is published, install the SDK from this checkout
+alongside the generator. Tests compare the compiled Regorus version marker with
+the exact Cargo requirement and resolved lockfile to catch dependency-pin drift.
+
 Trust model: a cooperative contract, not a security boundary — the host
 is fully trusted. See the repository's SECURITY.md.
 

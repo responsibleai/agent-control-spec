@@ -106,6 +106,11 @@ NOT_A_CAPABILITY = {
     "reserved_reason": "constants, appear in a verdict",
 }
 
+# Binding-only authoring decision: Python's parse_rego_ast is tooling, not an
+# engine/wire capability. It needs a pinned Regorus AST layout and is consumed
+# by the Python generator. Other bindings do not expose it; adding an engine
+# authoring API later would require a normal capability entry below.
+
 # A capability is reachable when each binding names it or the entry
 # point that carries it. Matching by name alone would miss the cases
 # where a binding renames on the way out, so state the token to look for.

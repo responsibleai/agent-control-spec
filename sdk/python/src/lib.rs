@@ -1103,6 +1103,98 @@ fn default_limits(py: Python<'_>) -> PyResult<Py<PyDict>> {
     Ok(limits_defaults_map(py)?.unbind())
 }
 
+/// Bound parser backtracking and AST depth before entering Regorus. In 0.12,
+/// nested array/comprehension alternatives can reparse the same text many times,
+/// and long reference chains are not covered by its expression-depth guard.
+fn check_authoring_complexity(source: &str) -> PyResult<()> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut comment = false;
+    let mut word = false;
+    let mut depth = 0_u32;
+    let mut operations = 0_u32;
+    let mut work = 0_u32;
+    for byte in source.bytes() {
+        // Charge literal/comment bytes too: backtracking may rescan them.
+        work += 1 << depth;
+        if work > 262_144 {
+            return Err(PyValueError::new_err(
+                "Rego authoring source exceeds parsing complexity budget",
+            ));
+        }
+        if comment {
+            comment = byte != b'\n';
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if delimiter == b'"' && byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        let word_byte = byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80;
+        if word_byte && !word {
+            // Include identifiers/keywords: repeated `in` can also construct
+            // a deep AST without adding parentheses or punctuation.
+            operations += 1;
+        }
+        word = word_byte;
+        match byte {
+            b'#' => comment = true,
+            b'"' | b'`' => quote = Some(byte),
+            b'[' | b'{' | b'(' => {
+                depth += 1;
+                operations += 1;
+                if depth > 12 {
+                    return Err(PyValueError::new_err(
+                        "Rego authoring nesting exceeds 12 levels",
+                    ));
+                }
+            }
+            b']' | b'}' | b')' => depth = depth.saturating_sub(1),
+            b'.' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'!' | b'<' | b'>' | b'='
+            | b':' => operations += 1,
+            _ => {}
+        }
+        if operations > 1024 {
+            return Err(PyValueError::new_err(
+                "Rego authoring source exceeds 1024 structural tokens",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parse one source string without loading files, compiling, or evaluating it.
+/// The serialized AST is Regorus-version-specific, not part of the ACS wire contract.
+#[pyfunction]
+fn parse_rego_ast(py: Python<'_>, source: &str) -> PyResult<String> {
+    if source.len() > 65_536 {
+        return Err(PyValueError::new_err(
+            "Rego authoring source exceeds 65536 bytes",
+        ));
+    }
+    check_authoring_complexity(source)?;
+    let source = source.to_owned();
+    py.detach(move || {
+        let mut engine = regorus::Engine::new();
+        engine
+            .add_policy("authoring.rego".into(), source)
+            .map_err(|err| PyValueError::new_err(format!("invalid Rego source: {err}")))?;
+        let ast = engine
+            .get_ast_as_json()
+            .map_err(|err| PyRuntimeError::new_err(format!("AST serialization failed: {err}")))?;
+        if ast.len() > 8 * 1024 * 1024 {
+            return Err(PyValueError::new_err("Rego authoring AST exceeds 8 MiB"));
+        }
+        Ok(ast)
+    })
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeHandle>()?;
@@ -1138,5 +1230,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(merge_manifests, m)?)?;
     m.add_function(wrap_pyfunction!(supported_manifest_versions, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_rego_ast, m)?)?;
+    m.add("REGORUS_AST_VERSION", "0.12.0")?;
     Ok(())
 }
