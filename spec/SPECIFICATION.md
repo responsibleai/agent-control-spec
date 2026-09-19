@@ -227,7 +227,7 @@ ACS defines no other in manifest policy language.
 
 ### 12.2 Bindings
 
-An intervention point binds one policy through `policy.id`. The binding MAY add a `query` and other host defined fields. The binding `id` MUST NOT be empty. A `rego` policy MUST have a query available on either the binding or the definition. A binding that names a policy not present in `policies` MUST fail closed with `runtime_error:manifest_invalid`.
+An intervention point binds one policy through `policy.id`. The binding MAY add a `query` and other host defined fields, except for a `cedar` policy, whose binding carries only `id` (section 12.4). The binding `id` MUST NOT be empty. A `rego` policy MUST have a query available on either the binding or the definition. A binding that names a policy not present in `policies` MUST fail closed with `runtime_error:manifest_invalid`.
 
 ### 12.3 Dispatcher boundary
 
@@ -244,20 +244,31 @@ A `cedar` policy targets the Cedar policy language (`https://www.cedarpolicy.com
 | `policy_path` | exactly one of `policy_set` or `policy_path` | string | Filesystem path to a `.cedar` policy file or directory. |
 | `entities_path` | no | string | Path to a Cedar entities JSON file. |
 | `schema_path` | no | string | Path to a Cedar schema JSON file. |
-| `query` | no | object | Cedar request template described below. |
 
-A binding MAY add `principal`, `action`, `resource`, and `context` accessors that build the Cedar `Request` from the policy input. The Cedar runtime requires a `Request{principal, action, resource, context}`. The default mapping when no explicit binding is given is the following.
+The Cedar runtime requires a `Request{principal, action, resource, context}`. The runtime builds it from the policy input as follows. The mapping is fixed. A `query` member on a cedar policy definition, and any member other than `id` on a binding to a cedar policy, MUST fail closed with `runtime_error:manifest_invalid`.
 
 | Cedar field | Policy input source | Type |
 | --- | --- | --- |
 | `principal` | `$pi.snapshot.envelope.agent.id` resolved to `Agent::"<id>"` | `Agent` entity |
 | `action` | The intervention point name mapped as `Action::"<ip>"` | `Action` entity |
 | `resource` | `$pi.tool` projected as `Tool::"<name>"` at tool intervention points, otherwise `$pi.policy_target` projected as `PolicyTarget::"<kind>"` | entity |
-| `context` | `$pi.snapshot` excluding the `envelope` block, plus each `$pi.annotations` entry keyed as `annotations.<name>` | record |
+| `context` | Every member of `$pi.snapshot`, the `envelope` block included, plus `$pi.annotations` as one nested record under `annotations` | record |
 
-Hosts MAY override the mapping through the `query` member on either the policy definition or the binding. The source paths match the `envelope` shape in [`spec/agt/AGT-SNAPSHOT-1.0.md`](agt/AGT-SNAPSHOT-1.0.md).
+A policy reads the snapshot at `context.<member>`, for example `context.tool_call.args.host` or `context.envelope.budgets.tool_call_count`, and an annotator's output at `context.annotations.<name>`. The `annotations` record is always present, and empty when no annotator ran. `$pi.policy_target`, `$pi.tool` and `$pi.intervention_point` are not part of the context. The source paths match the `envelope` shape in [`spec/agt/AGT-SNAPSHOT-1.0.md`](agt/AGT-SNAPSHOT-1.0.md).
 
-Cedar's authorization result maps to a verdict. `Allow` maps to an `allow` verdict. `Deny` maps to a `deny` verdict whose `reason` is the first contributing policy id. A Cedar policy author MAY produce `warn`, `escalate`, or `transform` by attaching an `advice` annotation whose JSON matches this shape.
+JSON values translate into Cedar values as follows.
+
+- A JSON integer becomes a Cedar `Long`. An integer outside the signed 64 bit range MUST fail closed.
+- Every other JSON number becomes a Cedar `decimal`. A Cedar decimal carries four fractional digits, so the value is rounded to the nearest such value, ties away from zero: `0.123456` becomes `decimal("0.1235")`. A value outside the decimal range (about ±922337203685477.58) MUST fail closed. A policy compares a decimal with `decimal("...")` literals through the `lessThan`, `greaterThan` and related methods. Comparing it with a `Long` is a type error.
+- A JSON `null` is dropped, whether it is a record member or a set element. A policy tests for the member with `has`.
+- A record key that the Cedar JSON format reserves (`__entity`, `__extn`, `__expr`) MUST fail closed. Passing one through would let a snapshot or an annotator forge an entity reference or an extension value.
+- Strings, booleans, records (JSON objects) and sets (JSON arrays) pass through.
+
+Every translation failure, and any value the Cedar runtime still rejects, MUST fail closed with `runtime_error:policy_invocation_failed` and a detail that names the offending key. A dispatcher MUST NOT evaluate with an empty or partial context in place of one it could not build.
+
+When `schema_path` is set, the Cedar runtime checks the request against the schema. The schema MUST declare the context shape above for every action it lists. A schema whose action declares no context rejects every request, because the context is never empty. Members the snapshot may omit are declared with `"required": false`, and members that arrive as floats as `{"type": "Extension", "name": "decimal"}`.
+
+Cedar's authorization result maps to a verdict. Cedar reports the policies that contributed to its decision as a set; the runtime orders them by their position in the policy text. `Deny` maps to a `deny` verdict whose `reason` is the `@id` annotation of the first contributing `forbid`. A contributing policy without `@id` yields its Cedar policy id, which is `policy<n>` for the n-th policy in the text, counted from zero. When no policy contributed, the reason is `no_matching_policy`. `Allow` maps to an `allow` verdict, unless a contributing `permit` carries an `advice` annotation; the first such permit supplies the advice. An author who attaches advice to several permits that can match one request SHOULD declare the most restrictive first. A Cedar policy author MAY produce `warn`, `escalate`, or `transform` by attaching an `advice` annotation whose JSON matches this shape.
 
 ```json
 {
@@ -268,7 +279,7 @@ Cedar's authorization result maps to a verdict. `Allow` maps to an `allow` verdi
 }
 ```
 
-The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that does not match the schema MUST fail closed with `runtime_error:policy_output_invalid`. A `transform` advice without a `transform` body MUST fail closed with `runtime_error:transform_invalid`, and a `transform` advice whose `path` is outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`.
+The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that is not JSON or does not match the schema MUST fail closed with `runtime_error:policy_output_invalid`. A `transform` advice without a `transform` body MUST fail closed with `runtime_error:transform_invalid`, and a `transform` advice whose `path` is outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`.
 
 The runtime offers an optional bundled `cedar` dispatcher that links the Cedar Rust crate when the `cedar` build feature is enabled. A host MAY supply its own dispatcher instead. A dispatcher error MUST fail closed with `runtime_error:policy_invocation_failed`.
 

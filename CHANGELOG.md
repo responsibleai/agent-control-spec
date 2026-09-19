@@ -73,6 +73,39 @@
   Generator iteration warnings cover wildcard and unbound-index lookups across
   collections. Leading unary-minus condition bodies are rejected before they can
   attach to a generated guard across a newline.
+- The bundled Cedar dispatcher evaluated every request with an empty
+  context. Specification 12.4 says the context is the policy input snapshot
+  plus the annotations, and every context-gated `forbid` in the shipped
+  `policy/cedar-lib` reads it (`context.tool_call.args.host`,
+  `context.envelope.budgets.tool_call_count`,
+  `context.annotations.confidence.score`). With an empty context a `has`
+  guarded `forbid` was never true, so the egress, budget, content hash,
+  pattern, confidence and IFC gates failed open; an unguarded read failed
+  closed with `runtime_error:policy_invocation_failed`; and a context-gated
+  `permit` never allowed. The dispatcher also mapped every `Deny` to the
+  reason `no_matching_policy` and ignored `@advice`, so the library's
+  escalate, transform and warn permits were plain allows. The dispatcher
+  now builds the request context from the snapshot, `envelope` included,
+  with the annotations as one nested `annotations` record, and passes it to
+  Cedar; the deny reason is the `@id` of the first contributing `forbid` in
+  declaration order (its Cedar policy id without `@id`, `no_matching_policy`
+  when nothing contributed); and `@advice` on the first contributing
+  `permit` is translated exactly as a host dispatcher's advice is. JSON
+  floats become Cedar `decimal`, rounded to four fractional digits with
+  ties away from zero; nulls are dropped; integers outside the `Long`
+  range, floats outside the decimal range, and the reserved Cedar JSON keys
+  `__entity`, `__extn` and `__expr` fail closed with an error that names
+  the key. With a `schema_path`, the schema must now declare the context
+  shape for each action, since the context is never empty. Specification
+  12.4 is updated with the mapping, and the `query` request template it
+  allowed is gone: no dispatcher ever read it, so a cedar policy that sets
+  `query`, or a cedar binding with any field other than `id`, now fails
+  with `runtime_error:manifest_invalid` instead of being ignored.
+  `CedarRequest.context_keys` is replaced by `CedarRequest.context`, the
+  Cedar JSON value the mapping produces, and `CedarPolicyInvocation` loses
+  its never populated `query` field. A `cedar-lib` CI job runs the
+  library's own Cedar test corpus with a pinned, checksum-verified
+  `cedar-policy-cli`. Closes #83.
 - A manifest chain that fetches any `extends` URL is now URL sourced, and a
   URL sourced manifest may not read host secrets. A fetched document could
   name a host environment variable through `api_key_env` or one of the

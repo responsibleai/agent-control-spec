@@ -11,11 +11,18 @@
 //! 2. [`CedarTestDispatcher`] is a deterministic test double, always
 //!    compiled, that parses a small JSON pseudo-cedar policy set, builds a
 //!    cedar [`CedarRequest`] from the policy input per D3.2, and emits an
-//!    `allow`, `deny`, or advice-translated verdict per D3.3.
+//!    `allow`, `deny`, or advice-translated verdict per D3.3. It matches on
+//!    principal, action and resource only; the context it builds is not
+//!    consulted.
 //! 3. [`CedarBuiltinDispatcher`] is the AGT M2.S5 D7 feature-gated bundled
-//!    dispatcher backed by the upstream `cedar-policy` crate. It is gated
-//!    behind the `cedar` Cargo feature so callers that do not want the
-//!    heavyweight cedar dep can opt out at build time.
+//!    dispatcher backed by the upstream `cedar-policy` crate. It evaluates
+//!    the full request, context included, and maps the answer to a verdict
+//!    per §12.4. It is gated behind the `cedar` Cargo feature so callers
+//!    that do not want the heavyweight cedar dep can opt out at build time.
+//!
+//! [`build_cedar_request`] is the one place that implements the §12.4
+//! request mapping. Both dispatchers, and any host dispatcher that wants
+//! the same request, go through it.
 //!
 //! The dispatcher returns a verdict-shaped `JsonValue` exactly like the OPA
 //! dispatcher does, and the runtime then normalizes the value via
@@ -38,15 +45,20 @@ pub trait CedarPolicyDispatcher: Send + Sync {
         -> Result<JsonValue, RuntimeError>;
 }
 
-/// Cedar request derived from the policy input per AGT D3.2 default mapping.
-/// The dispatcher is responsible for translating this into the cedar crate's
-/// native `Request` type when evaluating against the upstream engine.
+/// Cedar request derived from the policy input per `SPECIFICATION.md`
+/// §12.4. The dispatcher is responsible for translating this into the
+/// cedar crate's native `Request` type when evaluating against the
+/// upstream engine.
+///
+/// `context` is the request context as a record in Cedar's JSON value
+/// format, ready for `cedar_policy::Context::from_json_value`. See
+/// [`build_cedar_request`] for the translation rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CedarRequest {
     pub principal: CedarEntity,
     pub action: CedarEntity,
     pub resource: CedarEntity,
-    pub context_keys: Vec<String>,
+    pub context: JsonValue,
 }
 
 /// Cedar entity reference of the form `Type::"id"`. The test dispatcher uses
@@ -71,9 +83,37 @@ impl CedarEntity {
     }
 }
 
-/// Build the cedar request per AGT D3.2 default mapping. Returns
+/// Build the cedar request per `SPECIFICATION.md` §12.4.
+///
+/// The principal is `Agent::"<snapshot.envelope.agent.id>"`, the action
+/// is `Action::"<intervention point>"`, and the resource is
+/// `Tool::"<name>"` at tool intervention points or
+/// `PolicyTarget::"<kind>"` elsewhere. Returns
 /// `runtime_error:policy_invocation_failed` when the input is missing the
 /// envelope identifiers required by [`spec/agt/AGT-SNAPSHOT-1.0.md`] §1.
+///
+/// The context is every member of the policy input snapshot, `envelope`
+/// included, plus the annotations as one nested `annotations` record, so
+/// a policy reads `context.tool_call.args.host`,
+/// `context.envelope.budgets.tool_call_count`, or
+/// `context.annotations.confidence.score`. Values are translated into
+/// Cedar's JSON value format:
+///
+/// * A JSON integer becomes a Cedar `Long`. An integer outside the `i64`
+///   range fails closed.
+/// * Every other JSON number becomes a Cedar `decimal`, rounded to the
+///   nearest value with four fractional digits, ties away from zero. A
+///   value outside the decimal range (about ±922337203685477.58) fails
+///   closed.
+/// * JSON `null` is dropped, whether it is a record member or a set
+///   element.
+/// * A record key that Cedar's JSON format reserves (`__entity`, `__extn`,
+///   `__expr`) fails closed. Passing one through would let a snapshot or
+///   an annotator forge an entity reference or an extension value.
+/// * Strings, booleans, records and sets pass through.
+///
+/// Every failure is `runtime_error:policy_invocation_failed` with a detail
+/// that names the offending key as a dotted path rooted at `context`.
 pub fn build_cedar_request(policy_input: &JsonValue) -> Result<CedarRequest, RuntimeError> {
     let object = policy_input.as_object().ok_or_else(|| {
         RuntimeError::PolicyInvocationFailed(
@@ -120,28 +160,130 @@ pub fn build_cedar_request(policy_input: &JsonValue) -> Result<CedarRequest, Run
         })?;
 
     let resource = resource_entity(object);
-
-    let mut context_keys: Vec<String> = snapshot
-        .keys()
-        .filter(|key| *key != "envelope")
-        .cloned()
-        .collect();
-    if let Some(JsonValue::Object(annotations)) = object.get(pi_key::ANNOTATIONS) {
-        for key in annotations.keys() {
-            let key = format!("annotations.{key}");
-            if !context_keys.contains(&key) {
-                context_keys.push(key);
-            }
-        }
-    }
-    context_keys.sort();
+    let context = build_cedar_context(snapshot, object.get(pi_key::ANNOTATIONS))?;
 
     Ok(CedarRequest {
         principal: CedarEntity::new("Agent", agent_id),
         action: CedarEntity::new("Action", intervention_point),
         resource,
-        context_keys,
+        context,
     })
+}
+
+/// Record keys Cedar's JSON value format interprets as escapes rather
+/// than as record members.
+const CEDAR_RESERVED_KEYS: [&str; 3] = ["__entity", "__extn", "__expr"];
+
+/// A Cedar `decimal` holds four fractional digits in an `i64`.
+const DECIMAL_SCALE: f64 = 10_000.0;
+
+/// The §12.4 request context: the snapshot with the annotations nested
+/// under `annotations`, translated per [`build_cedar_request`].
+fn build_cedar_context(
+    snapshot: &Map<String, JsonValue>,
+    annotations: Option<&JsonValue>,
+) -> Result<JsonValue, RuntimeError> {
+    let mut context = Map::new();
+    for (key, value) in snapshot {
+        if key == pi_key::ANNOTATIONS {
+            return Err(RuntimeError::PolicyInvocationFailed(format!(
+                "cedar context key 'context.{key}' is reserved for the policy input annotations"
+            )));
+        }
+        let path = format!("context.{key}");
+        if let Some(translated) = to_cedar_value(value, &path, key)? {
+            context.insert(key.clone(), translated);
+        }
+    }
+    let annotations = match annotations {
+        None | Some(JsonValue::Null) => JsonValue::Object(Map::new()),
+        Some(value) => to_cedar_value(value, "context.annotations", pi_key::ANNOTATIONS)?
+            .unwrap_or_else(|| JsonValue::Object(Map::new())),
+    };
+    context.insert(pi_key::ANNOTATIONS.to_string(), annotations);
+    Ok(JsonValue::Object(context))
+}
+
+/// Translate one JSON value into Cedar's JSON value format. `None` means
+/// the value was `null` and the caller drops it. `path` is the dotted
+/// location for error details; `key` is the last segment, checked against
+/// the reserved escapes.
+fn to_cedar_value(
+    value: &JsonValue,
+    path: &str,
+    key: &str,
+) -> Result<Option<JsonValue>, RuntimeError> {
+    if CEDAR_RESERVED_KEYS.contains(&key) {
+        return Err(RuntimeError::PolicyInvocationFailed(format!(
+            "cedar context key '{path}' is reserved by the Cedar JSON format"
+        )));
+    }
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::Bool(_) | JsonValue::String(_) => Ok(Some(value.clone())),
+        JsonValue::Number(number) => number_to_cedar(number, path).map(Some),
+        JsonValue::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (index, item) in items.iter().enumerate() {
+                if let Some(translated) = to_cedar_value(item, &format!("{path}[{index}]"), "")? {
+                    out.push(translated);
+                }
+            }
+            Ok(Some(JsonValue::Array(out)))
+        }
+        JsonValue::Object(members) => {
+            let mut out = Map::new();
+            for (member, inner) in members {
+                let inner_path = format!("{path}.{member}");
+                if let Some(translated) = to_cedar_value(inner, &inner_path, member)? {
+                    out.insert(member.clone(), translated);
+                }
+            }
+            Ok(Some(JsonValue::Object(out)))
+        }
+    }
+}
+
+fn number_to_cedar(number: &serde_json::Number, path: &str) -> Result<JsonValue, RuntimeError> {
+    if let Some(long) = number.as_i64() {
+        return Ok(json!(long));
+    }
+    if number.is_u64() {
+        return Err(RuntimeError::PolicyInvocationFailed(format!(
+            "cedar context value at '{path}' is {number}, outside the Cedar Long range"
+        )));
+    }
+    let float = number.as_f64().ok_or_else(|| {
+        RuntimeError::PolicyInvocationFailed(format!(
+            "cedar context value at '{path}' is {number}, which is not a finite number"
+        ))
+    })?;
+    let decimal = float_to_decimal(float).ok_or_else(|| {
+        RuntimeError::PolicyInvocationFailed(format!(
+            "cedar context value at '{path}' is {number}, outside the Cedar decimal range"
+        ))
+    })?;
+    Ok(json!({"__extn": {"fn": "decimal", "arg": decimal}}))
+}
+
+/// Format a float as a Cedar decimal literal: scale by 10^4, round to the
+/// nearest integer with ties away from zero (`f64::round`), and print with
+/// a fixed four digit fraction. `None` when the scaled value does not fit
+/// the `i64` a Cedar decimal is stored in.
+fn float_to_decimal(value: f64) -> Option<String> {
+    let scaled = (value * DECIMAL_SCALE).round();
+    // 2^63 is exactly representable; anything at or beyond it overflows.
+    if !scaled.is_finite() || scaled.abs() >= 9_223_372_036_854_775_808.0 {
+        return None;
+    }
+    let scaled = scaled as i64;
+    let sign = if scaled < 0 { "-" } else { "" };
+    let magnitude = scaled.unsigned_abs();
+    Some(format!(
+        "{sign}{}.{:04}",
+        magnitude / 10_000,
+        magnitude % 10_000
+    ))
 }
 
 fn resource_entity(policy_input: &Map<String, JsonValue>) -> CedarEntity {
@@ -464,18 +606,29 @@ pub fn translate_advice(advice: JsonValue) -> Result<JsonValue, RuntimeError> {
 /// hosts that never need real cedar evaluation do not have to compile the
 /// cedar runtime. The dispatcher parses the inline `policy_set` text (or
 /// the file pointed to by `policy_path`), builds a `cedar_policy::Request`
-/// from the [`CedarRequest`] produced by [`build_cedar_request`], and runs
-/// the upstream authorizer. The result is translated into the verdict
-/// JSON the runtime feeds to [`crate::normalize_policy_output`]: a cedar
-/// `Allow` becomes `{"decision":"allow"}` and a cedar `Deny` becomes
-/// `{"decision":"deny","reason":"no_matching_policy"}` (or
-/// `runtime_error:policy_invocation_failed` when the authorizer surfaces a
-/// hard error).
+/// from the [`CedarRequest`] produced by [`build_cedar_request`], context
+/// included, and runs the upstream authorizer. When a `schema_path` is
+/// set, the policy set, the entities and the request are all checked
+/// against the schema, so the schema MUST declare the §12.4 context shape
+/// for every action it lists.
 ///
-/// Cedar policy annotations and richer advice translation remain the job
-/// of the host-facing [`CedarPolicyDispatcher`] implementations; the
-/// builtin restricts itself to the standard allow / deny contract that the
-/// upstream `Authorizer::is_authorized` exposes.
+/// The answer is translated into the verdict JSON the runtime feeds to
+/// [`crate::normalize_policy_output`], per §12.4:
+///
+/// * `Deny` becomes `{"decision":"deny","reason":<reason>}`. The reason
+///   is the `@id` annotation of the first contributing `forbid` in
+///   declaration order. A contributing policy without `@id` yields its
+///   Cedar policy id (`policyN`). When no policy contributed, the reason
+///   is `no_matching_policy`.
+/// * `Allow` becomes `{"decision":"allow"}`, unless a contributing
+///   `permit` carries an `@advice` annotation. The first such permit in
+///   declaration order has its advice parsed as JSON and translated by
+///   [`translate_advice`] into a `warn`, `escalate` or `transform`
+///   verdict. Advice that is not JSON fails closed with
+///   `runtime_error:policy_output_invalid`.
+/// * An evaluation error reported by the authorizer, such as an unguarded
+///   read of a missing context attribute, fails closed with
+///   `runtime_error:policy_invocation_failed`.
 #[cfg(feature = "cedar")]
 #[derive(Debug, Clone, Default)]
 pub struct CedarBuiltinDispatcher;
@@ -520,8 +673,8 @@ mod builtin {
     use super::{build_cedar_request, CedarEntity, CedarRequest};
     use crate::{CedarPolicyInvocation, JsonValue, RuntimeError};
     use cedar_policy::{
-        Authorizer, Context, Decision, Entities, EntityUid, PolicySet, Request, Schema,
-        ValidationMode, Validator,
+        Authorizer, Context, Decision, Entities, EntityUid, Policy, PolicyId, PolicySet, Request,
+        RequestValidationError, Response, Schema, ValidationMode, Validator,
     };
     use serde_json::json;
     use std::{fs, str::FromStr};
@@ -553,13 +706,59 @@ mod builtin {
             )));
         }
 
+        let contributing = contributing_policies(&answer, &policy_set);
         match answer.decision() {
-            Decision::Allow => Ok(json!({ "decision": "allow" })),
-            Decision::Deny => Ok(json!({
-                "decision": "deny",
-                "reason": "no_matching_policy",
-            })),
+            Decision::Allow => match contributing
+                .iter()
+                .find_map(|policy| policy.annotation("advice"))
+            {
+                Some(advice) => {
+                    let advice: JsonValue = serde_json::from_str(advice).map_err(|err| {
+                        RuntimeError::PolicyOutputInvalid(format!(
+                            "cedar @advice annotation is not valid JSON: {err}"
+                        ))
+                    })?;
+                    super::translate_advice(advice)
+                }
+                None => Ok(json!({ "decision": "allow" })),
+            },
+            Decision::Deny => {
+                let reason = contributing.first().map_or_else(
+                    || "no_matching_policy".to_string(),
+                    |policy| {
+                        policy
+                            .annotation("id")
+                            .map_or_else(|| policy.id().to_string(), str::to_string)
+                    },
+                );
+                Ok(json!({ "decision": "deny", "reason": reason }))
+            }
         }
+    }
+
+    /// The policies that contributed to the decision, in declaration
+    /// order. `Diagnostics::reason` is a set, so the order has to be
+    /// recovered: `PolicySet::from_str` names policies `policy0`,
+    /// `policy1`, ... in the order they appear in the text, and the
+    /// numeric suffix is that order. An id in any other form sorts after
+    /// them, by string, so the result is still deterministic.
+    fn contributing_policies<'a>(answer: &Response, policy_set: &'a PolicySet) -> Vec<&'a Policy> {
+        let mut policies = answer
+            .diagnostics()
+            .reason()
+            .filter_map(|id| policy_set.policy(id))
+            .collect::<Vec<_>>();
+        policies.sort_by_key(|policy| declaration_key(policy.id()));
+        policies
+    }
+
+    fn declaration_key(id: &PolicyId) -> (usize, String) {
+        let text = id.to_string();
+        let index = text
+            .strip_prefix("policy")
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+            .unwrap_or(usize::MAX);
+        (index, text)
     }
 
     fn load_policy_text(invocation: &CedarPolicyInvocation) -> Result<String, RuntimeError> {
@@ -635,6 +834,9 @@ mod builtin {
         })
     }
 
+    /// Build the upstream request. With a schema, the context is checked
+    /// against the context shape the schema declares for the action, so a
+    /// schema that declares none rejects every request the runtime builds.
     fn build_authorizer_request(
         request: &CedarRequest,
         schema: Option<&Schema>,
@@ -642,10 +844,29 @@ mod builtin {
         let principal = entity_uid(&request.principal, "principal")?;
         let action = entity_uid(&request.action, "action")?;
         let resource = entity_uid(&request.resource, "resource")?;
-        Request::new(principal, action, resource, Context::empty(), schema).map_err(|err| {
+        let context = Context::from_json_value(
+            request.context.clone(),
+            schema.map(|schema| (schema, &action)),
+        )
+        .map_err(|err| {
             RuntimeError::PolicyInvocationFailed(format!(
-                "cedar builtin dispatcher failed to build authorizer request: {err}"
+                "cedar builtin dispatcher rejected the request context for {}: {err}",
+                request.action.as_display()
             ))
+        })?;
+        Request::new(principal, action, resource, context, schema).map_err(|err| match err {
+            // Cedar's own message prints the whole context. That is the
+            // snapshot, so keep it out of the error detail.
+            RequestValidationError::InvalidContext(_) => {
+                RuntimeError::PolicyInvocationFailed(format!(
+                    "cedar builtin dispatcher rejected the request context for {}: it does not \
+                     match the context shape the schema declares for this action",
+                    request.action.as_display()
+                ))
+            }
+            other => RuntimeError::PolicyInvocationFailed(format!(
+                "cedar builtin dispatcher failed to build authorizer request: {other}"
+            )),
         })
     }
 
@@ -681,10 +902,13 @@ mod tests {
             policy_path: None,
             entities_path: None,
             schema_path: None,
-            query: None,
             input: input.clone(),
             canonical_input: serde_json::to_string(&input).unwrap(),
         }
+    }
+
+    fn decimal(literal: &str) -> JsonValue {
+        json!({"__extn": {"fn": "decimal", "arg": literal}})
     }
 
     fn tool_input(agent_id: &str, tool_name: &str) -> JsonValue {
@@ -728,9 +952,13 @@ mod tests {
         path.display().to_string()
     }
 
+    /// A schema for `pre_tool_call` with the resource type given. It
+    /// declares the §12.4 context shape for the `tool_input` fixture:
+    /// with a schema the request context is type checked, so a schema
+    /// that declares no context shape rejects every request.
     #[cfg(feature = "cedar")]
-    fn schema_for_tool_resource() -> &'static str {
-        r#"{
+    fn schema_for_resource(resource_type: &str) -> String {
+        json!({
             "": {
                 "entityTypes": {
                     "Agent": {"shape": {"type": "Record", "attributes": {}}},
@@ -741,33 +969,52 @@ mod tests {
                     "pre_tool_call": {
                         "appliesTo": {
                             "principalTypes": ["Agent"],
-                            "resourceTypes": ["Tool"]
+                            "resourceTypes": [resource_type],
+                            "context": {"type": "Record", "attributes": {
+                                "envelope": {"type": "Record", "attributes": {
+                                    "agent": {"type": "Record", "attributes": {
+                                        "id": {"type": "String"},
+                                        "version": {"type": "String", "required": false},
+                                        "name": {"type": "String", "required": false}
+                                    }},
+                                    "session": {"type": "Record", "required": false, "attributes": {
+                                        "id": {"type": "String"},
+                                        "started_at": {"type": "String", "required": false}
+                                    }},
+                                    "intervention_point": {"type": "String", "required": false},
+                                    "timestamp": {"type": "String", "required": false},
+                                    "budgets": {"type": "Record", "required": false, "attributes": {
+                                        "tool_call_count": {"type": "Long", "required": false},
+                                        "token_count": {"type": "Long", "required": false},
+                                        "elapsed_seconds": {"type": "Extension", "name": "decimal", "required": false},
+                                        "cost_usd": {"type": "Extension", "name": "decimal", "required": false}
+                                    }}
+                                }},
+                                "tool_call": {"type": "Record", "attributes": {
+                                    "name": {"type": "String"},
+                                    "id": {"type": "String", "required": false},
+                                    "args": {"type": "Record", "attributes": {
+                                        "q": {"type": "String", "required": false}
+                                    }}
+                                }},
+                                "annotations": {"type": "Record", "attributes": {}}
+                            }}
                         }
                     }
                 }
             }
-        }"#
+        })
+        .to_string()
     }
 
     #[cfg(feature = "cedar")]
-    fn schema_for_policy_target_resource() -> &'static str {
-        r#"{
-            "": {
-                "entityTypes": {
-                    "Agent": {"shape": {"type": "Record", "attributes": {}}},
-                    "Tool": {"shape": {"type": "Record", "attributes": {}}},
-                    "PolicyTarget": {"shape": {"type": "Record", "attributes": {}}}
-                },
-                "actions": {
-                    "pre_tool_call": {
-                        "appliesTo": {
-                            "principalTypes": ["Agent"],
-                            "resourceTypes": ["PolicyTarget"]
-                        }
-                    }
-                }
-            }
-        }"#
+    fn schema_for_tool_resource() -> String {
+        schema_for_resource("Tool")
+    }
+
+    #[cfg(feature = "cedar")]
+    fn schema_for_policy_target_resource() -> String {
+        schema_for_resource("PolicyTarget")
     }
 
     // ── D3.2 request mapping ──────────────────────────────────────────
@@ -779,7 +1026,175 @@ mod tests {
         assert_eq!(request.principal, CedarEntity::new("Agent", "agent-x"));
         assert_eq!(request.action, CedarEntity::new("Action", "pre_tool_call"));
         assert_eq!(request.resource, CedarEntity::new("Tool", "hello"));
-        assert!(request.context_keys.contains(&"tool_call".to_string()));
+        assert_eq!(request.context["tool_call"]["name"], json!("hello"));
+    }
+
+    // ── 12.4 context ──────────────────────────────────────────────────
+
+    #[test]
+    fn context_is_the_snapshot_with_envelope_plus_nested_annotations() {
+        let mut input = tool_input("agent-x", "hello");
+        input["annotations"] = json!({"confidence": {"score": 42}, "pii_detected": true});
+        let request = build_cedar_request(&input).expect("request built");
+        let context = request.context.as_object().expect("context is a record");
+        let mut keys = context.keys().collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(keys, vec!["annotations", "envelope", "tool_call"]);
+        assert_eq!(context["envelope"]["agent"]["id"], json!("agent-x"));
+        assert_eq!(context["envelope"]["budgets"]["tool_call_count"], json!(0));
+        assert_eq!(context["tool_call"]["args"]["q"], json!("hello"));
+        assert_eq!(context["annotations"]["confidence"]["score"], json!(42));
+        assert_eq!(context["annotations"]["pii_detected"], json!(true));
+    }
+
+    #[test]
+    fn context_excludes_policy_target_tool_and_intervention_point() {
+        let request = build_cedar_request(&tool_input("agent-x", "hello")).unwrap();
+        let context = request.context.as_object().unwrap();
+        for key in ["policy_target", "tool", "intervention_point"] {
+            assert!(!context.contains_key(key), "{key} leaked into the context");
+        }
+    }
+
+    #[test]
+    fn context_always_carries_an_annotations_record() {
+        let mut input = tool_input("agent-x", "hello");
+        input.as_object_mut().unwrap().remove("annotations");
+        let request = build_cedar_request(&input).unwrap();
+        assert_eq!(request.context["annotations"], json!({}));
+    }
+
+    #[test]
+    fn context_rejects_a_snapshot_member_named_annotations() {
+        let mut input = tool_input("agent-x", "hello");
+        input["snapshot"]["annotations"] = json!({"forged": true});
+        let error = build_cedar_request(&input).unwrap_err();
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert!(error.detail().contains("context.annotations"), "{error}");
+    }
+
+    #[test]
+    fn context_floats_become_decimals_rounded_to_four_places() {
+        let cases = [
+            (json!(12.5), "12.5000"),
+            (json!(0.0), "0.0000"),
+            (json!(-0.0), "0.0000"),
+            (json!(0.123456), "0.1235"),
+            (json!(100.00004), "100.0000"),
+            (json!(100.00006), "100.0001"),
+            (json!(-2.00006), "-2.0001"),
+            (json!(1e-9), "0.0000"),
+            (json!(1e2), "100.0000"),
+            (json!(123456789.1234), "123456789.1234"),
+        ];
+        for (value, literal) in cases {
+            let mut input = tool_input("agent-x", "hello");
+            input["snapshot"]["tool_call"]["args"]["amount"] = value.clone();
+            let request = build_cedar_request(&input).unwrap();
+            assert_eq!(
+                request.context["tool_call"]["args"]["amount"],
+                decimal(literal),
+                "{value}"
+            );
+        }
+        let request = build_cedar_request(&tool_input("agent-x", "hello")).unwrap();
+        assert_eq!(
+            request.context["envelope"]["budgets"]["cost_usd"],
+            decimal("0.0000")
+        );
+    }
+
+    #[test]
+    fn context_integers_stay_longs() {
+        let mut input = tool_input("agent-x", "hello");
+        input["snapshot"]["tool_call"]["args"]["amount"] = json!(i64::MAX);
+        input["snapshot"]["tool_call"]["args"]["debit"] = json!(i64::MIN);
+        let request = build_cedar_request(&input).unwrap();
+        assert_eq!(
+            request.context["tool_call"]["args"]["amount"],
+            json!(i64::MAX)
+        );
+        assert_eq!(
+            request.context["tool_call"]["args"]["debit"],
+            json!(i64::MIN)
+        );
+    }
+
+    #[test]
+    fn context_fails_closed_on_numbers_cedar_cannot_hold_naming_the_key() {
+        for (value, range) in [
+            (json!(u64::MAX), "Long"),
+            (json!(1e300), "decimal"),
+            (json!(-1e300), "decimal"),
+            (json!(922337203685478.0), "decimal"),
+        ] {
+            let mut input = tool_input("agent-x", "hello");
+            input["snapshot"]["tool_call"]["args"]["amount"] = value.clone();
+            let error = build_cedar_request(&input).unwrap_err();
+            assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+            assert!(
+                error.detail().contains("'context.tool_call.args.amount'"),
+                "{value}: {error}"
+            );
+            assert!(error.detail().contains(range), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn context_drops_nulls_in_records_and_sets() {
+        let mut input = tool_input("agent-x", "hello");
+        input["snapshot"]["tool_call"]["args"] = json!({
+            "q": "hello",
+            "note": null,
+            "tags": ["a", null, "b"],
+            "nested": {"inner": null, "kept": 1}
+        });
+        let request = build_cedar_request(&input).unwrap();
+        assert_eq!(
+            request.context["tool_call"]["args"],
+            json!({"q": "hello", "tags": ["a", "b"], "nested": {"kept": 1}})
+        );
+    }
+
+    #[test]
+    fn context_fails_closed_on_reserved_cedar_escape_keys() {
+        for key in CEDAR_RESERVED_KEYS {
+            let mut input = tool_input("agent-x", "hello");
+            input["snapshot"]["tool_call"]["args"][key] = json!({"type": "Agent", "id": "root"});
+            let error = build_cedar_request(&input).unwrap_err();
+            assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+            assert!(
+                error
+                    .detail()
+                    .contains(&format!("'context.tool_call.args.{key}'")),
+                "{error}"
+            );
+        }
+        // Inside an annotation as well: annotator output is untrusted.
+        let mut input = tool_input("agent-x", "hello");
+        input["annotations"] = json!({"judge": {"__extn": {"fn": "ip", "arg": "10.0.0.1"}}});
+        let error = build_cedar_request(&input).unwrap_err();
+        assert!(
+            error
+                .detail()
+                .contains("'context.annotations.judge.__extn'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn float_to_decimal_rounds_ties_away_from_zero_and_bounds_the_range() {
+        assert_eq!(float_to_decimal(0.00005).as_deref(), Some("0.0001"));
+        assert_eq!(float_to_decimal(-0.00005).as_deref(), Some("-0.0001"));
+        assert_eq!(float_to_decimal(2.5).as_deref(), Some("2.5000"));
+        assert_eq!(
+            float_to_decimal(-123456789.1234).as_deref(),
+            Some("-123456789.1234")
+        );
+        assert_eq!(float_to_decimal(922337203685478.0), None);
+        assert_eq!(float_to_decimal(-922337203685478.0), None);
+        assert_eq!(float_to_decimal(f64::INFINITY), None);
+        assert_eq!(float_to_decimal(f64::NAN), None);
     }
 
     #[test]
@@ -1009,7 +1424,6 @@ mod tests {
             policy_path: Some("/no/such/file.cedar".to_string()),
             entities_path: None,
             schema_path: None,
-            query: None,
             input: tool_input("agent-1", "hello"),
             canonical_input: "{}".to_string(),
         };
@@ -1088,7 +1502,7 @@ mod tests {
     #[test]
     fn builtin_dispatcher_with_valid_schema_accepts_conformant_request() {
         let dir = cedar_test_dir("valid-schema-accepts");
-        let schema_path = write_cedar_test_file(&dir, "schema.json", schema_for_tool_resource());
+        let schema_path = write_cedar_test_file(&dir, "schema.json", &schema_for_tool_resource());
         let mut inv = invocation(
             "permit(principal, action == Action::\"pre_tool_call\", resource == Tool::\"hello\");",
             tool_input("agent-1", "hello"),
@@ -1108,7 +1522,7 @@ mod tests {
     fn builtin_dispatcher_with_valid_schema_rejects_nonconformant_request() {
         let dir = cedar_test_dir("valid-schema-rejects");
         let schema_path =
-            write_cedar_test_file(&dir, "schema.json", schema_for_policy_target_resource());
+            write_cedar_test_file(&dir, "schema.json", &schema_for_policy_target_resource());
         let mut inv = invocation(
             "permit(principal, action == Action::\"pre_tool_call\", resource);",
             tool_input("agent-1", "hello"),
@@ -1126,6 +1540,97 @@ mod tests {
             "{}",
             error.detail()
         );
+    }
+
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_with_schema_type_checks_the_context() {
+        let dir = cedar_test_dir("schema-context-shape");
+        // The schema declares `args.q` as a String; the input carries a Long.
+        let schema_path = write_cedar_test_file(&dir, "schema.json", &schema_for_tool_resource());
+        let mut input = tool_input("agent-1", "hello");
+        input["snapshot"]["tool_call"]["args"]["q"] = json!(7);
+        let mut inv = invocation("permit(principal, action, resource);", input);
+        inv.schema_path = Some(schema_path);
+
+        let error = CedarBuiltinDispatcher::new()
+            .evaluate_cedar(&inv)
+            .unwrap_err();
+
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert!(
+            error
+                .detail()
+                .contains("does not match the context shape the schema declares"),
+            "{}",
+            error.detail()
+        );
+        // The snapshot content stays out of the error detail.
+        assert!(!error.detail().contains("agent-1"), "{}", error.detail());
+    }
+
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_with_schema_lacking_a_context_shape_fails_closed() {
+        let dir = cedar_test_dir("schema-no-context-shape");
+        let schema_path = write_cedar_test_file(
+            &dir,
+            "schema.json",
+            r#"{"": {
+                "entityTypes": {"Agent": {}, "Tool": {}, "PolicyTarget": {}},
+                "actions": {"pre_tool_call": {"appliesTo": {
+                    "principalTypes": ["Agent"], "resourceTypes": ["Tool"]}}}
+            }}"#,
+        );
+        let mut inv = invocation(
+            "permit(principal, action, resource);",
+            tool_input("agent-1", "hello"),
+        );
+        inv.schema_path = Some(schema_path);
+
+        let error = CedarBuiltinDispatcher::new()
+            .evaluate_cedar(&inv)
+            .unwrap_err();
+
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert!(
+            error.detail().contains("request context"),
+            "{}",
+            error.detail()
+        );
+    }
+
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_deny_reason_is_the_contributing_forbid_id() {
+        let policy_set = r#"
+            @id("tool_banned")
+            forbid(principal, action, resource == Tool::"banned");
+            permit(principal, action, resource);
+        "#;
+        let inv = invocation(policy_set, tool_input("agent-1", "banned"));
+        let output = CedarBuiltinDispatcher::new().evaluate_cedar(&inv).unwrap();
+        let verdict = normalize_policy_output(output).unwrap();
+        assert_eq!(verdict.decision, Decision::Deny);
+        assert_eq!(verdict.reason.as_deref(), Some("tool_banned"));
+    }
+
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_reads_the_context_it_builds() {
+        let policy_set = r#"
+            @id("query_blocked")
+            forbid(principal, action, resource) when {
+                context.tool_call.args.q == "hello" &&
+                context.envelope.budgets.cost_usd == decimal("0.0")
+            };
+            permit(principal, action, resource);
+        "#;
+        let inv = invocation(policy_set, tool_input("agent-1", "search"));
+        let output = CedarBuiltinDispatcher::new().evaluate_cedar(&inv).unwrap();
+        let verdict = normalize_policy_output(output).unwrap();
+        assert_eq!(verdict.decision, Decision::Deny);
+        assert_eq!(verdict.reason.as_deref(), Some("query_blocked"));
     }
 
     #[cfg(feature = "cedar")]

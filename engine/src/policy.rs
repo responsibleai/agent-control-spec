@@ -203,7 +203,8 @@ impl PolicyConfig {
                 Some(query) => reject_non_rule_query_text(document, context, query),
                 None => Ok(()),
             },
-            // A cedar `query` is a request template object, not code.
+            // A cedar policy may not carry `query` at all; validation
+            // rejects it. Test and custom policies have no query.
             _ => Ok(()),
         }
     }
@@ -382,10 +383,11 @@ pub struct CedarPolicyConfig {
     pub entities_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_path: Option<String>,
-    /// Optional Cedar request template object. The shape is intentionally
-    /// open for the AGT v5 milestone; dispatchers MAY interpret it to override
-    /// the default principal/action/resource/context mapping defined in
-    /// `SPECIFICATION.md` §12.4.
+    /// Rejected by [`validate_policy_definition`]. Earlier drafts of
+    /// `SPECIFICATION.md` §12.4 let a `query` object override the request
+    /// mapping; no dispatcher ever read it, and the mapping is now fixed.
+    /// The field stays so a manifest that still carries it gets an error
+    /// that says why, instead of an unknown-field parse error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<JsonValue>,
 }
@@ -635,9 +637,10 @@ impl RegoPolicyInvocation {
 
 /// AGT D3 prepared cedar invocation. Carries the resolved cedar policy
 /// source (inline `policy_set` text or a `policy_path` location), the
-/// optional `entities_path` / `schema_path` artefacts, the optional
-/// request-template `query`, and the final policy input the runtime built
-/// for this intervention point.
+/// optional `entities_path` / `schema_path` artefacts, and the final
+/// policy input the runtime built for this intervention point. The Cedar
+/// request is derived from `input` by `crate::build_cedar_request` per
+/// `SPECIFICATION.md` §12.4; the manifest cannot override that mapping.
 ///
 /// The dispatcher owns Cedar evaluation per `SPECIFICATION.md` §12.3.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -650,8 +653,6 @@ pub struct CedarPolicyInvocation {
     pub entities_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub query: Option<JsonValue>,
     pub input: JsonValue,
     pub canonical_input: String,
 }
@@ -712,15 +713,17 @@ fn validate_cedar_config(config: &CedarPolicyConfig) -> Result<(), RuntimeError>
     validate_optional_string("cedar.policy_path", config.policy_path.as_deref())?;
     validate_optional_string("cedar.entities_path", config.entities_path.as_deref())?;
     validate_optional_string("cedar.schema_path", config.schema_path.as_deref())?;
-    if let Some(query) = &config.query {
-        if !query.is_object() {
-            return Err(RuntimeError::ManifestInvalid(
-                "cedar.query must be a JSON object when present".to_string(),
-            ));
-        }
+    if config.query.is_some() {
+        return Err(RuntimeError::ManifestInvalid(format!(
+            "cedar.query is not supported: {CEDAR_FIXED_MAPPING}"
+        )));
     }
     Ok(())
 }
+
+/// Why a cedar policy or binding may not carry request mapping fields.
+const CEDAR_FIXED_MAPPING: &str = "the Cedar request is built from the policy input by the fixed \
+     mapping in SPECIFICATION.md 12.4 (principal, action, resource and context); remove the field";
 
 pub fn validate_policy_binding(
     intervention_point: InterceptionPoint,
@@ -740,23 +743,42 @@ pub fn validate_policy_binding(
             error.detail()
         ))
     })?;
-    if let PolicyConfig::Rego(config) = config {
-        rego_bundle_url(
-            config.bundle.as_deref(),
-            config.inline_bundle.is_some(),
-            &merge_adapter_config(&config.adapter_config, &binding.adapter_config),
-        )?;
-        if binding
-            .query
-            .as_deref()
-            .or(config.query.as_deref())
-            .is_none()
-        {
-            return Err(RuntimeError::ManifestInvalid(format!(
-                "rego policy for intervention point {} requires policy.query",
-                intervention_point
-            )));
+    match config {
+        PolicyConfig::Rego(config) => {
+            rego_bundle_url(
+                config.bundle.as_deref(),
+                config.inline_bundle.is_some(),
+                &merge_adapter_config(&config.adapter_config, &binding.adapter_config),
+            )?;
+            if binding
+                .query
+                .as_deref()
+                .or(config.query.as_deref())
+                .is_none()
+            {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "rego policy for intervention point {} requires policy.query",
+                    intervention_point
+                )));
+            }
         }
+        // A cedar binding carries only `id`. Nothing reads any other
+        // field on it, so accepting one would drop it in silence.
+        PolicyConfig::Cedar(_) => {
+            let mut extra = binding.adapter_config.keys().cloned().collect::<Vec<_>>();
+            if binding.query.is_some() {
+                extra.insert(0, "query".to_string());
+            }
+            if !extra.is_empty() {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "policy binding for intervention point {} sets {} on a cedar policy; a cedar \
+                     binding carries only id: {CEDAR_FIXED_MAPPING}",
+                    intervention_point,
+                    extra.join(", ")
+                )));
+            }
+        }
+        PolicyConfig::Test(_) | PolicyConfig::Custom(_) => {}
     }
     Ok(())
 }
@@ -795,7 +817,6 @@ pub fn prepare_policy_invocation(
             policy_path: config.policy_path.clone(),
             entities_path: config.entities_path.clone(),
             schema_path: config.schema_path.clone(),
-            query: config.query.clone(),
             input: final_policy_input.clone(),
             canonical_input: canonical_policy_input(final_policy_input)?,
         })),
@@ -1162,14 +1183,68 @@ intervention_points:
     }
 
     #[test]
-    fn cedar_non_object_query_is_rejected() {
-        let yaml = cedar_manifest(
-            r#"    policy_set: "permit(principal, action, resource);"
-    query: "not-an-object"
-"#,
-        );
-        let error = parse(&yaml).unwrap_err();
-        assert_eq!(error.reason(), "runtime_error:manifest_invalid");
-        assert!(error.detail().contains("query"));
+    fn cedar_query_is_rejected_with_the_reason() {
+        for query in [
+            "query: \"not-an-object\"",
+            "query: {principal: $snap.actor.id}",
+        ] {
+            let yaml = cedar_manifest(&format!(
+                "    policy_set: \"permit(principal, action, resource);\"\n    {query}\n"
+            ));
+            let error = parse(&yaml).unwrap_err();
+            assert_eq!(error.reason(), "runtime_error:manifest_invalid");
+            assert!(
+                error.detail().contains("cedar.query is not supported")
+                    && error.detail().contains("SPECIFICATION.md 12.4"),
+                "{}",
+                error.detail()
+            );
+        }
+    }
+
+    #[test]
+    fn cedar_binding_with_query_or_other_fields_is_rejected() {
+        for (binding, named) in [
+            ("      query: data.x", "query"),
+            ("      context: $snap", "context"),
+            (
+                "      query: data.x\n      principal: $snap.actor",
+                "query, principal",
+            ),
+        ] {
+            let yaml = format!(
+                r#"agent_control_specification_version: 0.4.0-alpha.1
+policies:
+  guard:
+    type: cedar
+    policy_set: "permit(principal, action, resource);"
+intervention_points:
+  input:
+    policy_target_kind: user_input
+    policy:
+      id: guard
+{binding}
+    policy_target: $snap.input
+"#
+            );
+            let error = parse(&yaml).unwrap_err();
+            assert_eq!(error.reason(), "runtime_error:manifest_invalid");
+            assert!(
+                error
+                    .detail()
+                    .contains(&format!("sets {named} on a cedar policy")),
+                "{}",
+                error.detail()
+            );
+        }
+    }
+
+    #[test]
+    fn cedar_binding_with_only_id_is_accepted() {
+        let manifest = parse(&cedar_manifest(
+            "    policy_set: \"permit(principal, action, resource);\"\n",
+        ))
+        .expect("cedar binding with only id parses");
+        assert_eq!(manifest.policies["guard"].engine_type(), "cedar");
     }
 }

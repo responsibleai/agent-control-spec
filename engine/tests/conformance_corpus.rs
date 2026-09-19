@@ -43,16 +43,52 @@ struct FixturePolicy {
 }
 
 impl PolicyDispatcher for FixturePolicy {
-    fn evaluate(&self, _invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+    fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
         match self
             .response
             .get("__policy_behavior")
             .and_then(Value::as_str)
         {
             Some("error") => Err(RuntimeError::PolicyInvocationFailed("fixture".to_string())),
+            Some("builtin") => builtin_evaluate(invocation),
             _ => Ok(self.response.clone()),
         }
     }
+}
+
+/// `policy_behavior: builtin` hands the invocation to the bundled
+/// dispatcher for its engine type. Only Cedar has one that needs no
+/// external files; `run_evaluate_case` skips such a case when the
+/// feature is off.
+#[cfg(feature = "cedar")]
+fn builtin_evaluate(invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+    match invocation {
+        PreparedPolicyInvocation::Cedar(_) => {
+            agent_control_spec::CedarBuiltinDispatcher::new().evaluate(invocation)
+        }
+        other => panic!(
+            "policy_behavior builtin has no bundled dispatcher for {} policies",
+            other.engine_type()
+        ),
+    }
+}
+
+#[cfg(not(feature = "cedar"))]
+fn builtin_evaluate(invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+    panic!(
+        "policy_behavior builtin reached a {} policy without the bundled dispatcher",
+        invocation.engine_type()
+    )
+}
+
+/// Whether this build can run a `builtin` case for the manifest's policy
+/// type. Cedar is the only type a case uses this way, and it is a Cargo
+/// feature.
+fn builtin_available(manifest: &Manifest) -> bool {
+    manifest
+        .policies
+        .values()
+        .all(|policy| policy.engine_type() != "cedar" || cfg!(feature = "cedar"))
 }
 
 fn conformance_dir() -> PathBuf {
@@ -215,6 +251,12 @@ fn run_evaluate_case(id: &str, case: &Value) {
         .unwrap_or_default();
     let mut policy_response = case["policy_response"].clone();
     if let Some(policy_behavior) = case.get("policy_behavior").and_then(Value::as_str) {
+        if policy_behavior == "builtin" && !builtin_available(&manifest) {
+            eprintln!(
+                "{id}: skipped, the bundled dispatcher for its policy type is not compiled in"
+            );
+            return;
+        }
         policy_response["__policy_behavior"] = Value::String(policy_behavior.to_string());
     }
     let runtime = Runtime::with_limits(

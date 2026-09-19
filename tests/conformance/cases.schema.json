@@ -105,8 +105,10 @@
   },
   "policy_behavior": {
    "enum": [
-    "error"
-   ]
+    "error",
+    "builtin"
+   ],
+   "description": "error: the policy dispatcher fails. builtin: the bundled dispatcher for the manifest's policy type evaluates the policy itself and policy_response is null; a runner built without that dispatcher skips the case."
   },
   "annotator_outputs": {
    "type": "object",
