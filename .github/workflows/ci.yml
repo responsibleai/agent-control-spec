@@ -46,6 +46,11 @@ jobs:
         run: cargo test -p agent-control-spec --no-default-features --features opa,default-dispatchers --locked --lib
         env:
           AGENT_CONTROL_REQUIRE_OPA: "1"
+      # A build with only the cedar feature once stopped compiling and
+      # nothing here ran it. This runs the engine unit tests and the
+      # cedar integration suites with that feature set.
+      - name: Cedar-only build and tests
+        run: cargo test -p agent-control-spec --no-default-features --features cedar --locked
 
   # The stock Cedar library under policy/cedar-lib has its own test
   # corpus, run by the Cedar CLI. The CLI is published as a crate, not
@@ -53,6 +58,9 @@ jobs:
   # and built here. It is extracted outside the checkout so cargo does
   # not read it as a member of this workspace. The version matches the
   # cedar-policy crate the engine links (Cargo.lock).
+  # Advisory: the job is not yet in the branch-protection required-check
+  # set, so a red run does not block a merge. Adding it there is a
+  # repo-admin step once the job has reported on main.
   cedar-lib:
     runs-on: ubuntu-latest
     steps:
