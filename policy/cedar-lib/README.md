@@ -61,19 +61,27 @@ field other than `id`, is rejected when the manifest loads.
 | --- | --- |
 | `Deny`, one or more `forbid` matched | `{decision: "deny", reason: <@id of the first contributing forbid, in file order>}` |
 | `Deny`, nothing matched | `{decision: "deny", reason: "no_matching_policy"}` |
+| Any decision, Cedar reports an evaluation error for any policy | `{decision: "deny", reason: "runtime_error:policy_invocation_failed"}`; no `@id` surfaces |
 | `Allow` with no advice | `{decision: "allow"}` |
-| `Allow`, a contributing `permit` carries `@advice` | The advice JSON of the first such permit, in file order, validated against `cedar_advice.schema.json` and translated to `{decision: "warn"|"escalate"|"transform", ...}` |
+| `Allow`, one or more contributing permits carry `@advice` | The most restrictive advice, `escalate` over `transform` over `warn`, first in file order among equals, validated against `cedar_advice.schema.json` and translated to `{decision: "warn"|"escalate"|"transform", ...}` |
 
 The `@id` annotation on each `forbid` policy is the AGT deny reason
-that surfaces on the verdict; a `forbid` without one surfaces its Cedar
-policy id, `policy<n>` for the n-th policy in the file. The `@advice`
-annotation on a `permit` carries the cedar advice JSON payload. The
-schema enforces that `advice.verdict` is one of `warn`, `escalate`, or
-`transform`. A `transform` advice MUST carry a `transform.path` rooted
-at `$target` and a replacement `transform.value`. When several permits
-with advice can match one request, the one declared first wins, so this
-library declares approval (escalate) before redact (transform) before
-drift (warn).
+that surfaces on the verdict; a `forbid` without one, or with an empty
+or blank `@id`, surfaces its Cedar policy id, `policy<n>` for the n-th
+policy in the file. An unguarded read of a missing attribute is an
+evaluation error, and one such error anywhere in the set fails the
+request closed even when another `forbid` fired, so guard every
+optional read with `has`. The `@advice` annotation on a `permit`
+carries the cedar advice JSON payload. The schema enforces that
+`advice.verdict` is one of `warn`, `escalate`, or `transform`. A
+`transform` advice MUST carry a `transform.path` rooted at `$target`
+and a replacement `transform.value`. When several permits with advice
+match one request, the most restrictive advice wins, and the first in
+file order among equals; file order gives no other precedence. Advice
+on every matching permit must be valid, or the request fails closed.
+This library declares approval (escalate) before redact (transform)
+before drift (warn) so the file reads in the same order the dispatcher
+ranks them.
 
 ## Schemas
 

@@ -540,6 +540,43 @@ forbid(principal, action, resource) when { context.tool_call.args.amount > 100 }
     assert_plain_deny(&outcome, "policy1");
 }
 
+#[test]
+fn empty_id_annotation_falls_back_to_the_cedar_policy_id() {
+    // Cedar reports a bare `@id` as the empty string. An empty reason
+    // code is no use to a host, so each of these is treated as absent.
+    for id in ["@id", "@id(\"\")", "@id(\"  \")"] {
+        let outcome = evaluate(
+            inline(&format!(
+                "{id}\nforbid(principal, action, resource);\npermit(principal, action, resource);\n"
+            )),
+            envelope_snapshot("pay", json!({"amount": 1}), 0),
+        );
+        assert_plain_deny(&outcome, "policy0");
+    }
+}
+
+#[test]
+fn an_evaluation_error_in_any_policy_fails_closed_even_when_a_forbid_fires() {
+    // The first forbid is satisfied; the second reads an attribute the
+    // snapshot lacks. Cedar denies and reports the error. The verdict is
+    // the runtime reason, not the firing forbid's `@id`: a policy set
+    // that errors is not one the host can trust to have been evaluated.
+    let outcome = evaluate(
+        inline(
+            r#"
+@id("fires")
+forbid(principal, action, resource) when { context.tool_call.args.amount > 1 };
+@id("errors")
+forbid(principal, action, resource) when { context.tool_call.args.missing > 1 };
+permit(principal, action, resource);
+"#,
+        ),
+        envelope_snapshot("pay", json!({"amount": 500}), 0),
+    );
+    assert_fails_closed_naming(&outcome, "authorizer reported errors");
+    assert_ne!(outcome.verdict.reason.as_deref(), Some("fires"));
+}
+
 // ── advice translation ───────────────────────────────────────────────
 
 #[test]
@@ -601,12 +638,96 @@ permit(principal, action, resource);
     );
 }
 
+const WARN_ADVICE: &str = r#"@advice("{\"verdict\":\"warn\",\"reason\":\"noted\"}")"#;
+const TRANSFORM_ADVICE: &str = r#"@advice("{\"verdict\":\"transform\",\"reason\":\"redaction_applied\",\"transform\":{\"path\":\"$target.value\",\"value\":\"[REDACTED]\"}}")"#;
+const ESCALATE_ADVICE: &str =
+    r#"@advice("{\"verdict\":\"escalate\",\"reason\":\"approval_required\"}")"#;
+
+/// Two permits that both match. The first is unconditional; the second
+/// fires on `amount > 100`.
+fn two_advice_permits(first: &str, second: &str) -> JsonValue {
+    inline(&format!(
+        "{first}\npermit(principal, action, resource);\n\
+         {second}\npermit(principal, action, resource) when {{ context.tool_call.args.amount > 100 }};\n"
+    ))
+}
+
+fn assert_escalated(outcome: &Outcome) {
+    let verdict = &outcome.verdict;
+    assert_eq!(verdict.decision, Decision::Deny, "{verdict:?}");
+    assert!(verdict.is_liftable(), "{verdict:?}");
+    assert_eq!(verdict.reason.as_deref(), Some("approval_required"));
+}
+
 #[test]
-fn advice_comes_from_the_first_contributing_permit_in_declaration_order() {
+fn escalate_advice_declared_first_still_wins() {
+    let outcome = evaluate(
+        two_advice_permits(ESCALATE_ADVICE, WARN_ADVICE),
+        envelope_snapshot("pay", json!({"amount": 500}), 0),
+    );
+    assert_escalated(&outcome);
+}
+
+/// Cedar gives policy order no meaning, so nothing warns an author who
+/// declares a lenient permit ahead of a stricter one. Taking the first
+/// advice in text order would let the action proceed with a warning
+/// attached and without the approval the second permit required.
+#[test]
+fn a_warn_permit_declared_first_does_not_hide_an_escalate_permit() {
+    let outcome = evaluate(
+        two_advice_permits(WARN_ADVICE, ESCALATE_ADVICE),
+        envelope_snapshot("pay", json!({"amount": 500}), 0),
+    );
+    assert_escalated(&outcome);
+}
+
+#[test]
+fn a_transform_permit_declared_first_does_not_hide_an_escalate_permit() {
+    let outcome = evaluate(
+        two_advice_permits(TRANSFORM_ADVICE, ESCALATE_ADVICE),
+        envelope_snapshot("pay", json!({"amount": 500}), 0),
+    );
+    assert_escalated(&outcome);
+}
+
+#[test]
+fn a_warn_permit_declared_first_does_not_hide_a_transform_permit() {
+    let outcome = evaluate(
+        two_advice_permits(WARN_ADVICE, TRANSFORM_ADVICE),
+        envelope_snapshot("pay", json!({"amount": 500}), 0),
+    );
+    assert_eq!(
+        outcome.verdict.decision,
+        Decision::Transform,
+        "{:?}",
+        outcome.verdict
+    );
+    assert_eq!(outcome.verdict.reason.as_deref(), Some("redaction_applied"));
+}
+
+#[test]
+fn a_lenient_permit_that_does_not_match_leaves_the_stricter_advice_in_place() {
+    // Below the threshold only the warn permit contributes.
+    let outcome = evaluate(
+        two_advice_permits(WARN_ADVICE, ESCALATE_ADVICE),
+        envelope_snapshot("pay", json!({"amount": 50}), 0),
+    );
+    assert_eq!(
+        outcome.verdict.decision,
+        Decision::Allow,
+        "{:?}",
+        outcome.verdict
+    );
+    assert_eq!(outcome.verdict.warnings.len(), 1);
+    assert_eq!(outcome.verdict.warnings[0].reason.as_deref(), Some("noted"));
+}
+
+#[test]
+fn advice_of_the_same_kind_ties_break_on_declaration_order() {
     let outcome = evaluate(
         inline(
             r#"
-@advice("{\"verdict\":\"escalate\",\"reason\":\"declared_first\"}")
+@advice("{\"verdict\":\"warn\",\"reason\":\"declared_first\"}")
 permit(principal, action, resource);
 @advice("{\"verdict\":\"warn\",\"reason\":\"declared_second\"}")
 permit(principal, action, resource);
@@ -614,9 +735,31 @@ permit(principal, action, resource);
         ),
         envelope_snapshot("pay", json!({"amount": 1}), 0),
     );
+    assert_eq!(outcome.verdict.decision, Decision::Allow);
+    assert_eq!(outcome.verdict.warnings.len(), 1);
+    assert_eq!(
+        outcome.verdict.warnings[0].reason.as_deref(),
+        Some("declared_first")
+    );
+}
+
+#[test]
+fn malformed_advice_on_any_contributing_permit_fails_closed() {
+    // The escalate permit is valid; the second contributing permit's
+    // advice is not JSON. Ranking must not paper over it.
+    let outcome = evaluate(
+        two_advice_permits(ESCALATE_ADVICE, r#"@advice("not json")"#),
+        envelope_snapshot("pay", json!({"amount": 500}), 0),
+    );
+    assert_eq!(
+        outcome.error_reason(),
+        Some("runtime_error:policy_output_invalid")
+    );
     assert_eq!(outcome.verdict.decision, Decision::Deny);
-    assert!(outcome.verdict.is_liftable());
-    assert_eq!(outcome.verdict.reason.as_deref(), Some("declared_first"));
+    assert_eq!(
+        outcome.verdict.reason.as_deref(),
+        Some(POLICY_INVOCATION_FAILED)
+    );
 }
 
 #[test]
@@ -739,6 +882,7 @@ fn float_outside_the_decimal_range_fails_closed_naming_the_key() {
         envelope_snapshot("pay", json!({"amount": 1e300}), 0),
     );
     assert_fails_closed_naming(&outcome, "context.tool_call.args.amount");
+    assert_detail_omits_the_value(&outcome, &["1e300", "1e+300"]);
 }
 
 #[test]
@@ -748,6 +892,21 @@ fn integer_beyond_i64_fails_closed_naming_the_key() {
         envelope_snapshot("pay", json!({"amount": u64::MAX}), 0),
     );
     assert_fails_closed_naming(&outcome, "context.tool_call.args.amount");
+    assert_detail_omits_the_value(&outcome, &[&u64::MAX.to_string()]);
+}
+
+/// The value at the offending key is snapshot data (an amount, a token
+/// count) and stays out of the error detail.
+fn assert_detail_omits_the_value(outcome: &Outcome, renderings: &[&str]) {
+    let detail = outcome
+        .error_detail()
+        .expect("dispatcher reported an error");
+    for rendering in renderings {
+        assert!(
+            !detail.contains(rendering),
+            "error detail leaks the value {rendering}: {detail}"
+        );
+    }
 }
 
 #[test]

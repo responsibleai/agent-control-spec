@@ -56,8 +56,8 @@ pub use annotation::{
 #[cfg(feature = "cedar")]
 pub use cedar::CedarBuiltinDispatcher;
 pub use cedar::{
-    build_cedar_request, translate_advice, CedarEntity, CedarPolicyDispatcher, CedarRequest,
-    CedarTestDispatcher,
+    build_cedar_request, most_restrictive_advice, translate_advice, CedarEntity,
+    CedarPolicyDispatcher, CedarRequest, CedarTestDispatcher,
 };
 #[cfg(feature = "default-dispatchers")]
 pub use dispatchers::{

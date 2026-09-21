@@ -89,8 +89,8 @@ impl CedarEntity {
 /// is `Action::"<intervention point>"`, and the resource is
 /// `Tool::"<name>"` at tool intervention points or
 /// `PolicyTarget::"<kind>"` elsewhere. Returns
-/// `runtime_error:policy_invocation_failed` when the input is missing the
-/// envelope identifiers required by [`spec/agt/AGT-SNAPSHOT-1.0.md`] §1.
+/// `runtime_error:policy_invocation_failed` when the input has no
+/// `snapshot.envelope.agent.id`.
 ///
 /// The context is every member of the policy input snapshot, `envelope`
 /// included, plus the annotations as one nested `annotations` record, so
@@ -113,7 +113,8 @@ impl CedarEntity {
 /// * Strings, booleans, records and sets pass through.
 ///
 /// Every failure is `runtime_error:policy_invocation_failed` with a detail
-/// that names the offending key as a dotted path rooted at `context`.
+/// that names the offending key as a dotted path rooted at `context`. The
+/// detail never carries the value: the snapshot is not error text.
 pub fn build_cedar_request(policy_input: &JsonValue) -> Result<CedarRequest, RuntimeError> {
     let object = policy_input.as_object().ok_or_else(|| {
         RuntimeError::PolicyInvocationFailed(
@@ -244,23 +245,27 @@ fn to_cedar_value(
     }
 }
 
+/// Translate one JSON number. The error details name the path and the
+/// range, never the value. An integer below `i64::MIN` reaches the
+/// decimal branch because `serde_json` reads it as a float, so that
+/// message covers both ranges.
 fn number_to_cedar(number: &serde_json::Number, path: &str) -> Result<JsonValue, RuntimeError> {
     if let Some(long) = number.as_i64() {
         return Ok(json!(long));
     }
     if number.is_u64() {
         return Err(RuntimeError::PolicyInvocationFailed(format!(
-            "cedar context value at '{path}' is {number}, outside the Cedar Long range"
+            "cedar context value at '{path}' is outside the Cedar Long range"
         )));
     }
     let float = number.as_f64().ok_or_else(|| {
         RuntimeError::PolicyInvocationFailed(format!(
-            "cedar context value at '{path}' is {number}, which is not a finite number"
+            "cedar context value at '{path}' is not a finite number"
         ))
     })?;
     let decimal = float_to_decimal(float).ok_or_else(|| {
         RuntimeError::PolicyInvocationFailed(format!(
-            "cedar context value at '{path}' is {number}, outside the Cedar decimal range"
+            "cedar context value at '{path}' is not a Long and is outside the Cedar decimal range"
         ))
     })?;
     Ok(json!({"__extn": {"fn": "decimal", "arg": decimal}}))
@@ -323,9 +328,11 @@ fn resource_entity(policy_input: &Map<String, JsonValue>) -> CedarEntity {
 /// ```
 ///
 /// Rules are scanned in declared order; the first `forbid` match wins.
-/// Otherwise the first `permit` match wins. A permit rule MAY carry an
-/// `advice` object, which is validated against the AGT D3.3 cedar advice
-/// shape and translated into the corresponding verdict.
+/// Otherwise every matching `permit` contributes. A permit rule MAY carry
+/// an `advice` object, which is validated against the AGT D3.3 cedar
+/// advice shape and translated into the corresponding verdict; when
+/// several matching permits carry advice, [`most_restrictive_advice`]
+/// picks one the same way the builtin dispatcher does.
 #[derive(Debug, Clone, Default)]
 pub struct CedarTestDispatcher;
 
@@ -352,10 +359,14 @@ impl CedarPolicyDispatcher for CedarTestDispatcher {
                 "decision": "deny",
                 "reason": reason,
             })),
-            TestDecision::Permit { advice: None } => Ok(json!({ "decision": "allow" })),
-            TestDecision::Permit {
-                advice: Some(advice),
-            } => translate_advice(advice),
+            TestDecision::Permit { advice } => {
+                let verdicts = advice
+                    .into_iter()
+                    .map(translate_advice)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(most_restrictive_advice(verdicts)
+                    .unwrap_or_else(|| json!({ "decision": "allow" })))
+            }
             TestDecision::NoMatch => Ok(json!({
                 "decision": "deny",
                 "reason": "no_matching_policy",
@@ -422,13 +433,17 @@ struct TestRule {
 #[derive(Debug)]
 enum TestDecision {
     Forbid(String),
-    Permit { advice: Option<JsonValue> },
+    /// The advice of every matching permit, in declaration order.
+    Permit {
+        advice: Vec<JsonValue>,
+    },
     NoMatch,
 }
 
 impl TestPolicySet {
     fn decide(&self, request: &CedarRequest) -> TestDecision {
-        let mut permit: Option<&TestRule> = None;
+        let mut permitted = false;
+        let mut advice = Vec::new();
         for rule in &self.rules {
             if !rule.matches(request) {
                 continue;
@@ -441,17 +456,16 @@ impl TestPolicySet {
                             .unwrap_or_else(|| "forbid_rule_matched".to_string()),
                     );
                 }
-                TestEffectDoc::Permit if permit.is_none() => {
-                    permit = Some(rule);
+                TestEffectDoc::Permit => {
+                    permitted = true;
+                    advice.extend(rule.advice.clone());
                 }
-                TestEffectDoc::Permit => {}
             }
         }
-        match permit {
-            Some(rule) => TestDecision::Permit {
-                advice: rule.advice.clone(),
-            },
-            None => TestDecision::NoMatch,
+        if permitted {
+            TestDecision::Permit { advice }
+        } else {
+            TestDecision::NoMatch
         }
     }
 }
@@ -601,6 +615,31 @@ pub fn translate_advice(advice: JsonValue) -> Result<JsonValue, RuntimeError> {
     Ok(JsonValue::Object(out))
 }
 
+/// Pick one verdict from the translated advice of every contributing
+/// permit, given in declaration order, per `SPECIFICATION.md` §12.4:
+/// `escalate` outranks `transform`, which outranks `warn`, and among
+/// permits with the same advice verdict the first declared wins. Text
+/// order alone never decides, so a `warn` or `transform` permit declared
+/// ahead of an `escalate` permit cannot hide the escalation. `None` when
+/// no contributing permit carried advice.
+pub fn most_restrictive_advice(verdicts: Vec<JsonValue>) -> Option<JsonValue> {
+    // `min_by_key` returns the first minimum, which is the tiebreak.
+    verdicts
+        .into_iter()
+        .min_by_key(|verdict| advice_rank(verdict.get("decision").and_then(JsonValue::as_str)))
+}
+
+/// Lower is more restrictive. [`translate_advice`] only emits the three
+/// named verdicts; anything else sorts last.
+fn advice_rank(decision: Option<&str>) -> u8 {
+    match decision {
+        Some("escalate") => 0,
+        Some("transform") => 1,
+        Some("warn") => 2,
+        _ => u8::MAX,
+    }
+}
+
 /// AGT M2.S5 D7 bundled cedar dispatcher backed by the upstream
 /// `cedar-policy` crate. Gated behind the `cedar` Cargo feature so that
 /// hosts that never need real cedar evaluation do not have to compile the
@@ -617,18 +656,21 @@ pub fn translate_advice(advice: JsonValue) -> Result<JsonValue, RuntimeError> {
 ///
 /// * `Deny` becomes `{"decision":"deny","reason":<reason>}`. The reason
 ///   is the `@id` annotation of the first contributing `forbid` in
-///   declaration order. A contributing policy without `@id` yields its
-///   Cedar policy id (`policyN`). When no policy contributed, the reason
-///   is `no_matching_policy`.
+///   declaration order. A contributing policy without `@id`, or whose
+///   `@id` is empty or blank, yields its Cedar policy id (`policyN`).
+///   When no policy contributed, the reason is `no_matching_policy`.
 /// * `Allow` becomes `{"decision":"allow"}`, unless a contributing
-///   `permit` carries an `@advice` annotation. The first such permit in
-///   declaration order has its advice parsed as JSON and translated by
-///   [`translate_advice`] into a `warn`, `escalate` or `transform`
-///   verdict. Advice that is not JSON fails closed with
+///   `permit` carries an `@advice` annotation. Every such annotation is
+///   parsed as JSON and translated by [`translate_advice`]; the verdict
+///   is the most restrictive one, per [`most_restrictive_advice`]:
+///   `escalate` over `transform` over `warn`, first declared among
+///   equals. Advice on any contributing permit that is not JSON, or
+///   does not translate, fails closed with
 ///   `runtime_error:policy_output_invalid`.
-/// * An evaluation error reported by the authorizer, such as an unguarded
-///   read of a missing context attribute, fails closed with
-///   `runtime_error:policy_invocation_failed`.
+/// * An evaluation error reported by the authorizer for any policy, such
+///   as an unguarded read of a missing context attribute, fails closed
+///   with `runtime_error:policy_invocation_failed` whatever the decision.
+///   No `@id` surfaces in that case.
 #[cfg(feature = "cedar")]
 #[derive(Debug, Clone, Default)]
 pub struct CedarBuiltinDispatcher;
@@ -708,31 +750,45 @@ mod builtin {
 
         let contributing = contributing_policies(&answer, &policy_set);
         match answer.decision() {
-            Decision::Allow => match contributing
-                .iter()
-                .find_map(|policy| policy.annotation("advice"))
-            {
-                Some(advice) => {
-                    let advice: JsonValue = serde_json::from_str(advice).map_err(|err| {
-                        RuntimeError::PolicyOutputInvalid(format!(
-                            "cedar @advice annotation is not valid JSON: {err}"
-                        ))
-                    })?;
-                    super::translate_advice(advice)
-                }
-                None => Ok(json!({ "decision": "allow" })),
-            },
+            Decision::Allow => {
+                let verdicts = contributing
+                    .iter()
+                    .filter_map(|policy| policy.annotation("advice"))
+                    .map(translate_advice_annotation)
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(super::most_restrictive_advice(verdicts)
+                    .unwrap_or_else(|| json!({ "decision": "allow" })))
+            }
             Decision::Deny => {
                 let reason = contributing.first().map_or_else(
                     || "no_matching_policy".to_string(),
-                    |policy| {
-                        policy
-                            .annotation("id")
-                            .map_or_else(|| policy.id().to_string(), str::to_string)
-                    },
+                    |policy| deny_reason(policy),
                 );
                 Ok(json!({ "decision": "deny", "reason": reason }))
             }
+        }
+    }
+
+    /// Parse one `@advice` annotation as JSON and translate it. A bare
+    /// `@advice` is the empty string, which is not JSON, so it fails
+    /// closed like any other malformed advice.
+    fn translate_advice_annotation(advice: &str) -> Result<JsonValue, RuntimeError> {
+        let advice: JsonValue = serde_json::from_str(advice).map_err(|err| {
+            RuntimeError::PolicyOutputInvalid(format!(
+                "cedar @advice annotation is not valid JSON: {err}"
+            ))
+        })?;
+        super::translate_advice(advice)
+    }
+
+    /// The deny reason a contributing `forbid` supplies: its `@id`, or its
+    /// Cedar policy id when the annotation is absent, bare or blank. Cedar
+    /// returns `Some("")` for a bare `@id`, and an empty reason code is
+    /// useless to a host.
+    fn deny_reason(policy: &Policy) -> String {
+        match policy.annotation("id") {
+            Some(id) if !id.trim().is_empty() => id.to_string(),
+            _ => policy.id().to_string(),
         }
     }
 
@@ -883,8 +939,8 @@ mod builtin {
 #[cfg(test)]
 mod tests {
     //! AGT M2.S2 D3.3 dispatcher behaviour tests. Each test drives the
-    //! [`CedarTestDispatcher`] against a hand-crafted policy input that
-    //! mirrors the AGT snapshot shape from `spec/agt/AGT-SNAPSHOT-1.0.md` §1
+    //! [`CedarTestDispatcher`] against a hand-crafted policy input whose
+    //! snapshot carries the `envelope` block [`build_cedar_request`] reads
     //! and asserts the verdict the runtime would emit after normalizing the
     //! dispatcher's JsonValue through [`crate::normalize_policy_output`].
 
@@ -1137,7 +1193,27 @@ mod tests {
                 "{value}: {error}"
             );
             assert!(error.detail().contains(range), "{value}: {error}");
+            // The value is snapshot data and stays out of the detail.
+            assert!(
+                !error.detail().contains(&value.to_string()),
+                "{value}: {error}"
+            );
         }
+    }
+
+    #[test]
+    fn number_error_details_carry_the_path_and_the_range_only() {
+        let error = number_to_cedar(&serde_json::Number::from(u64::MAX), "context.n").unwrap_err();
+        assert_eq!(
+            error.detail(),
+            "cedar context value at 'context.n' is outside the Cedar Long range"
+        );
+        let below_i64 = serde_json::from_str::<JsonValue>("-9223372036854775809").unwrap();
+        let error = number_to_cedar(below_i64.as_number().unwrap(), "context.n").unwrap_err();
+        assert_eq!(
+            error.detail(),
+            "cedar context value at 'context.n' is not a Long and is outside the Cedar decimal range"
+        );
     }
 
     #[test]
@@ -1337,6 +1413,51 @@ mod tests {
         assert_eq!(
             verdict.warnings[0].reason.as_deref(),
             Some("low_confidence")
+        );
+    }
+
+    #[test]
+    fn test_dispatcher_picks_the_most_restrictive_advice_over_declaration_order() {
+        let policy_set = r#"{
+            "rules": [
+                {"effect": "permit", "principal": "any", "action": "any", "resource": "any",
+                 "advice": {"verdict": "warn", "reason": "noted"}},
+                {"effect": "permit", "principal": "any", "action": "any", "resource": "any"},
+                {"effect": "permit", "principal": "any", "action": "any", "resource": "any",
+                 "advice": {"verdict": "escalate", "reason": "approval_required"}}
+            ]
+        }"#;
+        let inv = invocation(policy_set, tool_input("agent-1", "hello"));
+        let output = CedarTestDispatcher::new().evaluate_cedar(&inv).unwrap();
+        let verdict = normalize_policy_output(output).unwrap();
+        assert_eq!(verdict.decision, Decision::Deny);
+        assert!(verdict.is_liftable());
+        assert_eq!(verdict.reason.as_deref(), Some("approval_required"));
+    }
+
+    #[test]
+    fn most_restrictive_advice_ranks_escalate_transform_warn_then_declaration_order() {
+        let warn = |reason: &str| json!({"decision": "warn", "reason": reason});
+        let transform =
+            json!({"decision": "transform", "transform": {"path": "$target.value", "value": 1}});
+        let escalate = json!({"decision": "escalate"});
+
+        assert_eq!(most_restrictive_advice(vec![]), None);
+        assert_eq!(
+            most_restrictive_advice(vec![warn("a"), transform.clone(), escalate.clone()]),
+            Some(escalate.clone())
+        );
+        assert_eq!(
+            most_restrictive_advice(vec![escalate.clone(), warn("a")]),
+            Some(escalate)
+        );
+        assert_eq!(
+            most_restrictive_advice(vec![warn("a"), transform.clone()]),
+            Some(transform)
+        );
+        assert_eq!(
+            most_restrictive_advice(vec![warn("first"), warn("second")]),
+            Some(warn("first"))
         );
     }
 

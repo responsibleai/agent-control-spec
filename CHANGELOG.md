@@ -88,19 +88,24 @@
   now builds the request context from the snapshot, `envelope` included,
   with the annotations as one nested `annotations` record, and passes it to
   Cedar; the deny reason is the `@id` of the first contributing `forbid` in
-  declaration order (its Cedar policy id without `@id`, `no_matching_policy`
-  when nothing contributed); and `@advice` on the first contributing
-  `permit` is translated exactly as a host dispatcher's advice is. JSON
-  floats become Cedar `decimal`, rounded to four fractional digits with
-  ties away from zero; nulls are dropped; integers outside the `Long`
-  range, floats outside the decimal range, and the reserved Cedar JSON keys
+  declaration order (its Cedar policy id when `@id` is absent, empty or
+  blank, `no_matching_policy` when nothing contributed); an evaluation
+  error in any policy fails closed whatever the decision; and the `@advice`
+  of every contributing `permit` is translated exactly as a host
+  dispatcher's advice is, the most restrictive winning (`escalate` over
+  `transform` over `warn`, first declared among equals), so a lenient
+  permit declared ahead of a stricter one cannot hide it. JSON floats
+  become Cedar `decimal`, rounded to four fractional digits with ties
+  away from zero; nulls are dropped; integers outside the `Long` range,
+  floats outside the decimal range, and the reserved Cedar JSON keys
   `__entity`, `__extn` and `__expr` fail closed with an error that names
-  the key. With a `schema_path`, the schema must now declare the context
-  shape for each action, since the context is never empty. Specification
-  12.4 is updated with the mapping, and the `query` request template it
-  allowed is gone: no dispatcher ever read it, so a cedar policy that sets
-  `query`, or a cedar binding with any field other than `id`, now fails
-  with `runtime_error:manifest_invalid` instead of being ignored.
+  the key and not the value. With a `schema_path`, the schema must now
+  declare the context shape for each action, since the context is never
+  empty. Specification 12.4 is updated with the mapping, and the `query`
+  request template it allowed is gone: no dispatcher ever read it, so a
+  cedar policy that sets `query`, or a cedar binding with any field other
+  than `id`, now fails with `runtime_error:manifest_invalid` instead of
+  being ignored.
   `CedarRequest.context_keys` is replaced by `CedarRequest.context`, the
   Cedar JSON value the mapping produces, and `CedarPolicyInvocation` loses
   its never populated `query` field. A `cedar-lib` CI job runs the
