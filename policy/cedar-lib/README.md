@@ -44,10 +44,16 @@ nested `annotations` record. That is the shape every file here reads.
 | `context.annotations.confidence.score` | the `confidence` annotator's output, member `score` |
 
 Values translate as follows. A JSON integer becomes a `Long`. Every
-other JSON number becomes a `decimal` rounded to four fractional digits,
-ties away from zero; compare it with `decimal("...")` literals through
-`.greaterThan` and its siblings, since a decimal does not compare with a
-`Long`. A `null` member is dropped, so guard reads with `has`. An
+other JSON number, `100.0` and `1e2` included, becomes a `decimal`
+rounded to four fractional digits, ties away from zero; compare it with
+`decimal("...")` literals through `.greaterThan` and its siblings. A
+`Long` and a `decimal` never compare equal: `<`, `>` and the decimal
+methods across the two types fail the evaluation closed, but `==`, `!=`,
+`contains`, `containsAll` and `containsAny` are silently `false` (`true`
+for `!=`). A gate that tests a snapshot number for equality or
+membership against a `Long` literal misses `100.0`; pin the type with a
+schema, or use an ordering comparison. A `null` member is dropped, so
+guard reads with `has`. An
 integer outside the `Long` range, a float outside the decimal range, or
 a record key Cedar's JSON format reserves (`__entity`, `__extn`,
 `__expr`) fails the evaluation closed with
@@ -61,7 +67,7 @@ field other than `id`, is rejected when the manifest loads.
 | --- | --- |
 | `Deny`, one or more `forbid` matched | `{decision: "deny", reason: <@id of the first contributing forbid, in file order>}` |
 | `Deny`, nothing matched | `{decision: "deny", reason: "no_matching_policy"}` |
-| Any decision, Cedar reports an evaluation error for any policy | `{decision: "deny", reason: "runtime_error:policy_invocation_failed"}`; no `@id` surfaces |
+| Any decision, Cedar reports an evaluation error for any policy | `{decision: "deny", reason: "runtime_error:policy_invocation_failed"}`; no `@id` surfaces, and the dispatcher detail names the policy and the error kind only |
 | `Allow` with no advice | `{decision: "allow"}` |
 | `Allow`, one or more contributing permits carry `@advice` | The most restrictive advice, `escalate` over `transform` over `warn`, first in file order among equals, validated against `cedar_advice.schema.json` and translated to `{decision: "warn"|"escalate"|"transform", ...}` |
 
@@ -172,7 +178,8 @@ worth knowing.
   `regex.replace` to substitute matched spans in place.
 - **Decimal, not float.** A JSON float reaches the context as a Cedar
   `decimal` with four fractional digits, and a decimal does not compare
-  with a `Long` through `<` or `>=`. This library reads only integer
+  with a `Long`: `<` and `>=` across the two fail closed, `==` and
+  `contains` are silently false. This library reads only integer
   counts and scores, so confidence and drift scores MUST be scaled to
   integer ranges (for example 0..100) before they reach the snapshot.
   The float budgets `elapsed_seconds` and `cost_usd` arrive as decimals

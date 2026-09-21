@@ -459,10 +459,9 @@ fn unguarded_access_to_a_missing_attribute_fails_closed() {
         inline(FORBID_UNGUARDED),
         envelope_snapshot("pay", json!({"q": "no amount here"}), 0),
     );
-    assert_eq!(outcome.verdict.decision, Decision::Deny);
-    assert_eq!(
-        outcome.verdict.reason.as_deref(),
-        Some(POLICY_INVOCATION_FAILED)
+    assert_fails_closed_naming(
+        &outcome,
+        "policy `policy0`: a record attribute does not exist",
     );
 }
 
@@ -507,23 +506,51 @@ fn wire_shaped_snapshot_reaches_the_same_context_gated_verdict() {
 
 // ── deny reason ordering and fallback ────────────────────────────────
 
+/// Cedar reports the contributing policies as a set whose iteration
+/// order changes from one response to the next. With two policies and
+/// one evaluation, a dispatcher that dropped the declaration sort would
+/// still pass half the time. The order tests declare eight policies
+/// whose ids sort against declaration order and repeat the evaluation
+/// this many times, so a reason picked by set order or by string order
+/// shows up.
+const ORDER_RUNS: usize = 20;
+
+/// Eight ids in declaration order. Each sorts before the one declared
+/// ahead of it, so string order disagrees with declaration order at
+/// every position.
+const IDS_SORTED_AGAINST_DECLARATION: [&str; 8] = [
+    "z_first",
+    "y_second",
+    "x_third",
+    "w_fourth",
+    "v_fifth",
+    "u_sixth",
+    "t_seventh",
+    "s_eighth",
+];
+
+/// One `forbid` per id, each firing on `amount > 10`, then a permit.
+fn forbids_with_ids(ids: &[&str]) -> String {
+    let mut policy = String::new();
+    for id in ids {
+        policy.push_str(&format!(
+            "@id(\"{id}\")\nforbid(principal, action, resource) when {{ context.tool_call.args.amount > 10 }};\n"
+        ));
+    }
+    policy.push_str("permit(principal, action, resource);\n");
+    policy
+}
+
 #[test]
 fn deny_reason_is_the_first_contributing_forbid_in_declaration_order() {
-    // The ids sort the other way round lexicographically, so a reason
-    // picked by string order would surface `a_declared_second`.
-    let outcome = evaluate(
-        inline(
-            r#"
-@id("z_declared_first")
-forbid(principal, action, resource) when { context.tool_call.args.amount > 10 };
-@id("a_declared_second")
-forbid(principal, action, resource) when { context.tool_call.args.amount > 100 };
-permit(principal, action, resource);
-"#,
-        ),
-        envelope_snapshot("pay", json!({"amount": 500}), 0),
-    );
-    assert_plain_deny(&outcome, "z_declared_first");
+    let policy = forbids_with_ids(&IDS_SORTED_AGAINST_DECLARATION);
+    for _ in 0..ORDER_RUNS {
+        let outcome = evaluate(
+            inline(&policy),
+            envelope_snapshot("pay", json!({"amount": 500}), 0),
+        );
+        assert_plain_deny(&outcome, "z_first");
+    }
 }
 
 #[test]
@@ -538,6 +565,28 @@ forbid(principal, action, resource) when { context.tool_call.args.amount > 100 }
         envelope_snapshot("pay", json!({"amount": 500}), 0),
     );
     assert_plain_deny(&outcome, "policy1");
+}
+
+#[test]
+fn fallback_ids_follow_declaration_order_not_string_order() {
+    // policy0 permits, policy1 does not fire, policy2 to policy11 fire.
+    // A sort by the id's text would put `policy10` ahead of `policy2`.
+    let mut policy = String::from(
+        "permit(principal, action, resource);\n\
+         forbid(principal, action, resource) when { context.tool_call.args.amount > 1000 };\n",
+    );
+    for _ in 0..10 {
+        policy.push_str(
+            "forbid(principal, action, resource) when { context.tool_call.args.amount > 10 };\n",
+        );
+    }
+    for _ in 0..ORDER_RUNS {
+        let outcome = evaluate(
+            inline(&policy),
+            envelope_snapshot("pay", json!({"amount": 500}), 0),
+        );
+        assert_plain_deny(&outcome, "policy2");
+    }
 }
 
 #[test]
@@ -575,6 +624,41 @@ permit(principal, action, resource);
     );
     assert_fails_closed_naming(&outcome, "authorizer reported errors");
     assert_ne!(outcome.verdict.reason.as_deref(), Some("fires"));
+}
+
+/// Cedar's message for an integer overflow quotes both operands, and its
+/// message for a failed extension call quotes the argument. Both can be
+/// snapshot values, so the detail names the policy and the kind of error
+/// instead.
+#[test]
+fn evaluation_error_detail_names_the_policy_and_the_kind_not_the_operands() {
+    let overflow = evaluate(
+        inline(
+            r#"
+@id("overflow")
+forbid(principal, action, resource) when {
+  context.tool_call.args.amount * 9223372036854775807 > 1
+};
+permit(principal, action, resource);
+"#,
+        ),
+        envelope_snapshot("pay", json!({"amount": 424242}), 0),
+    );
+    assert_fails_closed_naming(&overflow, "policy `policy0`: integer overflow");
+    assert_detail_omits_the_value(&overflow, &["424242", "9223372036854775807"]);
+
+    let extension = evaluate(
+        inline(
+            r#"
+@id("loopback")
+forbid(principal, action, resource) when { ip(context.tool_call.args.host).isLoopback() };
+permit(principal, action, resource);
+"#,
+        ),
+        envelope_snapshot("pay", json!({"host": "not-an-address-7f3a"}), 0),
+    );
+    assert_fails_closed_naming(&extension, "policy `policy0`: an extension function failed");
+    assert_detail_omits_the_value(&extension, &["not-an-address-7f3a"]);
 }
 
 // ── advice translation ───────────────────────────────────────────────
@@ -724,23 +808,32 @@ fn a_lenient_permit_that_does_not_match_leaves_the_stricter_advice_in_place() {
 
 #[test]
 fn advice_of_the_same_kind_ties_break_on_declaration_order() {
-    let outcome = evaluate(
-        inline(
-            r#"
-@advice("{\"verdict\":\"warn\",\"reason\":\"declared_first\"}")
-permit(principal, action, resource);
-@advice("{\"verdict\":\"warn\",\"reason\":\"declared_second\"}")
-permit(principal, action, resource);
-"#,
-        ),
-        envelope_snapshot("pay", json!({"amount": 1}), 0),
-    );
-    assert_eq!(outcome.verdict.decision, Decision::Allow);
-    assert_eq!(outcome.verdict.warnings.len(), 1);
-    assert_eq!(
-        outcome.verdict.warnings[0].reason.as_deref(),
-        Some("declared_first")
-    );
+    // Eight warn permits whose reasons sort against declaration order;
+    // see ORDER_RUNS for why there are eight and why the loop.
+    let mut policy = String::new();
+    for reason in IDS_SORTED_AGAINST_DECLARATION {
+        policy.push_str(&format!(
+            "@advice(\"{{\\\"verdict\\\":\\\"warn\\\",\\\"reason\\\":\\\"{reason}\\\"}}\")\n\
+             permit(principal, action, resource);\n"
+        ));
+    }
+    for _ in 0..ORDER_RUNS {
+        let outcome = evaluate(
+            inline(&policy),
+            envelope_snapshot("pay", json!({"amount": 1}), 0),
+        );
+        assert_eq!(
+            outcome.verdict.decision,
+            Decision::Allow,
+            "{:?}",
+            outcome.verdict
+        );
+        assert_eq!(outcome.verdict.warnings.len(), 1);
+        assert_eq!(
+            outcome.verdict.warnings[0].reason.as_deref(),
+            Some("z_first")
+        );
+    }
 }
 
 #[test]
@@ -784,6 +877,116 @@ permit(principal, action, resource);
         outcome.verdict.reason.as_deref(),
         Some(POLICY_INVOCATION_FAILED)
     );
+}
+
+/// A Cedar annotation is a string literal, so the JSON's quotes and
+/// backslashes are escaped.
+fn advice_annotation(json: &str) -> String {
+    format!(
+        "@advice(\"{}\")",
+        json.replace('\\', "\\\\").replace('"', "\\\"")
+    )
+}
+
+/// Well-formed JSON that the advice schema rejects, through the bundled
+/// dispatcher. `normalize_policy_output` would also refuse most of these,
+/// but a verdict of `allow` or `deny` would pass it, and a member the
+/// schema does not list would be dropped in silence; 12.4 promises a
+/// closed failure for every mismatch.
+#[test]
+fn advice_outside_the_schema_fails_closed_as_policy_output_invalid() {
+    let cases = [
+        ("verdict outside the set", r#"{"verdict":"approve"}"#),
+        ("verdict allow", r#"{"verdict":"allow"}"#),
+        ("verdict deny", r#"{"verdict":"deny"}"#),
+        ("missing verdict", r#"{"reason":"no_verdict"}"#),
+        ("array", "[]"),
+        ("string", r#""warn""#),
+        ("empty string", r#""""#),
+        ("non-string reason", r#"{"verdict":"warn","reason":7}"#),
+        (
+            "warn with a transform body",
+            r#"{"verdict":"warn","transform":{"path":"$target.value","value":1}}"#,
+        ),
+        ("transform without a body", r#"{"verdict":"transform"}"#),
+        ("unknown member", r#"{"verdict":"warn","extra":1}"#),
+        (
+            "misspelt transform",
+            r#"{"verdict":"warn","tranform":{"path":"$target.value","value":1}}"#,
+        ),
+        (
+            "warnings smuggled in",
+            r#"{"verdict":"escalate","warnings":[{"reason":"smuggled"}]}"#,
+        ),
+        (
+            "approval smuggled in",
+            r#"{"verdict":"warn","approval":{"x":1}}"#,
+        ),
+        (
+            "result_labels smuggled in",
+            r#"{"verdict":"warn","result_labels":["smuggled"]}"#,
+        ),
+        (
+            "evidence smuggled in",
+            r#"{"verdict":"warn","evidence":{"artefact":"x"}}"#,
+        ),
+        (
+            "unknown transform member",
+            r#"{"verdict":"transform","transform":{"path":"$target.value","value":1,"extra":true}}"#,
+        ),
+    ];
+    let mut annotations = cases
+        .iter()
+        .map(|(label, json)| (*label, advice_annotation(json)))
+        .collect::<Vec<_>>();
+    annotations.push(("bare @advice", "@advice".to_string()));
+
+    for (label, annotation) in annotations {
+        let outcome = evaluate(
+            inline(&format!(
+                "{annotation}\npermit(principal, action, resource);\n"
+            )),
+            envelope_snapshot("pay", json!({"amount": 1}), 0),
+        );
+        assert_eq!(
+            outcome.error_reason(),
+            Some("runtime_error:policy_output_invalid"),
+            "{label}: {:?}",
+            outcome.dispatcher_error
+        );
+        let verdict = &outcome.verdict;
+        assert_eq!(verdict.decision, Decision::Deny, "{label}: {verdict:?}");
+        assert_eq!(
+            verdict.reason.as_deref(),
+            Some(POLICY_INVOCATION_FAILED),
+            "{label}: {verdict:?}"
+        );
+        assert!(verdict.approval.is_none(), "{label}: {verdict:?}");
+        assert!(verdict.transform.is_none(), "{label}: {verdict:?}");
+        assert!(verdict.warnings.is_empty(), "{label}: {verdict:?}");
+        assert!(verdict.result_labels.is_empty(), "{label}: {verdict:?}");
+        assert!(verdict.evidence.is_none(), "{label}: {verdict:?}");
+    }
+}
+
+/// Advice on a `forbid` has no meaning: the dispatcher reads `@advice`
+/// only when Cedar allows.
+#[test]
+fn advice_on_a_forbid_leaves_the_deny_plain() {
+    let outcome = evaluate(
+        inline(
+            r#"
+@advice("{\"verdict\":\"warn\",\"reason\":\"noted\"}")
+@id("blocked")
+forbid(principal, action, resource);
+@advice("{\"verdict\":\"warn\",\"reason\":\"also_noted\"}")
+permit(principal, action, resource);
+"#,
+        ),
+        envelope_snapshot("pay", json!({"amount": 1}), 0),
+    );
+    assert_plain_deny(&outcome, "blocked");
+    assert!(outcome.verdict.warnings.is_empty());
 }
 
 #[test]
@@ -967,7 +1170,11 @@ const SCHEMA_WITHOUT_CONTEXT_SHAPE: &str = r#"{
   }
 }"#;
 
-const SCHEMA_WITH_CONTEXT_SHAPE: &str = r#"{
+/// The 12.4 context shape for `envelope_snapshot`, with
+/// `tool_call.args.amount` typed as the `AMOUNT_TYPE` marker is replaced
+/// by. Cedar records are closed: a member the snapshot carries and the
+/// schema does not declare is an error.
+const SCHEMA_TEMPLATE: &str = r#"{
   "": {
     "entityTypes": {
       "Agent": {"shape": {"type": "Record", "attributes": {}}},
@@ -999,7 +1206,7 @@ const SCHEMA_WITH_CONTEXT_SHAPE: &str = r#"{
             "name": {"type": "String"},
             "id": {"type": "String", "required": false},
             "args": {"type": "Record", "attributes": {
-              "amount": {"type": "Long", "required": false}
+              "amount": AMOUNT_TYPE
             }}
           }},
           "annotations": {"type": "Record", "attributes": {}}
@@ -1008,6 +1215,13 @@ const SCHEMA_WITH_CONTEXT_SHAPE: &str = r#"{
     }
   }
 }"#;
+
+const LONG_AMOUNT: &str = r#"{"type": "Long", "required": false}"#;
+const DECIMAL_AMOUNT: &str = r#"{"type": "Extension", "name": "decimal", "required": false}"#;
+
+fn schema_typing_amount(amount_type: &str) -> String {
+    SCHEMA_TEMPLATE.replace("AMOUNT_TYPE", amount_type)
+}
 
 fn with_schema(policy_set: &str, name: &str, schema: &str) -> JsonValue {
     json!({
@@ -1020,7 +1234,11 @@ fn with_schema(policy_set: &str, name: &str, schema: &str) -> JsonValue {
 #[test]
 fn schema_declaring_the_context_shape_accepts_the_request() {
     let outcome = evaluate(
-        with_schema(FORBID_GUARDED, "with-context", SCHEMA_WITH_CONTEXT_SHAPE),
+        with_schema(
+            FORBID_GUARDED,
+            "with-context",
+            &schema_typing_amount(LONG_AMOUNT),
+        ),
         envelope_snapshot("pay", json!({"amount": 500}), 0),
     );
     assert_plain_deny(&outcome, "amount_too_high");
@@ -1042,8 +1260,220 @@ fn schema_without_a_context_shape_fails_closed() {
 #[test]
 fn schema_type_mismatch_in_the_context_fails_closed() {
     let outcome = evaluate(
-        with_schema(FORBID_GUARDED, "type-mismatch", SCHEMA_WITH_CONTEXT_SHAPE),
+        with_schema(
+            FORBID_GUARDED,
+            "type-mismatch",
+            &schema_typing_amount(LONG_AMOUNT),
+        ),
         envelope_snapshot("pay", json!({"amount": "five hundred"}), 0),
     );
     assert_fails_closed_naming(&outcome, "context");
+}
+
+/// Cedar rejects an attribute the schema does not declare rather than
+/// dropping it, so a schema narrower than the snapshot cannot starve a
+/// gate of the member it reads.
+#[test]
+fn schema_narrower_than_the_snapshot_fails_closed() {
+    let outcome = evaluate(
+        with_schema(FORBID_GUARDED, "narrow", &schema_typing_amount(LONG_AMOUNT)),
+        envelope_snapshot(
+            "pay",
+            json!({"amount": 500, "host": "attacker.example.org"}),
+            0,
+        ),
+    );
+    assert_fails_closed_naming(&outcome, "rejected the request context");
+}
+
+// ── Long and decimal across types ────────────────────────────────────
+
+const FORBID_AMOUNT_EQ_100: &str = r#"
+@id("blocked_amount")
+forbid(principal, action, resource) when {
+  context.tool_call.args has amount && context.tool_call.args.amount == 100
+};
+permit(principal, action, resource);
+"#;
+
+/// Assert an allow and name the case in the failure message.
+fn assert_allowed_for(outcome: &Outcome, case: &str) {
+    assert_eq!(
+        outcome.verdict.decision,
+        Decision::Allow,
+        "{case}: {:?} / {:?}",
+        outcome.verdict,
+        outcome.dispatcher_error
+    );
+    assert!(
+        outcome.dispatcher_error.is_none(),
+        "{case}: {:?}",
+        outcome.dispatcher_error
+    );
+}
+
+/// The rule 12.4 states. A JSON number with a fraction or an exponent is
+/// a decimal, and Cedar's `==` and set membership across `Long` and
+/// `decimal` are value comparisons that yield false with no error. `100`,
+/// `100.0`, `1e2` and `-0` are one number to the tool that receives the
+/// call but two Cedar types here, so an equality gate against a `Long`
+/// literal is silent for the decimal forms, while `!=` fires. This test
+/// pins that so any change to the number translation is deliberate; the
+/// tests that follow pin the loud half and the schema mitigation.
+#[test]
+fn long_equality_against_a_decimal_is_false_without_a_schema() {
+    let control = evaluate(
+        inline(FORBID_AMOUNT_EQ_100),
+        envelope_snapshot("pay", json!({"amount": 100}), 0),
+    );
+    assert_plain_deny(&control, "blocked_amount");
+    for text in ["100.0", "1e2", "100E0"] {
+        let amount: JsonValue = serde_json::from_str(text).unwrap();
+        let outcome = evaluate(
+            inline(FORBID_AMOUNT_EQ_100),
+            envelope_snapshot("pay", json!({"amount": amount}), 0),
+        );
+        assert_allowed_for(&outcome, text);
+    }
+
+    // serde_json reads `-0` as the float -0.0.
+    let zero_gate = r#"
+@id("zero_amount")
+forbid(principal, action, resource) when {
+  context.tool_call.args has amount && context.tool_call.args.amount == 0
+};
+permit(principal, action, resource);
+"#;
+    let minus_zero: JsonValue = serde_json::from_str("-0").unwrap();
+    let outcome = evaluate(
+        inline(zero_gate),
+        envelope_snapshot("pay", json!({"amount": minus_zero}), 0),
+    );
+    assert_allowed_for(&outcome, "-0");
+
+    let blocklist = r#"
+@id("blocked_account")
+forbid(principal, action, resource) when {
+  context.tool_call.args has account && [4242, 9999].contains(context.tool_call.args.account)
+};
+permit(principal, action, resource);
+"#;
+    let control = evaluate(
+        inline(blocklist),
+        envelope_snapshot("pay", json!({"account": 4242}), 0),
+    );
+    assert_plain_deny(&control, "blocked_account");
+    let outcome = evaluate(
+        inline(blocklist),
+        envelope_snapshot("pay", json!({"account": 4242.0}), 0),
+    );
+    assert_allowed_for(&outcome, "4242.0 against a Long blocklist");
+
+    let not_equal = r#"
+@id("mode_not_one")
+forbid(principal, action, resource) when {
+  context.tool_call.args has mode && context.tool_call.args.mode != 1
+};
+permit(principal, action, resource);
+"#;
+    let outcome = evaluate(
+        inline(not_equal),
+        envelope_snapshot("pay", json!({"mode": 1.0}), 0),
+    );
+    assert_plain_deny(&outcome, "mode_not_one");
+}
+
+#[test]
+fn ordering_against_a_decimal_is_a_type_error_and_fails_closed() {
+    let outcome = evaluate(
+        inline(FORBID_GUARDED),
+        envelope_snapshot("pay", json!({"amount": 500.0}), 0),
+    );
+    assert_fails_closed_naming(&outcome, "policy `policy0`: type error");
+}
+
+#[test]
+fn schema_typed_long_rejects_a_decimal_in_the_request() {
+    let outcome = evaluate(
+        with_schema(
+            FORBID_AMOUNT_EQ_100,
+            "long-amount",
+            &schema_typing_amount(LONG_AMOUNT),
+        ),
+        envelope_snapshot("pay", json!({"amount": 100.0}), 0),
+    );
+    assert_fails_closed_naming(&outcome, "rejected the request context");
+}
+
+#[test]
+fn schema_typed_decimal_rejects_a_long_comparison_at_validation() {
+    let outcome = evaluate(
+        with_schema(
+            FORBID_AMOUNT_EQ_100,
+            "decimal-amount",
+            &schema_typing_amount(DECIMAL_AMOUNT),
+        ),
+        envelope_snapshot("pay", json!({"amount": 100.0}), 0),
+    );
+    assert_fails_closed_naming(&outcome, "failed schema validation");
+}
+
+// ── keys, string args, principal id ──────────────────────────────────
+
+#[test]
+fn reserved_key_inside_a_set_inside_an_annotation_fails_closed_naming_the_path() {
+    let outcome = evaluate_with_annotators(
+        inline("permit(principal, action, resource);"),
+        &["judge"],
+        json!({"judge": {"labels": [{"__extn": {"fn": "ip", "arg": "10.0.0.1"}}]}}),
+        envelope_snapshot("pay", json!({"amount": 1}), 0),
+    );
+    assert_fails_closed_naming(&outcome, "context.annotations.judge.labels[0].__extn");
+}
+
+#[test]
+fn dotted_and_unicode_keys_reach_the_policy_verbatim() {
+    let outcome = evaluate(
+        inline(
+            r#"
+@id("dotted")
+forbid(principal, action, resource) when {
+  context.tool_call.args has "a.b" && context.tool_call.args["a.b"] == "x" &&
+  context.tool_call.args has "hös-t" && context.tool_call.args["hös-t"] == "evil"
+};
+permit(principal, action, resource);
+"#,
+        ),
+        envelope_snapshot("pay", json!({"a.b": "x", "hös-t": "evil"}), 0),
+    );
+    assert_plain_deny(&outcome, "dotted");
+}
+
+/// Args that arrive as a string holding JSON, a common model output, hit
+/// `has` on a string. That is an evaluation error, so the request fails
+/// closed instead of skipping the guarded forbid.
+#[test]
+fn string_valued_args_fail_closed_on_has() {
+    let outcome = evaluate(
+        inline(FORBID_GUARDED),
+        envelope_snapshot("pay", json!("{\"amount\": 500}"), 0),
+    );
+    assert_fails_closed_naming(&outcome, "policy `policy0`: type error");
+}
+
+/// The principal id is spliced into `Agent::"<id>"`. A Cedar string
+/// escape in the snapshot id does not decode to another id:
+/// `EntityUid::from_str` wants a normalized uid and rejects it.
+#[test]
+fn principal_id_with_a_cedar_escape_fails_closed() {
+    let policy = r#"permit(principal == Agent::"alice", action, resource);"#;
+    let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
+    snapshot["envelope"]["agent"]["id"] = json!("\\u{61}lice");
+    let outcome = evaluate(inline(policy), snapshot);
+    assert_fails_closed_naming(&outcome, "principal entity");
+
+    let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
+    snapshot["envelope"]["agent"]["id"] = json!("bob");
+    let control = evaluate(inline(policy), snapshot);
+    assert_plain_deny(&control, "no_matching_policy");
 }

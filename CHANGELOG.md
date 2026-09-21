@@ -106,6 +106,17 @@
   cedar policy that sets `query`, or a cedar binding with any field other
   than `id`, now fails with `runtime_error:manifest_invalid` instead of
   being ignored.
+  Advice with a member outside `cedar_advice.schema.json`, at the top
+  level or inside `transform`, fails closed with
+  `runtime_error:policy_output_invalid`; the schema closes both objects
+  and the dispatcher dropped such members in silence. The detail of an
+  evaluation error names the policy and the kind of error; Cedar's own
+  message quotes the operands of an overflow and the argument of a failed
+  extension call, which are snapshot values. Specification 12.4 now
+  states that `==`, `!=` and the set methods across `Long` and `decimal`
+  are silently false or true, unlike the ordering operators, so a gate
+  that tests a snapshot number for equality or membership needs a schema
+  to pin the type.
   `CedarRequest.context_keys` is replaced by `CedarRequest.context`, the
   Cedar JSON value the mapping produces, and `CedarPolicyInvocation` loses
   its never populated `query` field. A `cedar-lib` CI job runs the

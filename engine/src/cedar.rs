@@ -534,18 +534,25 @@ fn parse_entity_pattern(
     Ok(Some(CedarEntity::new(kind.trim(), id)))
 }
 
+/// Members `spec/schema/cedar_advice.schema.json` allows on the advice
+/// object and on its `transform` member. The schema closes both objects,
+/// so any other member is a mismatch and fails closed.
+const ADVICE_MEMBERS: [&str; 4] = ["verdict", "reason", "message", "transform"];
+const ADVICE_TRANSFORM_MEMBERS: [&str; 2] = ["path", "value"];
+
 /// Translate AGT D3.3 cedar advice into a verdict-shaped `JsonValue` ready
 /// for [`crate::normalize_policy_output`]. Advice missing the `verdict`
-/// field, advice with an unknown verdict value, or transform advice missing
-/// its body fail closed with `runtime_error:policy_output_invalid`. Path
-/// validation (rooted at `$target`) is delegated to
-/// [`crate::verdict::Transform::from_value`] inside `normalize_policy_output`,
-/// which produces `runtime_error:transform_target_forbidden` for an
-/// out-of-target path.
+/// field, advice with an unknown verdict value, advice carrying a member
+/// the advice schema does not list, at the top level or inside
+/// `transform`, or transform advice missing its body fail closed with
+/// `runtime_error:policy_output_invalid`. Path validation (rooted at
+/// `$target`) is delegated to `normalize_policy_output`, which produces
+/// `runtime_error:transform_target_forbidden` for an out-of-target path.
 pub fn translate_advice(advice: JsonValue) -> Result<JsonValue, RuntimeError> {
     let object = advice.as_object().ok_or_else(|| {
         RuntimeError::PolicyOutputInvalid("cedar advice must be a JSON object".to_string())
     })?;
+    reject_unknown_members(object, &ADVICE_MEMBERS, "cedar advice")?;
 
     let verdict = object
         .get("verdict")
@@ -600,11 +607,16 @@ pub fn translate_advice(advice: JsonValue) -> Result<JsonValue, RuntimeError> {
                 "cedar advice with verdict 'transform' requires a transform object".to_string(),
             )
         })?;
-        if !transform.is_object() {
-            return Err(RuntimeError::PolicyOutputInvalid(
+        let members = transform.as_object().ok_or_else(|| {
+            RuntimeError::PolicyOutputInvalid(
                 "cedar advice 'transform' must be a JSON object".to_string(),
-            ));
-        }
+            )
+        })?;
+        reject_unknown_members(
+            members,
+            &ADVICE_TRANSFORM_MEMBERS,
+            "cedar advice 'transform'",
+        )?;
         out.insert("transform".to_string(), transform.clone());
     } else if object.contains_key("transform") {
         return Err(RuntimeError::PolicyOutputInvalid(
@@ -613,6 +625,23 @@ pub fn translate_advice(advice: JsonValue) -> Result<JsonValue, RuntimeError> {
     }
 
     Ok(JsonValue::Object(out))
+}
+
+/// Fail closed on the first member of `object` outside `allowed`. The
+/// verdict the dispatcher builds never copies such a member, so this is
+/// about matching the schema the specification promises, not about a
+/// member reaching the runtime.
+fn reject_unknown_members(
+    object: &Map<String, JsonValue>,
+    allowed: &[&str],
+    what: &str,
+) -> Result<(), RuntimeError> {
+    match object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        Some(member) => Err(RuntimeError::PolicyOutputInvalid(format!(
+            "{what} has a member the advice schema does not allow: '{member}'"
+        ))),
+        None => Ok(()),
+    }
 }
 
 /// Pick one verdict from the translated advice of every contributing
@@ -670,7 +699,8 @@ fn advice_rank(decision: Option<&str>) -> u8 {
 /// * An evaluation error reported by the authorizer for any policy, such
 ///   as an unguarded read of a missing context attribute, fails closed
 ///   with `runtime_error:policy_invocation_failed` whatever the decision.
-///   No `@id` surfaces in that case.
+///   No `@id` surfaces in that case. The detail names the policy and the
+///   kind of error, not Cedar's message, which can quote snapshot values.
 #[cfg(feature = "cedar")]
 #[derive(Debug, Clone, Default)]
 pub struct CedarBuiltinDispatcher;
@@ -715,8 +745,9 @@ mod builtin {
     use super::{build_cedar_request, CedarEntity, CedarRequest};
     use crate::{CedarPolicyInvocation, JsonValue, RuntimeError};
     use cedar_policy::{
-        Authorizer, Context, Decision, Entities, EntityUid, Policy, PolicyId, PolicySet, Request,
-        RequestValidationError, Response, Schema, ValidationMode, Validator,
+        AuthorizationError, Authorizer, Context, Decision, Entities, EntityUid, EvaluationError,
+        Policy, PolicyId, PolicySet, Request, RequestValidationError, Response, Schema,
+        ValidationMode, Validator,
     };
     use serde_json::json;
     use std::{fs, str::FromStr};
@@ -736,15 +767,15 @@ mod builtin {
 
         let authorizer = Authorizer::new();
         let answer = authorizer.is_authorized(&cedar_request, &policy_set, &entities);
-        let hard_errors = answer.diagnostics().errors().cloned().collect::<Vec<_>>();
+        let hard_errors = answer
+            .diagnostics()
+            .errors()
+            .map(describe_evaluation_error)
+            .collect::<Vec<_>>();
         if !hard_errors.is_empty() {
-            let detail = hard_errors
-                .iter()
-                .map(|err| err.to_string())
-                .collect::<Vec<_>>()
-                .join("; ");
             return Err(RuntimeError::PolicyInvocationFailed(format!(
-                "cedar builtin dispatcher authorizer reported errors: {detail}"
+                "cedar builtin dispatcher authorizer reported errors: {}",
+                hard_errors.join("; ")
             )));
         }
 
@@ -766,6 +797,45 @@ mod builtin {
                 );
                 Ok(json!({ "decision": "deny", "reason": reason }))
             }
+        }
+    }
+
+    /// One evaluation error as the policy it came from and the kind of
+    /// error. Cedar's own message is not used: for an integer overflow it
+    /// quotes both operands and for a failed extension call it quotes the
+    /// argument, and those can be snapshot values.
+    fn describe_evaluation_error(error: &AuthorizationError) -> String {
+        let AuthorizationError::PolicyEvaluationError(error) = error;
+        format!(
+            "policy `{}`: {}",
+            error.policy_id(),
+            evaluation_error_kind(error.inner())
+        )
+    }
+
+    fn evaluation_error_kind(error: &EvaluationError) -> &'static str {
+        match error {
+            EvaluationError::EntityDoesNotExist(_) => "an entity does not exist",
+            EvaluationError::EntityAttrDoesNotExist(_) => {
+                "an entity attribute or tag does not exist"
+            }
+            EvaluationError::RecordAttrDoesNotExist(_) => "a record attribute does not exist",
+            EvaluationError::FailedExtensionFunctionLookup(_) => {
+                "an extension function does not exist"
+            }
+            EvaluationError::TypeError(_) => "type error",
+            EvaluationError::WrongNumArguments(_) => {
+                "wrong number of arguments to an extension function"
+            }
+            EvaluationError::IntegerOverflow(_) => "integer overflow",
+            EvaluationError::UnlinkedSlot(_) => "a template slot is not linked",
+            EvaluationError::FailedExtensionFunctionExecution(_) => "an extension function failed",
+            EvaluationError::RecursionLimit(_) => "recursion limit reached",
+            // `NonValue` belongs to partial evaluation, which the
+            // authorizer does not run, and a build with cedar's
+            // `tolerant-ast` feature adds a variant for policies that did
+            // not parse.
+            _ => "evaluation error",
         }
     }
 
@@ -1590,6 +1660,45 @@ mod tests {
     fn translate_advice_round_trips_warn() {
         let value = translate_advice(json!({"verdict": "warn"})).unwrap();
         assert_eq!(value["decision"], json!("warn"));
+    }
+
+    #[test]
+    fn translate_advice_rejects_members_outside_the_schema() {
+        // The advice schema closes both objects. A verdict member that
+        // only the runtime may set, or a misspelt one, is a mismatch.
+        for (advice, member) in [
+            (json!({"verdict": "warn", "extra": 1}), "'extra'"),
+            (json!({"verdict": "warn", "tranform": {}}), "'tranform'"),
+            (
+                json!({"verdict": "escalate", "warnings": [{"reason": "smuggled"}]}),
+                "'warnings'",
+            ),
+            (
+                json!({"verdict": "warn", "approval": {"x": 1}}),
+                "'approval'",
+            ),
+            (
+                json!({"verdict": "transform",
+                       "transform": {"path": "$target.value", "value": 1, "extra": true}}),
+                "'extra'",
+            ),
+        ] {
+            let error = translate_advice(advice.clone()).unwrap_err();
+            assert_eq!(
+                error.reason(),
+                "runtime_error:policy_output_invalid",
+                "{advice}"
+            );
+            assert!(error.detail().contains(member), "{advice}: {error}");
+        }
+        let value = translate_advice(json!({
+            "verdict": "transform",
+            "reason": "r",
+            "message": "m",
+            "transform": {"path": "$target.value", "value": null}
+        }))
+        .unwrap();
+        assert_eq!(value["decision"], json!("transform"));
     }
 
     // ── M2.S5 D7 builtin dispatcher (feature `cedar`) ─────────────────
