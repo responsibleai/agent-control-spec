@@ -48,7 +48,9 @@ pub struct TelemetryEvent {
     /// originating verdict's `evidence.verification_pointers` map. Empty
     /// when no pointers were attached. The URL values are intentionally
     /// omitted to keep telemetry cardinality bounded; auditors recover
-    /// them from the audit record.
+    /// them from the audit record. When the runtime degraded the
+    /// evidence (specification section 13.3) these are the kept keys
+    /// only, and `metadata` carries `evidence_truncated` set to `true`.
     pub evidence_verification_pointer_keys: Vec<String>,
     pub action_identity: Option<String>,
     pub metadata: BTreeMap<String, String>,

@@ -8,7 +8,7 @@
 use agent_control_spec::{
     AcsInterceptor, AnnotatorDispatcher, AnnotatorInvocation, Decision, Evidence,
     InterceptionPoint, JsonValue, Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime,
-    RuntimeError, Verdict, Warning,
+    RuntimeError, TelemetryEvent, TelemetryEventType, TelemetrySink, Verdict, Warning,
 };
 use agent_hooks::{
     canonical_json, AgentContextBuilder, EnforcementMode, InterceptionEmitter, InterceptionRecord,
@@ -546,6 +546,95 @@ async fn truncation_warning_lands_on_the_interception_record() {
     assert!(message.contains(&evidence_digest(&evidence)), "{message}");
     assert!(record.verdict.evidence.is_some());
     assert!(kept_size(&record.verdict) <= CAP);
+}
+
+// The decision telemetry event names only the kept pointer keys once the
+// evidence is degraded, so it carries evidence_truncated in its metadata
+// and a consumer does not read the subset as the whole map. The
+// intervention_point.transformed event beside it is marked the same way.
+
+#[derive(Default)]
+struct CaptureTelemetry(Mutex<Vec<TelemetryEvent>>);
+
+impl TelemetrySink for CaptureTelemetry {
+    fn emit(&self, event: TelemetryEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+fn evaluate_with_telemetry(output: JsonValue) -> (Verdict, Vec<TelemetryEvent>) {
+    let sink = Arc::new(CaptureTelemetry::default());
+    let manifest = Manifest::from_yaml_str(MANIFEST).expect("manifest");
+    let runtime = Runtime::with_telemetry(
+        manifest,
+        Arc::new(NoAnnotators),
+        Arc::new(StaticPolicy(output)),
+        sink.clone(),
+    )
+    .expect("runtime");
+    let verdict = runtime
+        .evaluate_point(
+            InterceptionPoint::Input,
+            json!({"input": {"text": "hello"}}),
+        )
+        .verdict;
+    let events = sink.0.lock().unwrap().clone();
+    (verdict, events)
+}
+
+#[test]
+fn degraded_evidence_is_marked_on_the_decision_telemetry_events() {
+    let total = 250;
+    let (verdict, events) = evaluate_with_telemetry(json!({
+        "decision": "transform",
+        "reason": "redacted",
+        "transform": {"path": "$target.text", "value": "[redacted]"},
+        "evidence": evidence_with("sha256:abc", total),
+    }));
+    assert_eq!(verdict.decision, Decision::Transform);
+    let kept = kept_evidence(&verdict).verification_pointers.len();
+    assert!(0 < kept && kept < total, "kept {kept} of {total}");
+
+    let marked: Vec<&TelemetryEvent> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event_type,
+                TelemetryEventType::Decision | TelemetryEventType::InterventionPointTransformed
+            )
+        })
+        .collect();
+    assert_eq!(marked.len(), 2, "{events:#?}");
+    for event in marked {
+        assert_eq!(event.evidence_artefact.as_deref(), Some("sha256:abc"));
+        assert_eq!(event.evidence_verification_pointer_keys.len(), kept);
+        assert_eq!(
+            event.metadata.get(TRUNCATED).map(String::as_str),
+            Some("true"),
+            "{event:#?}"
+        );
+        // The marker's message, with its digest, stays off telemetry.
+        assert!(event
+            .metadata
+            .values()
+            .all(|value| !value.contains("sha256:")));
+    }
+}
+
+#[test]
+fn fitting_evidence_leaves_the_decision_telemetry_event_unmarked() {
+    let (verdict, events) = evaluate_with_telemetry(json!({
+        "decision": "allow",
+        "evidence": evidence_with("sha256:abc", 10),
+    }));
+    assert_no_truncation_warning(&verdict);
+
+    let decision = events
+        .iter()
+        .find(|event| event.event_type == TelemetryEventType::Decision)
+        .expect("one decision event");
+    assert_eq!(decision.evidence_verification_pointer_keys.len(), 10);
+    assert!(!decision.metadata.contains_key(TRUNCATED), "{decision:#?}");
 }
 
 // A pointer map that already fits is never touched, whatever the order

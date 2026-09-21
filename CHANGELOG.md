@@ -108,8 +108,11 @@
   otherwise, keeps verification pointers in RFC 8785 member order up to
   the cap, and appends one `evidence_truncated` warning carrying the
   original size, the cap, the artefact outcome, the kept and total pointer
-  counts and the sha256 of the full canonical evidence. The runtime owns
-  that warning reason: a dispatcher warning that uses it fails closed. A
+  counts and the sha256 of the full canonical evidence. The `decision` and
+  `intervention_point.transformed` telemetry events carry
+  `evidence_truncated: true` in their metadata when the marker is present,
+  since their pointer keys then name only the kept pointers. The runtime
+  owns that warning reason: a dispatcher warning that uses it fails closed. A
   dispatcher warning whose reason starts with the reserved `runtime_error:`
   or `host_error:` prefix fails closed too; section 18.1 forbids it and the
   agent-hooks wire decoder rejects it, but the runtime used to pass it
