@@ -301,6 +301,13 @@ fn assert_expected(
             "{id}: reason"
         );
     }
+    if expected.get("message").is_some() {
+        assert_eq!(
+            result.verdict.message.as_deref(),
+            expected["message"].as_str(),
+            "{id}: message"
+        );
+    }
     if let Some(expected_transformed) = expected.get("transformed_policy_target") {
         match expected_transformed {
             Value::Null => assert!(
