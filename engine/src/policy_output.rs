@@ -76,8 +76,23 @@ fn warnings_field(
                         "policy output warnings entries must be objects".to_string(),
                     )
                 })?;
+                let reason = string_field(entry, "reason")?;
+                // Section 18.1: a warning carries neither reserved prefix.
+                // The runtime and the host own those namespaces, and the
+                // agent-hooks wire decoder rejects a warning that uses
+                // one, so a verdict carrying it would fail the host's
+                // section 5 gate as host_error:verdict_invalid.
+                if let Some(reason) = &reason {
+                    for prefix in RESERVED_PREFIXES {
+                        if reason.starts_with(prefix) {
+                            return Err(RuntimeError::PolicyOutputInvalid(format!(
+                                "policy output warnings must not use the reserved {prefix}* prefix"
+                            )));
+                        }
+                    }
+                }
                 Ok(Warning {
-                    reason: string_field(entry, "reason")?,
+                    reason,
                     message: string_field(entry, "message")?,
                 })
             })
@@ -212,10 +227,11 @@ fn evidence_field(
 
 /// Normalize raw dispatcher output into an agent-hooks verdict.
 ///
-/// Fails closed on: unknown decisions, reserved reason prefixes, the
-/// removed `effects` key, malformed transforms/warnings/approval/
-/// evidence, a warning that uses the runtime owned `evidence_truncated`
-/// reason, and anything the agent-hooks §5 validation rejects.
+/// Fails closed on: unknown decisions, reserved reason prefixes on the
+/// verdict or on a warning, the removed `effects` key, malformed
+/// transforms/warnings/approval/evidence, a warning that uses the
+/// runtime owned `evidence_truncated` reason, and anything the
+/// agent-hooks §5 validation rejects.
 ///
 /// Evidence over the §5.3 size bound does not fail closed. It is
 /// degraded by [`degrade_evidence`] before the verdict is built, so the
@@ -727,6 +743,30 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(other.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_dispatcher_warning_with_a_reserved_prefix_fails_closed() {
+        for prefix in RESERVED_PREFIXES {
+            let error = normalize_policy_output(json!({
+                "decision": "allow",
+                "warnings": [{"reason": format!("{prefix}forged_zq9v"), "message": "forged"}],
+            }))
+            .unwrap_err();
+            assert!(matches!(error, RuntimeError::PolicyOutputInvalid(_)));
+            let detail = error.detail();
+            assert!(detail.contains(prefix), "{detail}");
+            assert!(!detail.contains("zq9v"), "{detail}");
+            assert!(!detail.contains("forged"), "{detail}");
+        }
+
+        // A reason that merely contains the prefix text is not reserved.
+        let unreserved = normalize_policy_output(json!({
+            "decision": "allow",
+            "warnings": [{"reason": "not_a_runtime_error:really"}],
+        }))
+        .unwrap();
+        assert_eq!(unreserved.warnings.len(), 1);
     }
 
     #[test]

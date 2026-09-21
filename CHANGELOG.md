@@ -109,8 +109,11 @@
   the cap, and appends one `evidence_truncated` warning carrying the
   original size, the cap, the artefact outcome, the kept and total pointer
   counts and the sha256 of the full canonical evidence. The runtime owns
-  that warning reason: a dispatcher warning that uses it fails closed.
-  Malformed evidence still fails closed, and an evidence member other than
+  that warning reason: a dispatcher warning that uses it fails closed. A
+  dispatcher warning whose reason starts with the reserved `runtime_error:`
+  or `host_error:` prefix fails closed too; section 18.1 forbids it and the
+  agent-hooks wire decoder rejects it, but the runtime used to pass it
+  through. Malformed evidence still fails closed, and an evidence member other than
   `artefact` and `verification_pointers`, which the runtime used to drop
   in silence, now fails closed too. The error detail for malformed
   evidence names the failure class and no longer repeats the dispatcher's

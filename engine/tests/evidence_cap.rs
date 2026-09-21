@@ -669,6 +669,44 @@ async fn a_forged_marker_never_reaches_the_interception_record() {
     assert!(record.verdict.evidence.is_none());
 }
 
+// A warning may carry neither reserved prefix (specification section
+// 18.1). Standing next to the runtime's marker, a dispatcher warning
+// under `runtime_error:` or `host_error:` would claim the runtime's or
+// the host's authorship, and the agent-hooks wire decoder rejects such
+// a verdict outright, so an FFI host would see the dispatcher's allow as
+// host_error:verdict_invalid.
+
+#[test]
+fn a_dispatcher_warning_with_a_reserved_prefix_fails_closed() {
+    for prefix in ["runtime_error:", "host_error:"] {
+        let output = json!({
+            "decision": "allow",
+            "warnings": [{"reason": format!("{prefix}{MARKER}"), "message": MARKER}],
+            "evidence": evidence_with("sha256:abc", 250),
+        });
+        let verdict = evaluate(output.clone());
+        assert_eq!(verdict.decision, Decision::Deny, "{prefix}: {verdict:#?}");
+        assert_eq!(
+            verdict.reason.as_deref(),
+            Some("runtime_error:policy_output_invalid")
+        );
+        assert_no_truncation_warning(&verdict);
+        assert!(verdict.evidence.is_none());
+
+        let error = agent_control_spec::normalize_policy_output(output).unwrap_err();
+        assert!(
+            !error.detail().contains(MARKER),
+            "error detail echoes: {}",
+            error.detail()
+        );
+        assert!(
+            error.detail().contains(prefix),
+            "error detail names the prefix: {}",
+            error.detail()
+        );
+    }
+}
+
 // (j) The size and the digest cover the canonical form of the
 // normalized evidence object, in which a null artefact and an empty
 // pointer map are absent.

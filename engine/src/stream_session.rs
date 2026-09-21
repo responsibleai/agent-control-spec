@@ -768,9 +768,10 @@ fn verdict_shape_is_invalid(verdict: &Verdict) -> bool {
     // `host_error:` because a warning is a recorded concern and never the host
     // reporting its own failure, which is the one thing the carve out above
     // exists for. `runtime_error:` because that namespace belongs to the
-    // runtime, and the screen the policy output normalizer applies to a
-    // policy's top level reason does not extend to a warning's. Neither prefix
-    // changes whether the text is released, since the decision does that, but a
+    // runtime. The policy output normalizer screens a policy's warnings the
+    // same way, but a host may hand the accounting a verdict it built or
+    // decoded itself, so the check is restated here. Neither prefix changes
+    // whether the text is released, since the decision does that, but a
     // reserved reason in an audit record is a claim about who failed, so the
     // accounting should not carry one it cannot account for.
     if verdict
