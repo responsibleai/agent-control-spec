@@ -349,7 +349,7 @@ fn canonical_evidence(evidence: &Evidence) -> Result<String, RuntimeError> {
     Ok(canonical_json(&value))
 }
 
-/// Whether `evidence` fits under `cap` by the §5.3 measure.
+/// Whether `evidence` is at or under `cap` by the §5.3 measure.
 fn evidence_within_cap(evidence: &Evidence, cap: usize) -> Result<bool, RuntimeError> {
     Ok(canonical_evidence(evidence)?.len() <= cap)
 }
@@ -731,11 +731,16 @@ mod tests {
 
     #[test]
     fn digest_covers_the_full_canonical_evidence() {
+        // One key outside the BMP, so RFC 8785 member order differs from
+        // BTreeMap order and the expected digest cannot come from a
+        // serializer that keeps the map's own order.
         let evidence = Evidence {
             artefact: Some("x".repeat(EVIDENCE_MAX_BYTES)),
-            verification_pointers: pointers(&[("a", "1")]),
+            verification_pointers: pointers(&[("\u{FF5E}", "1"), ("\u{10000}", "2")]),
         };
-        let full = canonical_evidence(&evidence).unwrap();
+        // The oracle is the SDK serializer over the plain JSON value,
+        // not the engine's own canonical_evidence.
+        let full = canonical_json(&serde_json::to_value(&evidence).unwrap());
         let expected = crate::hex::lower(&Sha256::digest(full.as_bytes()));
         assert_eq!(expected.len(), 64);
 

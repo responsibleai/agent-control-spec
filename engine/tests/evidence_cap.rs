@@ -798,6 +798,14 @@ fn kept_pointers_are_a_prefix_of_the_canonical_member_list() {
     assert_eq!(kept, [astral]);
     let message = the_truncation_warning(&verdict).message.clone().unwrap();
     assert!(message.contains("kept 1 of 2"), "{message}");
+    // The digest and the size come from the SDK serializer. Only here do
+    // RFC 8785 and plain serde_json order the members differently, so
+    // this is the check that ties the engine to the SDK's byte order.
+    assert!(message.contains(&evidence_digest(&evidence)), "{message}");
+    assert!(
+        message.contains(&format!("{} canonical bytes", canonical.len())),
+        "{message}"
+    );
 }
 
 // (m) Shapes that must keep holding around the degrade path.
