@@ -104,9 +104,8 @@ impl CedarEntity {
 /// * A JSON integer becomes a Cedar `Long`. An integer outside the `i64`
 ///   range fails closed.
 /// * Every other JSON number becomes a Cedar `decimal`, rounded to the
-///   nearest value with four fractional digits, ties away from zero. A
-///   value outside the decimal range (about ±922337203685477.58) fails
-///   closed.
+///   nearest value with four fractional digits, ties to even. A value
+///   outside the decimal range (about ±922337203685477.58) fails closed.
 /// * A JSON `null` record member is dropped; a policy tests for it with
 ///   `has`. A `null` set element fails closed: no guard can tell a set
 ///   that lost an element from one that never had it.
@@ -291,11 +290,12 @@ fn number_to_cedar(number: &serde_json::Number, path: &str) -> Result<JsonValue,
 }
 
 /// Format a float as a Cedar decimal literal: scale by 10^4, round to the
-/// nearest integer with ties away from zero (`f64::round`), and print with
-/// a fixed four digit fraction. `None` when the scaled value does not fit
+/// nearest integer with ties to even (`f64::round_ties_even`, the IEEE 754
+/// default and what a `Decimal` quantize does in Python), and print with a
+/// fixed four digit fraction. `None` when the scaled value does not fit
 /// the `i64` a Cedar decimal is stored in.
 fn float_to_decimal(value: f64) -> Option<String> {
-    let scaled = (value * DECIMAL_SCALE).round();
+    let scaled = (value * DECIMAL_SCALE).round_ties_even();
     // 2^63 is exactly representable; anything at or beyond it overflows.
     if !scaled.is_finite() || scaled.abs() >= 9_223_372_036_854_775_808.0 {
         return None;
@@ -1279,9 +1279,12 @@ mod tests {
     fn context_floats_become_decimals_rounded_to_four_places() {
         let cases = [
             (json!(12.5), "12.5000"),
+            (json!(12.0), "12.0000"),
             (json!(0.0), "0.0000"),
             (json!(-0.0), "0.0000"),
             (json!(0.123456), "0.1235"),
+            (json!(0.12345), "0.1234"),
+            (json!(0.12355), "0.1236"),
             (json!(100.00004), "100.0000"),
             (json!(100.00006), "100.0001"),
             (json!(-2.00006), "-2.0001"),
@@ -1472,9 +1475,13 @@ mod tests {
     }
 
     #[test]
-    fn float_to_decimal_rounds_ties_away_from_zero_and_bounds_the_range() {
-        assert_eq!(float_to_decimal(0.00005).as_deref(), Some("0.0001"));
-        assert_eq!(float_to_decimal(-0.00005).as_deref(), Some("-0.0001"));
+    fn float_to_decimal_rounds_ties_to_even_and_bounds_the_range() {
+        // Each tie below scales to an exact half in f64.
+        assert_eq!(float_to_decimal(0.00005).as_deref(), Some("0.0000"));
+        assert_eq!(float_to_decimal(-0.00005).as_deref(), Some("0.0000"));
+        assert_eq!(float_to_decimal(0.00025).as_deref(), Some("0.0002"));
+        assert_eq!(float_to_decimal(0.00035).as_deref(), Some("0.0004"));
+        assert_eq!(float_to_decimal(-2.00025).as_deref(), Some("-2.0002"));
         assert_eq!(float_to_decimal(2.5).as_deref(), Some("2.5000"));
         assert_eq!(
             float_to_decimal(-123456789.1234).as_deref(),

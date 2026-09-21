@@ -1151,6 +1151,37 @@ fn float_beyond_four_fractional_digits_rounds_to_the_nearest_decimal() {
     assert_plain_deny(&rounds_up, "amount_too_high");
 }
 
+/// A tie at the fifth fractional digit rounds to the even neighbour, the
+/// IEEE 754 default. Both amounts below scale to an exact half in f64, so
+/// the outcome does not depend on how the product rounds.
+#[test]
+fn float_tie_at_the_fourth_fractional_digit_rounds_to_even() {
+    // 100.00005 scales to 1000000.5. The even neighbour is 100.0000,
+    // which is not greater than 100.0. Ties away from zero would give
+    // 100.0001 and fire the gate.
+    let rounds_down_to_even = evaluate(
+        inline(FORBID_DECIMAL_OVER_100),
+        envelope_snapshot("pay", json!({"amount": 100.00005}), 0),
+    );
+    assert_plain_allow(&rounds_down_to_even);
+    // 100.00035 scales to 1000003.5. The even neighbour is 100.0004,
+    // which is greater than 100.0003. Truncation would give 100.0003 and
+    // miss the gate.
+    let rounds_up_to_even = evaluate(
+        inline(
+            r#"
+@id("amount_too_high")
+forbid(principal, action, resource) when {
+  context.tool_call.args.amount.greaterThan(decimal("100.0003"))
+};
+permit(principal, action, resource);
+"#,
+        ),
+        envelope_snapshot("pay", json!({"amount": 100.00035}), 0),
+    );
+    assert_plain_deny(&rounds_up_to_even, "amount_too_high");
+}
+
 #[test]
 fn integral_float_is_a_decimal_not_a_long() {
     // `0.0` is a JSON float and arrives as decimal("0.0"); a Long

@@ -45,7 +45,7 @@ nested `annotations` record. That is the shape every file here reads.
 
 Values translate as follows. A JSON integer becomes a `Long`. Every
 other JSON number, `100.0` and `1e2` included, becomes a `decimal`
-rounded to four fractional digits, ties away from zero; compare it with
+rounded to four fractional digits, ties to even; compare it with
 `decimal("...")` literals through `.greaterThan` and its siblings. A
 `Long` and a `decimal` never compare equal: `<`, `>` and the decimal
 methods across the two types fail the evaluation closed, but `==`, `!=`,
