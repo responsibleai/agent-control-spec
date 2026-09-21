@@ -88,13 +88,23 @@ fn library_path() -> String {
         .to_string()
 }
 
-fn manifest(policy: JsonValue, annotators: &[&str]) -> Manifest {
-    let mut point = json!({
-        "policy_target": "$snap.tool_call.args",
-        "policy_target_kind": "tool_args",
-        "tool_name_from": "$snap.tool_call.name",
-        "policy": {"id": "gate"}
-    });
+/// A manifest binding `policy` at one intervention point. The harness
+/// models the tool point and the input point.
+fn manifest(point: InterceptionPoint, policy: JsonValue, annotators: &[&str]) -> Manifest {
+    let mut binding = match point {
+        InterceptionPoint::PreToolCall => json!({
+            "policy_target": "$snap.tool_call.args",
+            "policy_target_kind": "tool_args",
+            "tool_name_from": "$snap.tool_call.name",
+            "policy": {"id": "gate"}
+        }),
+        InterceptionPoint::Input => json!({
+            "policy_target": "$snap.input",
+            "policy_target_kind": "user_input",
+            "policy": {"id": "gate"}
+        }),
+        other => panic!("the harness binds pre_tool_call and input, not {other}"),
+    };
     let mut doc = json!({
         "agent_control_specification_version": "0.4.0-alpha.1",
         "tools": {
@@ -112,9 +122,9 @@ fn manifest(policy: JsonValue, annotators: &[&str]) -> Manifest {
             bound.insert(name.to_string(), json!({"from": "$target"}));
         }
         doc["annotators"] = JsonValue::Object(declared);
-        point["annotations"] = JsonValue::Object(bound);
+        binding["annotations"] = JsonValue::Object(bound);
     }
-    doc["intervention_points"] = json!({"pre_tool_call": point});
+    doc["intervention_points"] = json!({ point.as_str(): binding });
     Manifest::from_json_str(&doc.to_string()).expect("manifest parses")
 }
 
@@ -143,18 +153,35 @@ fn tool_entity(name: &str, attrs: JsonValue) -> JsonValue {
     json!({"uid": {"type": "Tool", "id": name}, "attrs": attrs, "parents": []})
 }
 
-/// Snapshot in the AGT envelope shape that `build_cedar_request` reads
-/// the principal from.
+fn policy_target_entity(kind: &str, attrs: JsonValue) -> JsonValue {
+    json!({"uid": {"type": "PolicyTarget", "id": kind}, "attrs": attrs, "parents": []})
+}
+
+/// The AGT envelope block that `build_cedar_request` reads the principal
+/// from.
+fn envelope(point: InterceptionPoint, tool_call_count: u64) -> JsonValue {
+    json!({
+        "agent": {"id": "agent-1", "version": "1.0", "name": "agent-1"},
+        "session": {"id": "sess-1", "started_at": "2026-01-01T00:00:00Z"},
+        "intervention_point": point.as_str(),
+        "timestamp": "2026-01-01T00:00:01Z",
+        "budgets": {"tool_call_count": tool_call_count, "token_count": 0}
+    })
+}
+
+/// Snapshot for the tool point in the AGT envelope shape.
 fn envelope_snapshot(tool: &str, args: JsonValue, tool_call_count: u64) -> JsonValue {
     json!({
-        "envelope": {
-            "agent": {"id": "agent-1", "version": "1.0", "name": "agent-1"},
-            "session": {"id": "sess-1", "started_at": "2026-01-01T00:00:00Z"},
-            "intervention_point": "pre_tool_call",
-            "timestamp": "2026-01-01T00:00:01Z",
-            "budgets": {"tool_call_count": tool_call_count, "token_count": 0}
-        },
+        "envelope": envelope(InterceptionPoint::PreToolCall, tool_call_count),
         "tool_call": {"name": tool, "args": args, "id": "call-1"}
+    })
+}
+
+/// Snapshot for the input point in the AGT envelope shape.
+fn input_snapshot(input: JsonValue) -> JsonValue {
+    json!({
+        "envelope": envelope(InterceptionPoint::Input, 0),
+        "input": input
     })
 }
 
@@ -179,10 +206,30 @@ impl Outcome {
 }
 
 fn evaluate(policy: JsonValue, snapshot: JsonValue) -> Outcome {
-    evaluate_with_annotators(policy, &[], json!({}), snapshot)
+    evaluate_at(InterceptionPoint::PreToolCall, policy, snapshot)
+}
+
+fn evaluate_at(point: InterceptionPoint, policy: JsonValue, snapshot: JsonValue) -> Outcome {
+    run(point, policy, &[], json!({}), snapshot)
 }
 
 fn evaluate_with_annotators(
+    policy: JsonValue,
+    annotators: &[&str],
+    outputs: JsonValue,
+    snapshot: JsonValue,
+) -> Outcome {
+    run(
+        InterceptionPoint::PreToolCall,
+        policy,
+        annotators,
+        outputs,
+        snapshot,
+    )
+}
+
+fn run(
+    point: InterceptionPoint,
     policy: JsonValue,
     annotators: &[&str],
     outputs: JsonValue,
@@ -193,12 +240,12 @@ fn evaluate_with_annotators(
         last_error: Mutex::new(None),
     });
     let runtime = Runtime::new(
-        manifest(policy, annotators),
+        manifest(point, policy, annotators),
         Arc::new(FixtureAnnotators(outputs)),
         dispatcher.clone(),
     )
     .expect("runtime builds");
-    let result = runtime.evaluate_point(InterceptionPoint::PreToolCall, snapshot);
+    let result = runtime.evaluate_point(point, snapshot);
     let dispatcher_error = dispatcher.last_error.lock().unwrap().clone();
     Outcome {
         verdict: result.verdict,
@@ -355,6 +402,50 @@ fn library_content_hash_denies_a_mismatch() {
         snapshot,
     );
     assert_plain_deny(&outcome, "tool_content_hash_mismatch");
+}
+
+/// The library's IFC gate at the input point tests the source labels
+/// against the sink's clearance with `containsAll`. A `null` label has
+/// no `has` guard, so dropping it would shorten the set and pass the
+/// gate. The request fails closed instead and the detail names the
+/// element.
+#[test]
+fn library_ifc_fails_closed_on_a_null_source_label() {
+    let policy = library(
+        "ifc-null",
+        json!([policy_target_entity(
+            "user_input",
+            json!({"clearance_dominated_labels": ["public"]})
+        )]),
+    );
+    let labelled =
+        |labels: JsonValue| input_snapshot(json!({"body": "hi", "ifc": {"source_labels": labels}}));
+
+    let control = evaluate_at(
+        InterceptionPoint::Input,
+        policy.clone(),
+        labelled(json!(["public", "secret"])),
+    );
+    assert_plain_deny(&control, "ifc_clearance_violation_input");
+    let clean = evaluate_at(
+        InterceptionPoint::Input,
+        policy.clone(),
+        labelled(json!(["public"])),
+    );
+    assert_plain_allow(&clean);
+
+    let outcome = evaluate_at(
+        InterceptionPoint::Input,
+        policy.clone(),
+        labelled(json!(["public", null])),
+    );
+    assert_fails_closed_naming(&outcome, "'context.input.ifc.source_labels[1]'");
+    let outcome = evaluate_at(
+        InterceptionPoint::Input,
+        policy,
+        labelled(json!([null, null])),
+    );
+    assert_fails_closed_naming(&outcome, "'context.input.ifc.source_labels[0]'");
 }
 
 #[test]
@@ -1127,19 +1218,36 @@ permit(principal, action, resource);
     assert_plain_allow(&outcome);
 }
 
+/// A set gate such as an allowlist checked with `containsAll` has no
+/// `has` guard for one element. Dropping a `null` element would evaluate
+/// the gate on the shorter set; the request fails closed instead.
 #[test]
-fn null_set_element_is_dropped() {
-    let outcome = evaluate(
-        inline(
-            r#"
-@id("only_a")
-forbid(principal, action, resource) when { context.tool_call.args.tags == ["a"] };
+fn null_set_element_fails_closed_naming_the_path() {
+    let policy = inline(
+        r#"
+@id("unknown_recipient")
+forbid(principal, action, resource) when {
+  context.tool_call.args has recipients &&
+  !(["alice@example.com", "bob@example.com"].containsAll(context.tool_call.args.recipients))
+};
 permit(principal, action, resource);
 "#,
-        ),
-        envelope_snapshot("pay", json!({"tags": ["a", null]}), 0),
     );
-    assert_plain_deny(&outcome, "only_a");
+    let control = evaluate(
+        policy.clone(),
+        envelope_snapshot(
+            "pay",
+            json!({"recipients": ["alice@example.com", "mallory@evil.example"]}),
+            0,
+        ),
+    );
+    assert_plain_deny(&control, "unknown_recipient");
+
+    let outcome = evaluate(
+        policy,
+        envelope_snapshot("pay", json!({"recipients": ["alice@example.com", null]}), 0),
+    );
+    assert_fails_closed_naming(&outcome, "'context.tool_call.args.recipients[1]'");
 }
 
 #[test]
@@ -1170,10 +1278,10 @@ const SCHEMA_WITHOUT_CONTEXT_SHAPE: &str = r#"{
   }
 }"#;
 
-/// The 12.4 context shape for `envelope_snapshot`, with
-/// `tool_call.args.amount` typed as the `AMOUNT_TYPE` marker is replaced
-/// by. Cedar records are closed: a member the snapshot carries and the
-/// schema does not declare is an error.
+/// The 12.4 context shape for `envelope_snapshot`, with the attributes
+/// of `tool_call.args` given by the `ARGS_ATTRIBUTES` marker. Cedar
+/// records are closed: a member the snapshot carries and the schema does
+/// not declare is an error.
 const SCHEMA_TEMPLATE: &str = r#"{
   "": {
     "entityTypes": {
@@ -1205,9 +1313,7 @@ const SCHEMA_TEMPLATE: &str = r#"{
           "tool_call": {"type": "Record", "attributes": {
             "name": {"type": "String"},
             "id": {"type": "String", "required": false},
-            "args": {"type": "Record", "attributes": {
-              "amount": AMOUNT_TYPE
-            }}
+            "args": {"type": "Record", "attributes": {ARGS_ATTRIBUTES}}
           }},
           "annotations": {"type": "Record", "attributes": {}}
         }}
@@ -1219,8 +1325,12 @@ const SCHEMA_TEMPLATE: &str = r#"{
 const LONG_AMOUNT: &str = r#"{"type": "Long", "required": false}"#;
 const DECIMAL_AMOUNT: &str = r#"{"type": "Extension", "name": "decimal", "required": false}"#;
 
+fn schema_with_args(attributes: &str) -> String {
+    SCHEMA_TEMPLATE.replace("ARGS_ATTRIBUTES", attributes)
+}
+
 fn schema_typing_amount(amount_type: &str) -> String {
-    SCHEMA_TEMPLATE.replace("AMOUNT_TYPE", amount_type)
+    schema_with_args(&format!("\"amount\": {amount_type}"))
 }
 
 fn with_schema(policy_set: &str, name: &str, schema: &str) -> JsonValue {
@@ -1416,6 +1526,100 @@ fn schema_typed_decimal_rejects_a_long_comparison_at_validation() {
         envelope_snapshot("pay", json!({"amount": 100.0}), 0),
     );
     assert_fails_closed_naming(&outcome, "failed schema validation");
+}
+
+/// The guarded form of `FORBID_DECIMAL_OVER_100`: the schema declares
+/// `amount` optional, so a validated read needs the `has` guard.
+const FORBID_GUARDED_DECIMAL_OVER_100: &str = r#"
+@id("amount_too_high")
+forbid(principal, action, resource) when {
+  context.tool_call.args has amount &&
+  context.tool_call.args.amount.greaterThan(decimal("100.0"))
+};
+permit(principal, action, resource);
+"#;
+
+#[test]
+fn schema_typed_decimal_accepts_a_float_and_the_gate_fires() {
+    let policy = with_schema(
+        FORBID_GUARDED_DECIMAL_OVER_100,
+        "decimal-float",
+        &schema_typing_amount(DECIMAL_AMOUNT),
+    );
+    let outcome = evaluate(
+        policy.clone(),
+        envelope_snapshot("pay", json!({"amount": 100.5}), 0),
+    );
+    assert_plain_deny(&outcome, "amount_too_high");
+    let outcome = evaluate(policy, envelope_snapshot("pay", json!({"amount": 99.5}), 0));
+    assert_plain_allow(&outcome);
+}
+
+/// The context is built without the schema and checked against it
+/// afterwards, so a `decimal` typed attribute matches a JSON number only.
+/// A string there is not read as the constructor argument, and it is
+/// snapshot data, so it stays out of the detail.
+#[test]
+fn schema_typed_decimal_rejects_a_string_without_quoting_it() {
+    let outcome = evaluate(
+        with_schema(
+            FORBID_GUARDED_DECIMAL_OVER_100,
+            "decimal-string",
+            &schema_typing_amount(DECIMAL_AMOUNT),
+        ),
+        envelope_snapshot("pay", json!({"amount": "SECRET-not-a-decimal"}), 0),
+    );
+    assert_fails_closed_naming(&outcome, "rejected the request context");
+    assert_detail_omits_the_value(&outcome, &["SECRET-not-a-decimal"]);
+}
+
+/// A schema can type a context attribute as an entity. Built with the
+/// schema, Cedar would read a `{"type", "id"}` record there as an entity
+/// reference, and `tool_call.args` is model output, so a request could
+/// name any entity in the store. The context is built without the
+/// schema, so the record stays a record and the schema check rejects the
+/// request for a member of the group and for a stranger alike.
+#[test]
+fn schema_typed_entity_attribute_is_not_forgeable_from_args() {
+    let mut schema: JsonValue = serde_json::from_str(&schema_with_args(
+        r#""approver": {"type": "Entity", "name": "Agent"}"#,
+    ))
+    .unwrap();
+    schema[""]["entityTypes"]["Group"] = json!({"shape": {"type": "Record", "attributes": {}}});
+    schema[""]["entityTypes"]["Agent"]["memberOfTypes"] = json!(["Group"]);
+    let entities = json!([
+        {"uid": {"type": "Agent", "id": "agent-1"}, "attrs": {}, "parents": []},
+        {"uid": {"type": "Agent", "id": "alice"}, "attrs": {}, "parents": [{"type": "Group", "id": "approvers"}]},
+        {"uid": {"type": "Group", "id": "approvers"}, "attrs": {}, "parents": []},
+        tool_entity("pay", json!({}))
+    ]);
+    let mut policy = with_schema(
+        r#"
+@id("approved")
+permit(principal, action, resource) when {
+  context.tool_call.args.approver in Group::"approvers"
+};
+"#,
+        "entity-attr",
+        &schema.to_string(),
+    );
+    policy["entities_path"] = json!(write_fixture(
+        "entity-attr.entities.json",
+        &entities.to_string()
+    ));
+
+    for approver in ["alice", "mallory"] {
+        let outcome = evaluate(
+            policy.clone(),
+            envelope_snapshot(
+                "pay",
+                json!({"approver": {"type": "Agent", "id": approver}}),
+                0,
+            ),
+        );
+        assert_fails_closed_naming(&outcome, "rejected the request context");
+        assert_detail_omits_the_value(&outcome, &[approver]);
+    }
 }
 
 // ── keys, string args, principal id ──────────────────────────────────

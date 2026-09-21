@@ -96,8 +96,10 @@ impl CedarEntity {
 /// included, plus the annotations as one nested `annotations` record, so
 /// a policy reads `context.tool_call.args.host`,
 /// `context.envelope.budgets.tool_call_count`, or
-/// `context.annotations.confidence.score`. Values are translated into
-/// Cedar's JSON value format:
+/// `context.annotations.confidence.score`. A snapshot member named
+/// `annotations` collides with that record and fails closed, and so does
+/// an `annotations` member of the policy input that is not a record.
+/// Values are translated into Cedar's JSON value format:
 ///
 /// * A JSON integer becomes a Cedar `Long`. An integer outside the `i64`
 ///   range fails closed.
@@ -105,8 +107,9 @@ impl CedarEntity {
 ///   nearest value with four fractional digits, ties away from zero. A
 ///   value outside the decimal range (about ±922337203685477.58) fails
 ///   closed.
-/// * JSON `null` is dropped, whether it is a record member or a set
-///   element.
+/// * A JSON `null` record member is dropped; a policy tests for it with
+///   `has`. A `null` set element fails closed: no guard can tell a set
+///   that lost an element from one that never had it.
 /// * A record key that Cedar's JSON format reserves (`__entity`, `__extn`,
 ///   `__expr`) fails closed. Passing one through would let a snapshot or
 ///   an annotator forge an entity reference or an extension value.
@@ -184,31 +187,50 @@ fn build_cedar_context(
     snapshot: &Map<String, JsonValue>,
     annotations: Option<&JsonValue>,
 ) -> Result<JsonValue, RuntimeError> {
-    let mut context = Map::new();
-    for (key, value) in snapshot {
-        if key == pi_key::ANNOTATIONS {
-            return Err(RuntimeError::PolicyInvocationFailed(format!(
-                "cedar context key 'context.{key}' is reserved for the policy input annotations"
-            )));
-        }
-        let path = format!("context.{key}");
-        if let Some(translated) = to_cedar_value(value, &path, key)? {
-            context.insert(key.clone(), translated);
-        }
+    if snapshot.contains_key(pi_key::ANNOTATIONS) {
+        return Err(RuntimeError::PolicyInvocationFailed(format!(
+            "cedar context key 'context.{}' is reserved for the policy input annotations",
+            pi_key::ANNOTATIONS
+        )));
     }
+    let mut context = translate_record(snapshot, "context")?;
     let annotations = match annotations {
-        None | Some(JsonValue::Null) => JsonValue::Object(Map::new()),
-        Some(value) => to_cedar_value(value, "context.annotations", pi_key::ANNOTATIONS)?
-            .unwrap_or_else(|| JsonValue::Object(Map::new())),
+        None | Some(JsonValue::Null) => Map::new(),
+        Some(JsonValue::Object(members)) => translate_record(members, "context.annotations")?,
+        Some(_) => {
+            return Err(RuntimeError::PolicyInvocationFailed(format!(
+                "cedar context key 'context.{}' must be a record of annotator outputs",
+                pi_key::ANNOTATIONS
+            )))
+        }
     };
-    context.insert(pi_key::ANNOTATIONS.to_string(), annotations);
+    context.insert(
+        pi_key::ANNOTATIONS.to_string(),
+        JsonValue::Object(annotations),
+    );
     Ok(JsonValue::Object(context))
 }
 
+/// Translate the members of one JSON object, dropping `null` members.
+/// `path` is the dotted location of the object for error details.
+fn translate_record(
+    members: &Map<String, JsonValue>,
+    path: &str,
+) -> Result<Map<String, JsonValue>, RuntimeError> {
+    let mut out = Map::new();
+    for (member, inner) in members {
+        let inner_path = format!("{path}.{member}");
+        if let Some(translated) = to_cedar_value(inner, &inner_path, member)? {
+            out.insert(member.clone(), translated);
+        }
+    }
+    Ok(out)
+}
+
 /// Translate one JSON value into Cedar's JSON value format. `None` means
-/// the value was `null` and the caller drops it. `path` is the dotted
-/// location for error details; `key` is the last segment, checked against
-/// the reserved escapes.
+/// the value was `null`; a record drops such a member, a set fails
+/// closed. `path` is the dotted location for error details; `key` is the
+/// last segment, checked against the reserved escapes.
 fn to_cedar_value(
     value: &JsonValue,
     path: &str,
@@ -226,21 +248,18 @@ fn to_cedar_value(
         JsonValue::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
             for (index, item) in items.iter().enumerate() {
-                if let Some(translated) = to_cedar_value(item, &format!("{path}[{index}]"), "")? {
-                    out.push(translated);
-                }
+                let item_path = format!("{path}[{index}]");
+                let translated = to_cedar_value(item, &item_path, "")?.ok_or_else(|| {
+                    RuntimeError::PolicyInvocationFailed(format!(
+                        "cedar context value at '{item_path}' is a null set element"
+                    ))
+                })?;
+                out.push(translated);
             }
             Ok(Some(JsonValue::Array(out)))
         }
         JsonValue::Object(members) => {
-            let mut out = Map::new();
-            for (member, inner) in members {
-                let inner_path = format!("{path}.{member}");
-                if let Some(translated) = to_cedar_value(inner, &inner_path, member)? {
-                    out.insert(member.clone(), translated);
-                }
-            }
-            Ok(Some(JsonValue::Object(out)))
+            translate_record(members, path).map(|out| Some(JsonValue::Object(out)))
         }
     }
 }
@@ -745,7 +764,8 @@ mod builtin {
     use super::{build_cedar_request, CedarEntity, CedarRequest};
     use crate::{CedarPolicyInvocation, JsonValue, RuntimeError};
     use cedar_policy::{
-        AuthorizationError, Authorizer, Context, Decision, Entities, EntityUid, EvaluationError,
+        entities_json_errors::JsonDeserializationError, AuthorizationError, Authorizer, Context,
+        ContextCreationError, ContextJsonError, Decision, Entities, EntityUid, EvaluationError,
         Policy, PolicyId, PolicySet, Request, RequestValidationError, Response, Schema,
         ValidationMode, Validator,
     };
@@ -960,9 +980,16 @@ mod builtin {
         })
     }
 
-    /// Build the upstream request. With a schema, the context is checked
-    /// against the context shape the schema declares for the action, so a
-    /// schema that declares none rejects every request the runtime builds.
+    /// Build the upstream request. The context is built without the
+    /// schema, then `Request::new` checks it against the context shape the
+    /// schema declares for the action, so a schema that declares none
+    /// rejects every request the runtime builds. Building the context
+    /// with the schema would turn on Cedar's schema-directed parsing,
+    /// which reads a `{"type", "id"}` record as an entity reference and a
+    /// string as an extension constructor argument wherever the schema
+    /// types an attribute that way. `tool_call.args` is model output, so
+    /// that would let a snapshot name any entity in the store without the
+    /// `__entity` escape [`build_cedar_request`] rejects.
     fn build_authorizer_request(
         request: &CedarRequest,
         schema: Option<&Schema>,
@@ -970,14 +997,11 @@ mod builtin {
         let principal = entity_uid(&request.principal, "principal")?;
         let action = entity_uid(&request.action, "action")?;
         let resource = entity_uid(&request.resource, "resource")?;
-        let context = Context::from_json_value(
-            request.context.clone(),
-            schema.map(|schema| (schema, &action)),
-        )
-        .map_err(|err| {
+        let context = Context::from_json_value(request.context.clone(), None).map_err(|err| {
             RuntimeError::PolicyInvocationFailed(format!(
-                "cedar builtin dispatcher rejected the request context for {}: {err}",
-                request.action.as_display()
+                "cedar builtin dispatcher rejected the request context for {}: {}",
+                request.action.as_display(),
+                describe_context_json_error(&err)
             ))
         })?;
         Request::new(principal, action, resource, context, schema).map_err(|err| match err {
@@ -994,6 +1018,58 @@ mod builtin {
                 "cedar builtin dispatcher failed to build authorizer request: {other}"
             )),
         })
+    }
+
+    /// The kind of failure Cedar reports when the context JSON does not
+    /// parse. Cedar's own messages quote the offending value, for example
+    /// the argument of an extension constructor that did not parse or the
+    /// value found where a record was expected, and those are snapshot
+    /// values. [`build_cedar_request`] rejects every input that would
+    /// reach this today, so the labels are a guard against a change in
+    /// Cedar's parser, not a description of a path the runtime takes.
+    pub(super) fn describe_context_json_error(error: &ContextJsonError) -> &'static str {
+        match error {
+            ContextJsonError::JsonDeserialization(error) => json_deserialization_error_kind(error),
+            ContextJsonError::ContextCreation(ContextCreationError::NotARecord(_)) => {
+                "the context is not a record"
+            }
+            ContextJsonError::ContextCreation(ContextCreationError::Evaluation(error)) => {
+                evaluation_error_kind(error)
+            }
+            ContextJsonError::ContextCreation(ContextCreationError::ExpressionConstruction(_)) => {
+                "a record has a duplicate key"
+            }
+            ContextJsonError::MissingAction(_) => "the schema does not declare the action",
+        }
+    }
+
+    fn json_deserialization_error_kind(error: &JsonDeserializationError) -> &'static str {
+        match error {
+            JsonDeserializationError::Null(_) => "a value is null",
+            JsonDeserializationError::TypeMismatch(_) => {
+                "a value does not match the type the schema declares"
+            }
+            JsonDeserializationError::UnexpectedRecordAttr(_) => {
+                "a record has an attribute the schema does not declare"
+            }
+            JsonDeserializationError::MissingRequiredRecordAttr(_) => {
+                "a record is missing an attribute the schema requires"
+            }
+            JsonDeserializationError::ParseEscape(_)
+            | JsonDeserializationError::ExpectedLiteralEntityRef(_)
+            | JsonDeserializationError::ExprTag(_) => "an escape did not parse",
+            JsonDeserializationError::ExpectedExtnValue(_)
+            | JsonDeserializationError::MissingImpliedConstructor(_)
+            | JsonDeserializationError::IncorrectNumOfArguments(_)
+            | JsonDeserializationError::FailedExtensionFunctionLookup(_)
+            | JsonDeserializationError::RestrictedExpressionError(_) => {
+                "an extension value did not parse"
+            }
+            JsonDeserializationError::DuplicateKey(_) => "a record has a duplicate key",
+            // Serde errors, the entity-only variants, the deprecated
+            // entity-tags variant and anything a later Cedar adds.
+            _ => "the context did not parse",
+        }
     }
 
     fn entity_uid(entity: &CedarEntity, field: &str) -> Result<EntityUid, RuntimeError> {
@@ -1287,19 +1363,86 @@ mod tests {
     }
 
     #[test]
-    fn context_drops_nulls_in_records_and_sets() {
+    fn context_drops_null_record_members() {
         let mut input = tool_input("agent-x", "hello");
         input["snapshot"]["tool_call"]["args"] = json!({
             "q": "hello",
             "note": null,
-            "tags": ["a", null, "b"],
+            "tags": ["a", "b"],
             "nested": {"inner": null, "kept": 1}
         });
+        input["annotations"] = json!({"confidence": null, "judge": {"score": null, "label": "ok"}});
         let request = build_cedar_request(&input).unwrap();
         assert_eq!(
             request.context["tool_call"]["args"],
             json!({"q": "hello", "tags": ["a", "b"], "nested": {"kept": 1}})
         );
+        assert_eq!(
+            request.context["annotations"],
+            json!({"judge": {"label": "ok"}})
+        );
+    }
+
+    #[test]
+    fn context_fails_closed_on_a_null_set_element_naming_the_path() {
+        for (args, path) in [
+            (
+                json!({"tags": ["a", null, "b"]}),
+                "context.tool_call.args.tags[1]",
+            ),
+            (json!({"tags": [null]}), "context.tool_call.args.tags[0]"),
+            (
+                json!({"rows": [["x"], ["y", null]]}),
+                "context.tool_call.args.rows[1][1]",
+            ),
+            (
+                json!({"items": [{"labels": [null]}]}),
+                "context.tool_call.args.items[0].labels[0]",
+            ),
+        ] {
+            let mut input = tool_input("agent-x", "hello");
+            input["snapshot"]["tool_call"]["args"] = args.clone();
+            let error = build_cedar_request(&input).unwrap_err();
+            assert_eq!(
+                error.reason(),
+                "runtime_error:policy_invocation_failed",
+                "{args}"
+            );
+            assert_eq!(
+                error.detail(),
+                format!("cedar context value at '{path}' is a null set element"),
+                "{args}"
+            );
+        }
+        // An annotator's output is held to the same rule.
+        let mut input = tool_input("agent-x", "hello");
+        input["annotations"] = json!({"judge": {"labels": ["pii", null]}});
+        let error = build_cedar_request(&input).unwrap_err();
+        assert!(
+            error
+                .detail()
+                .contains("'context.annotations.judge.labels[1]'"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn context_rejects_a_non_record_annotations_member() {
+        for annotations in [json!("str"), json!([1, 2]), json!(3), json!(true)] {
+            let mut input = tool_input("agent-x", "hello");
+            input["annotations"] = annotations.clone();
+            let error = build_cedar_request(&input).unwrap_err();
+            assert_eq!(
+                error.reason(),
+                "runtime_error:policy_invocation_failed",
+                "{annotations}"
+            );
+            assert_eq!(
+                error.detail(),
+                "cedar context key 'context.annotations' must be a record of annotator outputs",
+                "{annotations}"
+            );
+        }
     }
 
     #[test]
@@ -1920,5 +2063,64 @@ mod tests {
             .evaluate_cedar(&inv)
             .unwrap_err();
         assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+    }
+
+    /// Most of Cedar's context parse errors quote the value they tripped
+    /// on. The dispatcher detail carries the kind of failure only. Every
+    /// case here is one `build_cedar_request` refuses before Cedar sees
+    /// it, so the errors are made by calling Cedar directly.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn context_parse_error_labels_omit_the_value() {
+        use cedar_policy::{Context, EntityUid, Schema};
+        use std::str::FromStr;
+
+        let marker = "SECRET";
+        // (context, label, whether Cedar's own message quotes the marker)
+        let untyped = [
+            (json!({"a": marker, "b": null}), "a value is null", false),
+            (
+                json!({"a": {"__extn": {"fn": "decimal", "arg": marker}}}),
+                "an extension function failed",
+                true,
+            ),
+            (
+                json!({"a": {"__extn": {"fn": marker, "arg": "1"}}}),
+                "an extension function does not exist",
+                true,
+            ),
+            (
+                json!({"a": {"__expr": marker}}),
+                "an escape did not parse",
+                false,
+            ),
+            (json!(marker), "the context is not a record", true),
+        ];
+        for (context, label, quotes_the_value) in untyped {
+            let error = Context::from_json_value(context.clone(), None).unwrap_err();
+            assert_eq!(
+                error.to_string().contains(marker),
+                quotes_the_value,
+                "{context}: {error}"
+            );
+            assert_eq!(
+                builtin::describe_context_json_error(&error),
+                label,
+                "{context}"
+            );
+        }
+
+        // With a schema, Cedar's parser also rejects an action the
+        // schema does not declare. The dispatcher builds the context
+        // without a schema, so this is the parser's rule, not a path
+        // the runtime takes.
+        let schema = Schema::from_json_str(&schema_for_tool_resource()).unwrap();
+        let unknown_action = EntityUid::from_str(&format!("Action::\"{marker}\"")).unwrap();
+        let error =
+            Context::from_json_value(json!({}), Some((&schema, &unknown_action))).unwrap_err();
+        assert_eq!(
+            builtin::describe_context_json_error(&error),
+            "the schema does not declare the action"
+        );
     }
 }

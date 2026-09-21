@@ -52,11 +52,11 @@ methods across the two types fail the evaluation closed, but `==`, `!=`,
 `contains`, `containsAll` and `containsAny` are silently `false` (`true`
 for `!=`). A gate that tests a snapshot number for equality or
 membership against a `Long` literal misses `100.0`; pin the type with a
-schema, or use an ordering comparison. A `null` member is dropped, so
-guard reads with `has`. An
-integer outside the `Long` range, a float outside the decimal range, or
-a record key Cedar's JSON format reserves (`__entity`, `__extn`,
-`__expr`) fails the evaluation closed with
+schema, or use an ordering comparison. A `null` record member is
+dropped, so guard reads with `has`. A `null` set element, an integer
+outside the `Long` range, a float outside the decimal range, a record
+key Cedar's JSON format reserves (`__entity`, `__extn`, `__expr`), or a
+snapshot member named `annotations` fails the evaluation closed with
 `runtime_error:policy_invocation_failed`. The mapping cannot be
 overridden: a cedar policy that sets `query`, or a cedar binding with any
 field other than `id`, is rejected when the manifest loads.
@@ -97,8 +97,12 @@ schema MUST declare the §12.4 context shape for every action it lists, or
 every request is rejected. Cedar records are closed: a member the
 snapshot carries and the schema does not declare is an error. Declare
 members the snapshot may omit with `"required": false`, and members that
-arrive as floats as `{"type": "Extension", "name": "decimal"}`. A
-minimal shape for `pre_tool_call` with the egress and budget gates:
+arrive as floats as `{"type": "Extension", "name": "decimal"}`. The
+dispatcher builds the context without the schema and checks it against
+the schema afterwards, so a `decimal` typed attribute matches a JSON
+number only, and an attribute typed as an entity never matches: a
+snapshot cannot name an entity. A minimal shape for `pre_tool_call` with
+the egress and budget gates:
 
 ```json
 "pre_tool_call": {"appliesTo": {
