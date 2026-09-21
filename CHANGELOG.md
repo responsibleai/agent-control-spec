@@ -100,6 +100,20 @@
   `runtime_error:policy_output_invalid`. Closes #83.
 - A `cedar-lib` CI job runs the library's own Cedar test corpus with a
   pinned, checksum-verified `cedar-policy-cli`.
+- Evidence over the AGENT-HOOKS-0.1 section 5.3 cap (10240 canonical
+  bytes) no longer fails the whole verdict closed with
+  `runtime_error:policy_output_invalid`. The runtime keeps the decision,
+  reason, message, transform, result labels and the dispatcher's warnings
+  as returned, keeps the artefact whole when it fits alone and drops it
+  otherwise, keeps verification pointers in key order up to the cap, and
+  appends one `evidence_truncated` warning carrying the original size, the
+  cap, the artefact outcome, the kept and total pointer counts and the
+  sha256 of the full canonical evidence. Malformed evidence still fails
+  closed, and an evidence member other than `artefact` and
+  `verification_pointers`, which the runtime used to drop in silence, now
+  fails closed too. The error detail for malformed evidence names the
+  failure class and no longer repeats the dispatcher's pointer key.
+  Closes #86.
 - A manifest chain that fetches any `extends` URL is now URL sourced, and a
   URL sourced manifest may not read host secrets. A fetched document could
   name a host environment variable through `api_key_env` or one of the

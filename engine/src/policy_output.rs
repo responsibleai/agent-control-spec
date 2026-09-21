@@ -11,12 +11,28 @@
 //! three-decision agent-hooks verdict.
 
 use crate::{JsonValue, RuntimeError};
-use agent_hooks::{Decision, Evidence, Transform, Verdict, Warning};
+use agent_hooks::{canonical_json, Decision, Evidence, Transform, Verdict, Warning};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 /// Reserved prefix for engine-synthesized failure reasons. Policy
 /// outputs must not use it (nor the agent-hooks `host_error:` prefix,
 /// which is reserved for hosts).
 const RESERVED_PREFIXES: [&str; 2] = ["runtime_error:", "host_error:"];
+
+/// AGENT-HOOKS-0.1 section 5.3 cap on the RFC 8785 canonical size of
+/// the `evidence` member, in bytes. `Verdict::validate` in the
+/// agent-hooks SDK enforces the same bound. The published SDK
+/// (0.1.0-alpha.5) keeps its constant private, so the engine restates
+/// it here; a unit test probes `Verdict::validate` at the boundary so
+/// the two cannot drift apart unnoticed. Switch to
+/// `agent_hooks::EVIDENCE_MAX_BYTES` once the next alpha exports it.
+pub const EVIDENCE_MAX_BYTES: usize = 10_240;
+
+/// Warning reason the engine appends when it degrades oversize
+/// evidence (specification section 13.3). Engine owned. It carries
+/// neither reserved prefix, as section 18.1 requires of every warning.
+pub const EVIDENCE_TRUNCATED_REASON: &str = "evidence_truncated";
 
 fn string_field(
     object: &serde_json::Map<String, JsonValue>,
@@ -148,16 +164,35 @@ fn evidence_field(
     let entry = value.as_object().ok_or_else(|| {
         RuntimeError::PolicyOutputInvalid("evidence must be an object".to_string())
     })?;
-    let artefact = string_field(entry, "artefact")?;
+    // Only the two section 13.3 members are admitted. No detail below
+    // repeats a dispatcher supplied name or value: the detail names the
+    // failure class and nothing else.
+    if entry
+        .keys()
+        .any(|key| key != "artefact" && key != "verification_pointers")
+    {
+        return Err(RuntimeError::PolicyOutputInvalid(
+            "evidence has a member other than artefact and verification_pointers".to_string(),
+        ));
+    }
+    let artefact = match entry.get("artefact") {
+        None | Some(JsonValue::Null) => None,
+        Some(JsonValue::String(value)) => Some(value.clone()),
+        _ => {
+            return Err(RuntimeError::PolicyOutputInvalid(
+                "evidence.artefact must be a string".to_string(),
+            ))
+        }
+    };
     let verification_pointers = match entry.get("verification_pointers") {
-        None | Some(JsonValue::Null) => Default::default(),
+        None | Some(JsonValue::Null) => BTreeMap::new(),
         Some(JsonValue::Object(map)) => {
-            let mut out = std::collections::BTreeMap::new();
+            let mut out = BTreeMap::new();
             for (key, value) in map {
                 let url = value.as_str().ok_or_else(|| {
-                    RuntimeError::PolicyOutputInvalid(format!(
-                        "evidence.verification_pointers.{key} must be a string"
-                    ))
+                    RuntimeError::PolicyOutputInvalid(
+                        "evidence.verification_pointers values must be strings".to_string(),
+                    )
                 })?;
                 out.insert(key.clone(), url.to_string());
             }
@@ -179,8 +214,11 @@ fn evidence_field(
 ///
 /// Fails closed on: unknown decisions, reserved reason prefixes, the
 /// removed `effects` key, malformed transforms/warnings/approval/
-/// evidence, and anything the agent-hooks §5 validation rejects
-/// (including the evidence size bound).
+/// evidence, and anything the agent-hooks §5 validation rejects.
+///
+/// Evidence over the §5.3 size bound does not fail closed. It is
+/// degraded by [`degrade_evidence`] before the verdict is built, so the
+/// final `validate()` gate still runs and must pass.
 pub fn normalize_policy_output(output: JsonValue) -> Result<Verdict, RuntimeError> {
     let object = output.as_object().ok_or_else(|| {
         RuntimeError::PolicyOutputInvalid("policy output must be an object".to_string())
@@ -254,6 +292,18 @@ pub fn normalize_policy_output(output: JsonValue) -> Result<Verdict, RuntimeErro
         }
     };
 
+    // Section 13.3: oversize evidence is degraded, not the verdict. The
+    // marker goes after every warning the dispatcher returned, the
+    // `warn` intent's included.
+    let evidence = match evidence {
+        Some(evidence) => {
+            let degraded = degrade_evidence(evidence, EVIDENCE_MAX_BYTES)?;
+            warnings.extend(degraded.warning);
+            Some(degraded.evidence)
+        }
+        None => None,
+    };
+
     let verdict = Verdict {
         decision,
         reason,
@@ -274,6 +324,122 @@ pub fn normalize_policy_output(output: JsonValue) -> Result<Verdict, RuntimeErro
     Ok(verdict)
 }
 
+/// The RFC 8785 canonical form of `evidence`: the bytes the agent-hooks
+/// §5.3 size check measures, and the bytes the truncation digest covers.
+fn canonical_evidence(evidence: &Evidence) -> Result<String, RuntimeError> {
+    let value = serde_json::to_value(evidence).map_err(|_| {
+        RuntimeError::PolicyOutputInvalid("evidence could not be serialized".to_string())
+    })?;
+    Ok(canonical_json(&value))
+}
+
+/// Whether `evidence` fits under `cap` by the §5.3 measure.
+fn evidence_within_cap(evidence: &Evidence, cap: usize) -> Result<bool, RuntimeError> {
+    Ok(canonical_evidence(evidence)?.len() <= cap)
+}
+
+/// Evidence after the cap has been applied, with the warning that marks
+/// a loss when there was one.
+struct DegradedEvidence {
+    evidence: Evidence,
+    warning: Option<Warning>,
+}
+
+/// Fit `evidence` under `cap` without touching the verdict around it.
+///
+/// Rule (specification section 13.3): evidence that fits is returned
+/// as is. Otherwise the artefact is kept whole when it fits on its own
+/// and dropped otherwise, never cut. Verification pointers are then
+/// kept in key order (the `BTreeMap` order) for as long as the result
+/// fits, and the rest are dropped. One `evidence_truncated` warning
+/// records the original canonical size, the cap, the artefact outcome,
+/// the kept and total pointer counts, and `sha256:<hex>` of the full
+/// canonical evidence. The result is deterministic for a given input.
+fn degrade_evidence(evidence: Evidence, cap: usize) -> Result<DegradedEvidence, RuntimeError> {
+    let full = canonical_evidence(&evidence)?;
+    if full.len() <= cap {
+        return Ok(DegradedEvidence {
+            evidence,
+            warning: None,
+        });
+    }
+    let digest = crate::hex::lower(&Sha256::digest(full.as_bytes()));
+
+    let artefact_only = Evidence {
+        artefact: evidence.artefact.clone(),
+        verification_pointers: BTreeMap::new(),
+    };
+    let artefact = if evidence_within_cap(&artefact_only, cap)? {
+        evidence.artefact.clone()
+    } else {
+        None
+    };
+    let artefact_outcome = match (&evidence.artefact, &artefact) {
+        (None, _) => "no artefact",
+        (Some(_), Some(_)) => "artefact kept",
+        (Some(_), None) => "artefact dropped",
+    };
+
+    // The pointers that fit form a key-order prefix, and the canonical
+    // size grows with the prefix length, so a binary search over the
+    // length finds the longest prefix that fits. `fits` always names a
+    // length known to fit (zero does, since the artefact decision above
+    // left something that fits); `too_many` starts one past the end as
+    // a bound that is never measured.
+    let pointers: Vec<(&String, &String)> = evidence.verification_pointers.iter().collect();
+    let with_prefix = |count: usize| Evidence {
+        artefact: artefact.clone(),
+        verification_pointers: pointers[..count]
+            .iter()
+            .map(|(key, url)| ((*key).clone(), (*url).clone()))
+            .collect(),
+    };
+    let (mut fits, mut too_many) = (0usize, pointers.len() + 1);
+    while too_many - fits > 1 {
+        let probe = fits + (too_many - fits) / 2;
+        if evidence_within_cap(&with_prefix(probe), cap)? {
+            fits = probe;
+        } else {
+            too_many = probe;
+        }
+    }
+    let kept = with_prefix(fits);
+
+    let warning = truncation_warning(
+        full.len(),
+        cap,
+        artefact_outcome,
+        fits,
+        pointers.len(),
+        &digest,
+    );
+    Ok(DegradedEvidence {
+        evidence: kept,
+        warning: Some(warning),
+    })
+}
+
+/// The `evidence_truncated` marker. Stays under 256 bytes: the fixed
+/// text is about 140 bytes, the digest is 64, and the counts are bounded
+/// by the 262,144 byte policy output limit upstream.
+fn truncation_warning(
+    original_bytes: usize,
+    cap: usize,
+    artefact_outcome: &str,
+    kept_pointers: usize,
+    total_pointers: usize,
+    digest_hex: &str,
+) -> Warning {
+    Warning {
+        reason: Some(EVIDENCE_TRUNCATED_REASON.to_string()),
+        message: Some(format!(
+            "evidence degraded: {original_bytes} canonical bytes exceeded the {cap} byte cap; \
+             {artefact_outcome}; verification_pointers kept {kept_pointers} of {total_pointers}; \
+             full evidence sha256:{digest_hex}"
+        )),
+    }
+}
+
 /// Engine-synthesized fail-closed verdict for a runtime error.
 pub fn runtime_error_verdict(error: &RuntimeError) -> Verdict {
     let message = match error {
@@ -287,5 +453,204 @@ pub fn runtime_error_verdict(error: &RuntimeError) -> Verdict {
         reason: Some(error.reason().to_string()),
         message: Some(message),
         ..Verdict::allow()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn pointers(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(key, url)| (key.to_string(), url.to_string()))
+            .collect()
+    }
+
+    fn artefact_only(canonical_size: usize) -> Evidence {
+        // {"artefact":"<pad>"} is 15 bytes of framing plus the pad.
+        Evidence {
+            artefact: Some("x".repeat(canonical_size - 15)),
+            verification_pointers: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn local_cap_matches_the_sdk_validate_gate() {
+        let at_cap = artefact_only(EVIDENCE_MAX_BYTES);
+        assert_eq!(
+            canonical_evidence(&at_cap).unwrap().len(),
+            EVIDENCE_MAX_BYTES
+        );
+        Verdict {
+            evidence: Some(at_cap),
+            ..Verdict::allow()
+        }
+        .validate()
+        .expect("evidence at the cap passes the SDK gate");
+
+        let over = Verdict {
+            evidence: Some(artefact_only(EVIDENCE_MAX_BYTES + 1)),
+            ..Verdict::allow()
+        };
+        assert!(over.validate().is_err(), "one byte over fails the SDK gate");
+    }
+
+    #[test]
+    fn canonical_evidence_matches_the_sdk_measure() {
+        let evidence = Evidence {
+            artefact: Some("sha256:abc".to_string()),
+            verification_pointers: pointers(&[("z", "https://z"), ("a", "https://a")]),
+        };
+        let expected = canonical_json(&json!({
+            "artefact": "sha256:abc",
+            "verification_pointers": {"a": "https://a", "z": "https://z"},
+        }));
+        assert_eq!(canonical_evidence(&evidence).unwrap(), expected);
+        assert_eq!(canonical_evidence(&Evidence::default()).unwrap(), "{}");
+
+        // An absent artefact is skipped, not written as null.
+        let pointers_only = Evidence {
+            artefact: None,
+            verification_pointers: pointers(&[("a", "1")]),
+        };
+        assert_eq!(
+            canonical_evidence(&pointers_only).unwrap(),
+            r#"{"verification_pointers":{"a":"1"}}"#
+        );
+    }
+
+    #[test]
+    fn evidence_under_the_cap_is_untouched() {
+        let evidence = Evidence {
+            artefact: Some("sha256:abc".to_string()),
+            verification_pointers: pointers(&[("a", "1")]),
+        };
+        let degraded = degrade_evidence(evidence.clone(), EVIDENCE_MAX_BYTES).unwrap();
+        assert_eq!(degraded.evidence, evidence);
+        assert!(degraded.warning.is_none());
+    }
+
+    #[test]
+    fn pointer_selection_keeps_a_key_order_prefix() {
+        // {"verification_pointers":{"a":"1","b":"2","c":"3"}} is 51 bytes;
+        // the two pointer prefix is 43 and the one pointer prefix 35.
+        let evidence = Evidence {
+            artefact: None,
+            verification_pointers: pointers(&[("c", "3"), ("a", "1"), ("b", "2")]),
+        };
+        assert_eq!(canonical_evidence(&evidence).unwrap().len(), 51);
+
+        let degraded = degrade_evidence(evidence, 45).unwrap();
+        let kept: Vec<&str> = degraded
+            .evidence
+            .verification_pointers
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(kept, ["a", "b"]);
+        assert_eq!(degraded.evidence.verification_pointers["a"], "1");
+        assert_eq!(degraded.evidence.verification_pointers["b"], "2");
+        assert_eq!(canonical_evidence(&degraded.evidence).unwrap().len(), 43);
+        let message = degraded.warning.unwrap().message.unwrap();
+        assert!(message.contains("no artefact"), "{message}");
+        assert!(message.contains("kept 2 of 3"), "{message}");
+        assert!(
+            message.contains("51 canonical bytes exceeded the 45 byte cap"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn artefact_comes_first_and_is_never_cut() {
+        // {"artefact":"xyz"} is 18 bytes; any pointer pushes it past 20.
+        let evidence = Evidence {
+            artefact: Some("xyz".to_string()),
+            verification_pointers: pointers(&[("a", "1")]),
+        };
+        let degraded = degrade_evidence(evidence, 20).unwrap();
+        assert_eq!(degraded.evidence.artefact.as_deref(), Some("xyz"));
+        assert!(degraded.evidence.verification_pointers.is_empty());
+        let message = degraded.warning.unwrap().message.unwrap();
+        assert!(message.contains("artefact kept"), "{message}");
+        assert!(message.contains("kept 0 of 1"), "{message}");
+
+        // {"artefact":"<30 x>"} is 45 bytes: over a 40 byte cap on its
+        // own, so it is dropped whole, and the pointer, 35 bytes on its
+        // own, stays.
+        let evidence = Evidence {
+            artefact: Some("x".repeat(30)),
+            verification_pointers: pointers(&[("a", "1")]),
+        };
+        let degraded = degrade_evidence(evidence, 40).unwrap();
+        assert_eq!(degraded.evidence.artefact, None);
+        assert_eq!(
+            degraded.evidence.verification_pointers,
+            pointers(&[("a", "1")])
+        );
+        let message = degraded.warning.unwrap().message.unwrap();
+        assert!(message.contains("artefact dropped"), "{message}");
+        assert!(message.contains("kept 1 of 1"), "{message}");
+    }
+
+    #[test]
+    fn digest_covers_the_full_canonical_evidence() {
+        let evidence = Evidence {
+            artefact: Some("x".repeat(EVIDENCE_MAX_BYTES)),
+            verification_pointers: pointers(&[("a", "1")]),
+        };
+        let full = canonical_evidence(&evidence).unwrap();
+        let expected = crate::hex::lower(&Sha256::digest(full.as_bytes()));
+        assert_eq!(expected.len(), 64);
+
+        let degraded = degrade_evidence(evidence, EVIDENCE_MAX_BYTES).unwrap();
+        let message = degraded.warning.unwrap().message.unwrap();
+        assert!(
+            message.ends_with(&format!("sha256:{expected}")),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn degraded_evidence_passes_the_sdk_gate() {
+        let evidence = Evidence {
+            artefact: Some("x".repeat(6_000)),
+            verification_pointers: (0..400)
+                .map(|index| {
+                    (
+                        format!("ptr_{index:03}"),
+                        format!("https://example.com/pointers/{index:03}"),
+                    )
+                })
+                .collect(),
+        };
+        let degraded = degrade_evidence(evidence, EVIDENCE_MAX_BYTES).unwrap();
+        assert!(canonical_evidence(&degraded.evidence).unwrap().len() <= EVIDENCE_MAX_BYTES);
+        assert!(!degraded.evidence.verification_pointers.is_empty());
+        Verdict {
+            evidence: Some(degraded.evidence),
+            ..Verdict::allow()
+        }
+        .validate()
+        .expect("degraded evidence passes the SDK gate");
+    }
+
+    #[test]
+    fn truncation_message_stays_under_256_bytes() {
+        let warning = truncation_warning(
+            262_144,
+            EVIDENCE_MAX_BYTES,
+            "artefact dropped",
+            99_999,
+            99_999,
+            &"f".repeat(64),
+        );
+        assert_eq!(warning.reason.as_deref(), Some(EVIDENCE_TRUNCATED_REASON));
+        let message = warning.message.unwrap();
+        assert!(message.len() < 256, "{} bytes", message.len());
+        for prefix in RESERVED_PREFIXES {
+            assert!(!EVIDENCE_TRUNCATED_REASON.starts_with(prefix));
+        }
     }
 }
