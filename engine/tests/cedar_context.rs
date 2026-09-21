@@ -89,7 +89,7 @@ fn library_path() -> String {
 }
 
 /// A manifest binding `policy` at one intervention point. The harness
-/// models the tool point and the input point.
+/// models the two tool points and the input point.
 fn manifest(point: InterceptionPoint, policy: JsonValue, annotators: &[&str]) -> Manifest {
     let mut binding = match point {
         InterceptionPoint::PreToolCall => json!({
@@ -98,12 +98,18 @@ fn manifest(point: InterceptionPoint, policy: JsonValue, annotators: &[&str]) ->
             "tool_name_from": "$snap.tool_call.name",
             "policy": {"id": "gate"}
         }),
+        InterceptionPoint::PostToolCall => json!({
+            "policy_target": "$snap.tool_result",
+            "policy_target_kind": "tool_result",
+            "tool_name_from": "$snap.tool_call.name",
+            "policy": {"id": "gate"}
+        }),
         InterceptionPoint::Input => json!({
             "policy_target": "$snap.input",
             "policy_target_kind": "user_input",
             "policy": {"id": "gate"}
         }),
-        other => panic!("the harness binds pre_tool_call and input, not {other}"),
+        other => panic!("the harness binds pre_tool_call, post_tool_call and input, not {other}"),
     };
     let mut doc = json!({
         "agent_control_specification_version": "0.4.0-alpha.1",
@@ -174,6 +180,22 @@ fn envelope_snapshot(tool: &str, args: JsonValue, tool_call_count: u64) -> JsonV
     json!({
         "envelope": envelope(InterceptionPoint::PreToolCall, tool_call_count),
         "tool_call": {"name": tool, "args": args, "id": "call-1"}
+    })
+}
+
+/// Snapshot for the post-tool point in the AGT envelope shape. The AGT
+/// host writes `error: null` and a float `duration_ms` on every
+/// successful call, so a post-tool request always carries both.
+fn post_tool_snapshot(
+    tool: &str,
+    value: JsonValue,
+    error: JsonValue,
+    duration_ms: JsonValue,
+) -> JsonValue {
+    json!({
+        "envelope": envelope(InterceptionPoint::PostToolCall, 1),
+        "tool_call": {"name": tool, "args": {}, "id": "call-1"},
+        "tool_result": {"value": value, "error": error, "duration_ms": duration_ms}
     })
 }
 
@@ -1247,6 +1269,44 @@ permit(principal, action, resource);
         envelope_snapshot("pay", json!({"amount": 1, "note": null}), 0),
     );
     assert_plain_allow(&outcome);
+}
+
+/// Every successful post-tool snapshot from the AGT host carries
+/// `tool_result.error: null` and a float `duration_ms`. The null drops,
+/// so `has error` is false, and `0.0` arrives as `decimal("0.0")`.
+#[test]
+fn post_tool_snapshot_with_null_error_and_float_duration_evaluates() {
+    let policy = inline(
+        r#"
+@id("tool_errored")
+forbid(principal, action, resource) when { context.tool_result has error };
+@id("tool_too_slow")
+forbid(principal, action, resource) when {
+  context.tool_result.duration_ms.greaterThan(decimal("1000.0"))
+};
+permit(principal, action, resource);
+"#,
+    );
+    let success = evaluate_at(
+        InterceptionPoint::PostToolCall,
+        policy.clone(),
+        post_tool_snapshot("search", json!({"hits": 3}), json!(null), json!(0.0)),
+    );
+    assert_plain_allow(&success);
+
+    let errored = evaluate_at(
+        InterceptionPoint::PostToolCall,
+        policy.clone(),
+        post_tool_snapshot("search", json!(null), json!("timeout"), json!(0.0)),
+    );
+    assert_plain_deny(&errored, "tool_errored");
+
+    let slow = evaluate_at(
+        InterceptionPoint::PostToolCall,
+        policy,
+        post_tool_snapshot("search", json!({"hits": 3}), json!(null), json!(1500.5)),
+    );
+    assert_plain_deny(&slow, "tool_too_slow");
 }
 
 /// A set gate such as an allowlist checked with `containsAll` has no
