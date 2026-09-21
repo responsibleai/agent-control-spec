@@ -214,7 +214,8 @@ fn evidence_field(
 ///
 /// Fails closed on: unknown decisions, reserved reason prefixes, the
 /// removed `effects` key, malformed transforms/warnings/approval/
-/// evidence, and anything the agent-hooks §5 validation rejects.
+/// evidence, a warning that uses the runtime owned `evidence_truncated`
+/// reason, and anything the agent-hooks §5 validation rejects.
 ///
 /// Evidence over the §5.3 size bound does not fail closed. It is
 /// degraded by [`degrade_evidence`] before the verdict is built, so the
@@ -270,6 +271,21 @@ pub fn normalize_policy_output(output: JsonValue) -> Result<Verdict, RuntimeErro
             )))
         }
     };
+
+    // Section 13.3: the runtime owns the evidence_truncated reason. A
+    // dispatcher warning that carries it, returned directly or through
+    // the warn intent, would let a policy forge the marker the runtime
+    // appends below, so it fails closed. The detail names the rule and
+    // repeats nothing the dispatcher sent.
+    if warnings
+        .iter()
+        .any(|warning| warning.reason.as_deref() == Some(EVIDENCE_TRUNCATED_REASON))
+    {
+        return Err(RuntimeError::PolicyOutputInvalid(
+            "policy output warnings must not use the runtime owned evidence_truncated reason"
+                .to_string(),
+        ));
+    }
 
     if approval.is_some() && decision != Decision::Deny {
         return Err(RuntimeError::PolicyOutputInvalid(
@@ -350,11 +366,13 @@ struct DegradedEvidence {
 /// Rule (specification section 13.3): evidence that fits is returned
 /// as is. Otherwise the artefact is kept whole when it fits on its own
 /// and dropped otherwise, never cut. Verification pointers are then
-/// kept in key order (the `BTreeMap` order) for as long as the result
-/// fits, and the rest are dropped. One `evidence_truncated` warning
-/// records the original canonical size, the cap, the artefact outcome,
-/// the kept and total pointer counts, and `sha256:<hex>` of the full
-/// canonical evidence. The result is deterministic for a given input.
+/// kept in RFC 8785 member order (ascending UTF-16 code units of the
+/// key) for as long as the result fits, and the rest are dropped. When
+/// nothing fits the result is the empty object. One `evidence_truncated`
+/// warning records the original canonical size, the cap, the artefact
+/// outcome, the kept and total pointer counts, and `sha256:<hex>` of the
+/// full canonical evidence. The result is deterministic for a given
+/// input.
 fn degrade_evidence(evidence: Evidence, cap: usize) -> Result<DegradedEvidence, RuntimeError> {
     let full = canonical_evidence(&evidence)?;
     if full.len() <= cap {
@@ -380,13 +398,21 @@ fn degrade_evidence(evidence: Evidence, cap: usize) -> Result<DegradedEvidence, 
         (Some(_), None) => "artefact dropped",
     };
 
-    // The pointers that fit form a key-order prefix, and the canonical
-    // size grows with the prefix length, so a binary search over the
-    // length finds the longest prefix that fits. `fits` always names a
-    // length known to fit (zero does, since the artefact decision above
-    // left something that fits); `too_many` starts one past the end as
-    // a bound that is never measured.
-    let pointers: Vec<(&String, &String)> = evidence.verification_pointers.iter().collect();
+    // RFC 8785 lists object members in ascending order of the UTF-16
+    // code units of the key, and that is the order the canonical bytes
+    // and the digest see. A BTreeMap<String, _> iterates by Unicode
+    // scalar value instead, which differs for keys outside the Basic
+    // Multilingual Plane, so the candidates are sorted the canonical way
+    // first. The kept pointers are then a prefix of the canonical member
+    // list.
+    let mut pointers: Vec<(&String, &String)> = evidence.verification_pointers.iter().collect();
+    pointers.sort_by(|(left, _), (right, _)| left.encode_utf16().cmp(right.encode_utf16()));
+
+    // The canonical size grows with the prefix length, so a binary
+    // search over the length finds the longest prefix that fits. `fits`
+    // always names a length known to fit (zero does, since the artefact
+    // decision above left something that fits); `too_many` starts one
+    // past the end as a bound that is never measured.
     let with_prefix = |count: usize| Evidence {
         artefact: artefact.clone(),
         verification_pointers: pointers[..count]
@@ -419,9 +445,11 @@ fn degrade_evidence(evidence: Evidence, cap: usize) -> Result<DegradedEvidence, 
     })
 }
 
-/// The `evidence_truncated` marker. Stays under 256 bytes: the fixed
-/// text is about 140 bytes, the digest is 64, and the counts are bounded
-/// by the 262,144 byte policy output limit upstream.
+/// The `evidence_truncated` marker. The fixed text and the digest come
+/// to 201 bytes; the three counts add their decimal digits. The message
+/// stays under 256 bytes for any evidence under 10^18 canonical bytes,
+/// far past any policy output limit a host can set. A unit test pins
+/// the 201.
 fn truncation_warning(
     original_bytes: usize,
     cap: usize,
@@ -594,6 +622,113 @@ mod tests {
         assert!(message.contains("kept 1 of 1"), "{message}");
     }
 
+    fn kept_keys(degraded: &DegradedEvidence) -> Vec<&str> {
+        degraded
+            .evidence
+            .verification_pointers
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+
+    #[test]
+    fn a_pointer_prefix_that_lands_exactly_on_the_cap_is_kept() {
+        // The two pointer prefix of the fixture is exactly 43 bytes, so
+        // a 43 byte cap keeps it and a 42 byte cap keeps one pointer.
+        // This pins the inclusive bound of the fit check.
+        let evidence = Evidence {
+            artefact: None,
+            verification_pointers: pointers(&[("a", "1"), ("b", "2"), ("c", "3")]),
+        };
+        let at_cap = degrade_evidence(evidence.clone(), 43).unwrap();
+        assert_eq!(kept_keys(&at_cap), ["a", "b"]);
+        assert_eq!(canonical_evidence(&at_cap.evidence).unwrap().len(), 43);
+
+        let under = degrade_evidence(evidence, 42).unwrap();
+        assert_eq!(kept_keys(&under), ["a"]);
+    }
+
+    #[test]
+    fn an_artefact_that_lands_exactly_on_the_cap_is_kept() {
+        // {"artefact":"xyz"} is exactly 18 bytes. Next to a pointer that
+        // cannot fit beside it, an 18 byte cap keeps the artefact and a
+        // 17 byte cap drops it, leaving the empty object.
+        let evidence = Evidence {
+            artefact: Some("xyz".to_string()),
+            verification_pointers: pointers(&[("a", "1")]),
+        };
+        let at_cap = degrade_evidence(evidence.clone(), 18).unwrap();
+        assert_eq!(at_cap.evidence.artefact.as_deref(), Some("xyz"));
+        assert!(at_cap.evidence.verification_pointers.is_empty());
+        assert_eq!(canonical_evidence(&at_cap.evidence).unwrap().len(), 18);
+
+        let under = degrade_evidence(evidence, 17).unwrap();
+        assert_eq!(under.evidence.artefact, None);
+        assert!(under.evidence.verification_pointers.is_empty());
+        assert_eq!(canonical_evidence(&under.evidence).unwrap(), "{}");
+    }
+
+    #[test]
+    fn pointer_selection_follows_the_canonical_member_order() {
+        // U+FF5E sorts before U+10000 by scalar value and after it by
+        // UTF-16 code units (D800 DC00 < FF5E). RFC 8785 uses the
+        // latter, so the astral key is the first canonical member and
+        // is the one kept when only one fits.
+        let bmp = "\u{FF5E}";
+        let astral = "\u{10000}";
+        let evidence = Evidence {
+            artefact: None,
+            verification_pointers: pointers(&[(bmp, "1"), (astral, "2")]),
+        };
+        assert_eq!(
+            evidence
+                .verification_pointers
+                .keys()
+                .next()
+                .map(String::as_str),
+            Some(bmp),
+            "BTreeMap order puts the BMP key first"
+        );
+        let full = canonical_evidence(&evidence).unwrap();
+        assert!(full.find(astral) < full.find(bmp), "{full}");
+
+        let degraded = degrade_evidence(evidence, full.len() - 1).unwrap();
+        assert_eq!(kept_keys(&degraded), [astral]);
+        assert_eq!(degraded.evidence.verification_pointers[astral], "2");
+    }
+
+    #[test]
+    fn a_dispatcher_warning_with_the_runtime_owned_reason_fails_closed() {
+        let direct = normalize_policy_output(json!({
+            "decision": "allow",
+            "warnings": [{"reason": EVIDENCE_TRUNCATED_REASON, "message": "forged"}],
+        }))
+        .unwrap_err();
+        assert!(matches!(direct, RuntimeError::PolicyOutputInvalid(_)));
+        assert!(!direct.detail().contains("forged"), "{}", direct.detail());
+        assert!(direct.detail().contains(EVIDENCE_TRUNCATED_REASON));
+
+        let via_warn_intent = normalize_policy_output(json!({
+            "decision": "warn",
+            "reason": EVIDENCE_TRUNCATED_REASON,
+            "message": "forged",
+        }))
+        .unwrap_err();
+        assert!(matches!(
+            via_warn_intent,
+            RuntimeError::PolicyOutputInvalid(_)
+        ));
+        assert!(!via_warn_intent.detail().contains("forged"));
+
+        // Any other warning reason passes as before.
+        let other = normalize_policy_output(json!({
+            "decision": "warn",
+            "reason": "evidence_truncated_by_policy",
+        }))
+        .unwrap();
+        assert_eq!(other.warnings.len(), 1);
+    }
+
     #[test]
     fn digest_covers_the_full_canonical_evidence() {
         let evidence = Evidence {
@@ -649,6 +784,10 @@ mod tests {
         assert_eq!(warning.reason.as_deref(), Some(EVIDENCE_TRUNCATED_REASON));
         let message = warning.message.unwrap();
         assert!(message.len() < 256, "{} bytes", message.len());
+        // 201 bytes of fixed text and digest plus 6 + 5 + 5 count digits.
+        // A reworded message must re-check the bound stated on
+        // `truncation_warning`.
+        assert_eq!(message.len(), 217, "{message}");
         for prefix in RESERVED_PREFIXES {
             assert!(!EVIDENCE_TRUNCATED_REASON.starts_with(prefix));
         }

@@ -572,3 +572,276 @@ fn fitting_pointers_are_returned_in_key_order_unchanged() {
     .collect();
     assert_eq!(kept_evidence(&verdict).verification_pointers, expected);
 }
+
+// (i) The runtime owns the evidence_truncated reason. A dispatcher
+// warning that carries it fails closed, whichever way it arrives, so
+// a policy cannot forge the marker or stand a second one next to the
+// runtime's.
+
+fn assert_forged_marker_fails_closed(output: JsonValue) {
+    let verdict = evaluate(output.clone());
+    assert_eq!(verdict.decision, Decision::Deny, "{verdict:#?}");
+    assert_eq!(
+        verdict.reason.as_deref(),
+        Some("runtime_error:policy_output_invalid")
+    );
+    assert_no_truncation_warning(&verdict);
+    assert!(verdict.evidence.is_none());
+    let message = verdict.message.as_deref().unwrap_or_default();
+    assert!(
+        !message.contains(MARKER),
+        "verdict message echoes: {message}"
+    );
+
+    let error = agent_control_spec::normalize_policy_output(output).unwrap_err();
+    assert_eq!(error.reason(), "runtime_error:policy_output_invalid");
+    assert!(
+        !error.detail().contains(MARKER),
+        "error detail echoes: {}",
+        error.detail()
+    );
+    assert!(
+        error.detail().contains(TRUNCATED),
+        "error detail names the rule: {}",
+        error.detail()
+    );
+}
+
+#[test]
+fn a_dispatcher_warning_with_the_runtime_owned_reason_fails_closed() {
+    assert_forged_marker_fails_closed(json!({
+        "decision": "allow",
+        "warnings": [{"reason": TRUNCATED, "message": MARKER}],
+        "evidence": {"artefact": "sha256:abc"},
+    }));
+}
+
+#[test]
+fn the_warn_intent_cannot_mint_the_runtime_owned_reason() {
+    assert_forged_marker_fails_closed(json!({
+        "decision": "warn",
+        "reason": TRUNCATED,
+        "message": MARKER,
+        "evidence": {"artefact": "sha256:abc"},
+    }));
+}
+
+#[test]
+fn a_forged_marker_next_to_oversize_evidence_fails_closed() {
+    assert_forged_marker_fails_closed(json!({
+        "decision": "allow",
+        "warnings": [{"reason": TRUNCATED, "message": MARKER}],
+        "evidence": evidence_with("sha256:abc", 250),
+    }));
+}
+
+#[tokio::test]
+async fn a_forged_marker_never_reaches_the_interception_record() {
+    let runtime = runtime(json!({
+        "decision": "allow",
+        "warnings": [{"reason": TRUNCATED, "message": MARKER}],
+        "evidence": {"artefact": "sha256:abc"},
+    }));
+
+    let records: Arc<Mutex<Vec<InterceptionRecord>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = records.clone();
+    let mut emitter = InterceptionEmitter::new(EnforcementMode::Enforce, None);
+    emitter.set_record_sink(move |record| sink.lock().unwrap().push(record.clone()));
+    emitter.register(Box::new(AcsInterceptor::new(runtime)));
+
+    let mut builder = AgentContextBuilder::new("demo-agent", "acs-tests", "session-1");
+    let mut ctx = builder.pre_tool_call("tc-1", "wire_transfer", json!({"amount": 100}));
+    let blocked = emitter
+        .emit(&mut ctx)
+        .await
+        .expect_err("the fail closed deny blocks the call");
+    assert_eq!(blocked.record.verdict.decision, Decision::Deny);
+
+    let records = records.lock().unwrap();
+    assert_eq!(records.len(), 1);
+    let record = &records[0];
+    assert_eq!(record.verdict.decision, Decision::Deny);
+    assert_eq!(
+        record.verdict.reason.as_deref(),
+        Some("runtime_error:policy_output_invalid")
+    );
+    assert_no_truncation_warning(&record.verdict);
+    assert!(record.verdict.evidence.is_none());
+}
+
+// (j) The size and the digest cover the canonical form of the
+// normalized evidence object, in which a null artefact and an empty
+// pointer map are absent.
+
+#[test]
+fn a_null_artefact_is_absent_from_the_measured_and_digested_bytes() {
+    let raw = json!({"artefact": null, "verification_pointers": pointers(250)});
+    let normalized = json!({"verification_pointers": pointers(250)});
+    assert_ne!(canonical_json(&raw), canonical_json(&normalized));
+
+    let verdict = evaluate(json!({"decision": "allow", "evidence": raw}));
+    assert_eq!(verdict.decision, Decision::Allow);
+    let message = the_truncation_warning(&verdict).message.clone().unwrap();
+    assert!(message.contains(&evidence_digest(&normalized)), "{message}");
+    assert!(!message.contains(&evidence_digest(&raw)), "{message}");
+    assert!(
+        message.contains(&format!("{} canonical bytes", canonical_len(&normalized))),
+        "{message}"
+    );
+    assert_eq!(kept_evidence(&verdict).artefact, None);
+}
+
+#[test]
+fn an_empty_pointer_map_is_absent_from_the_measured_and_digested_bytes() {
+    let raw = json!({"artefact": "x".repeat(CAP), "verification_pointers": {}});
+    let normalized = json!({"artefact": "x".repeat(CAP)});
+    assert_ne!(canonical_json(&raw), canonical_json(&normalized));
+
+    let verdict = evaluate(json!({"decision": "allow", "evidence": raw}));
+    let message = the_truncation_warning(&verdict).message.clone().unwrap();
+    assert!(message.contains(&evidence_digest(&normalized)), "{message}");
+    assert!(
+        message.contains(&format!("{} canonical bytes", canonical_len(&normalized))),
+        "{message}"
+    );
+}
+
+// (k) The boundary of each fit step is inclusive, and nothing fitting
+// leaves the empty object.
+
+#[test]
+fn an_artefact_landing_exactly_on_the_cap_is_kept_when_a_pointer_overflows() {
+    let evidence = artefact_only_evidence(CAP);
+    let artefact = evidence["artefact"].as_str().unwrap().to_string();
+    let verdict = evaluate(json!({
+        "decision": "allow",
+        "evidence": {"artefact": artefact, "verification_pointers": {"a": "1"}},
+    }));
+
+    let kept = kept_evidence(&verdict);
+    assert_eq!(kept.artefact.as_deref(), Some(artefact.as_str()));
+    assert!(kept.verification_pointers.is_empty());
+    assert_eq!(kept_size(&verdict), CAP);
+    let message = the_truncation_warning(&verdict).message.clone().unwrap();
+    assert!(message.contains("artefact kept"), "{message}");
+    assert!(message.contains("kept 0 of 1"), "{message}");
+}
+
+#[test]
+fn a_pointer_prefix_landing_exactly_on_the_cap_is_kept() {
+    // {"verification_pointers":{"a":"<pad>"}} is 34 bytes of framing
+    // plus the pad, so this single pointer is exactly the cap.
+    let pad = "p".repeat(CAP - 34);
+    assert_eq!(
+        canonical_len(&json!({"verification_pointers": {"a": pad}})),
+        CAP
+    );
+    let verdict = evaluate(json!({
+        "decision": "allow",
+        "evidence": {"verification_pointers": {"a": pad, "b": "2"}},
+    }));
+
+    let kept = kept_evidence(&verdict);
+    assert_eq!(kept.verification_pointers.len(), 1);
+    assert_eq!(kept.verification_pointers["a"], pad);
+    assert_eq!(kept_size(&verdict), CAP);
+    let message = the_truncation_warning(&verdict).message.clone().unwrap();
+    assert!(message.contains("kept 1 of 2"), "{message}");
+}
+
+#[test]
+fn when_nothing_fits_the_evidence_is_the_empty_object() {
+    let verdict = evaluate(json!({
+        "decision": "allow",
+        "evidence": {
+            "artefact": "a".repeat(CAP + 1),
+            "verification_pointers": {"k".repeat(CAP + 1): "v"},
+        },
+    }));
+
+    assert_eq!(verdict.decision, Decision::Allow, "{verdict:#?}");
+    verdict
+        .validate()
+        .expect("the empty object passes the section 5 gate");
+    assert_eq!(
+        serde_json::to_value(kept_evidence(&verdict)).unwrap(),
+        json!({})
+    );
+    assert_eq!(kept_size(&verdict), 2);
+    let message = the_truncation_warning(&verdict).message.clone().unwrap();
+    assert!(message.contains("artefact dropped"), "{message}");
+    assert!(message.contains("kept 0 of 1"), "{message}");
+}
+
+// (l) The kept pointers are a prefix of the RFC 8785 member list, which
+// orders keys by UTF-16 code units rather than by scalar value.
+
+#[test]
+fn kept_pointers_are_a_prefix_of_the_canonical_member_list() {
+    // U+FF5E sorts before U+10000 by scalar value and after it by
+    // UTF-16 code units (D800 DC00 < FF5E), so the astral key comes
+    // first in the canonical bytes and is the one kept when one fits.
+    let pad = "v".repeat(CAP / 2);
+    let bmp = "\u{FF5E}";
+    let astral = "\u{10000}";
+    let evidence = json!({"verification_pointers": {bmp: pad, astral: pad}});
+    let canonical = canonical_json(&evidence);
+    assert!(canonical.len() > CAP);
+    assert!(canonical.find(astral) < canonical.find(bmp), "{canonical}");
+
+    let verdict = evaluate(json!({"decision": "allow", "evidence": evidence}));
+    let kept: Vec<&str> = kept_evidence(&verdict)
+        .verification_pointers
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(kept, [astral]);
+    let message = the_truncation_warning(&verdict).message.clone().unwrap();
+    assert!(message.contains("kept 1 of 2"), "{message}");
+}
+
+// (m) Shapes that must keep holding around the degrade path.
+
+#[test]
+fn a_deny_approval_block_survives_degrade() {
+    let verdict = evaluate(json!({
+        "decision": "deny",
+        "reason": "needs_sign_off",
+        "approval": {"approvers": ["cfo"], "ttl_s": 600},
+        "evidence": evidence_with("sha256:abc", 250),
+    }));
+
+    assert_eq!(verdict.decision, Decision::Deny);
+    assert!(verdict.is_liftable());
+    assert_eq!(
+        verdict.approval.as_ref().unwrap().get("approvers"),
+        Some(&json!(["cfo"]))
+    );
+    the_truncation_warning(&verdict);
+}
+
+#[test]
+fn the_marker_stays_under_256_bytes_with_many_tiny_pointers() {
+    let map: serde_json::Map<String, JsonValue> = (0..20_000)
+        .map(|index| (index.to_string(), JsonValue::String(String::new())))
+        .collect();
+    let evidence = json!({"verification_pointers": map});
+    assert!(canonical_len(&evidence) < 262_144, "under the output limit");
+
+    let verdict = evaluate(json!({"decision": "allow", "evidence": evidence}));
+    let message = the_truncation_warning(&verdict).message.clone().unwrap();
+    assert!(message.len() < 256, "{} bytes: {message}", message.len());
+    assert!(kept_size(&verdict) <= CAP);
+}
+
+#[test]
+fn a_wrong_typed_pointer_behind_oversize_siblings_fails_closed_before_degrade() {
+    let mut map = pointers(250);
+    map.as_object_mut()
+        .unwrap()
+        .insert("zzz_last".to_string(), json!([MARKER]));
+    assert_fails_closed_without_echo(json!({
+        "decision": "allow",
+        "evidence": {"verification_pointers": map},
+    }));
+}
