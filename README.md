@@ -36,6 +36,7 @@ those are host obligations defined by agent-hooks.
 | `sdk/dotnet/` | .NET binding: `ResponsibleAI.AgentControlSpec` |
 | `spec/` | The ACS specification (policy plane) and schemas |
 | `policy/` | Cedar and Rego policy libraries |
+| `policy/packs/` | Configurable policy packs, host contracts, offline examples and native runtime tests |
 | `fixtures/` | Evaluation fixtures |
 | `docs/EXTRACTION.md` | Provenance map from the previous tree |
 
@@ -43,3 +44,11 @@ those are host obligations defined by agent-hooks.
 
 `0.4.0-alpha.3`, an alpha of the re-based runtime. Depends on
 `agent-hooks-sdk 0.1.0-alpha.5`.
+
+## Policy packs
+
+The [policy pack library](policy/packs/README.md) provides twelve independent
+controls for content, tools, destinations, approval, budgets and trusted
+host metadata. Its [coverage matrix](policy/packs/COVERAGE.md) distinguishes
+runnable decisions from integrations the host must supply. Existing examples
+and stock Rego/Cedar packages retain their paths and semantics.

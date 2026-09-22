@@ -1,0 +1,14 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: budgets
+policies:
+  gate:
+    type: rego
+    bundle: ./policy.rego
+    data_paths: [./config.json, ../common.rego]
+    query: data.acs.packs.budgets.verdict
+intervention_points:
+  pre_model_call: &gate
+    policy_target: $.target
+    policy: {id: gate}
+  pre_tool_call: *gate
