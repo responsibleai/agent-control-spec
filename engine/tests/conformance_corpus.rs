@@ -1,6 +1,6 @@
 use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint, JsonValue, Limits,
-    Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError, Verdict,
+    Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError,
 };
 use jsonschema::Validator;
 use serde_json::Value;
