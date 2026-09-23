@@ -48,7 +48,9 @@ class HumanDecision:
         return ApprovalResolution(
             ApprovalOutcome.APPROVE if self.approve else ApprovalOutcome.REJECT,
             request.context_identity,
-            Verdict.allow() if self.approve else Verdict.deny("reviewer_rejected"),
+            Verdict.allow()
+            if self.approve
+            else Verdict.deny(reason="reviewer_rejected"),
         )
 
 
@@ -474,6 +476,231 @@ def test_content_profile_never_discloses_credentials_to_external_detectors(
             value={"client_secret": "synthetic-value"},
         )
     )
-    with pytest.raises(InterceptionBlocked):
+    if point == "post_tool_call":
+        ctx["extensions"] = {"policy_packs": {"user_prompt": "Summarize this document"}}
+    with pytest.raises(InterceptionBlocked) as blocked:
         asyncio.run(emitter.emit(ctx))
+    assert blocked.value.result.verdict.reason == "credential_detected"
     assert requests == []
+
+
+def test_original_prompt_is_screened_before_any_classifier_request(server):
+    origin, requests, _routes = server
+    ctx = builder().post_tool_call(
+        call_id="c", name="fetch", args={}, value="Public document"
+    )
+    ctx["extensions"] = {
+        "policy_packs": {"user_prompt": "Summarize it using TOKEN=synthetic-value"}
+    }
+    emitter = recipe("profiles").content_emitter(azure(origin), point="post_tool_call")
+    with pytest.raises(InterceptionBlocked) as blocked:
+        asyncio.run(emitter.emit(ctx))
+    assert blocked.value.result.verdict.reason == "credential_detected"
+    assert requests == []
+    assert ctx["target"] == "Public document"
+
+
+@pytest.mark.parametrize(
+    "point,actual", [("input", "post_tool_call"), ("post_tool_call", "input")]
+)
+def test_classifier_profile_rejects_an_unselected_point_before_io(
+    server, point, actual
+):
+    origin, requests, _routes = server
+    b = builder()
+    ctx = (
+        b.input(content="hello")
+        if actual == "input"
+        else b.post_tool_call(
+            call_id="c", name="fetch", args={}, value="Public document"
+        )
+    )
+    ctx["extensions"] = {"policy_packs": {"user_prompt": "Summarize"}}
+    with pytest.raises(InterceptionBlocked) as blocked:
+        asyncio.run(
+            recipe("profiles").content_emitter(azure(origin), point=point).emit(ctx)
+        )
+    assert (
+        blocked.value.result.verdict.reason
+        == "runtime_error:intervention_point_unknown"
+    )
+    assert requests == []
+
+
+def test_missing_original_prompt_is_rejected_before_any_classifier_io(server):
+    origin, requests, _routes = server
+    ctx = builder().post_tool_call(
+        call_id="c", name="fetch", args={}, value="Public document"
+    )
+    with pytest.raises(InterceptionBlocked) as blocked:
+        asyncio.run(
+            recipe("profiles")
+            .content_emitter(azure(origin), point="post_tool_call")
+            .emit(ctx)
+        )
+    assert blocked.value.result.verdict.reason == "classifier_context_invalid"
+    assert requests == []
+
+
+@pytest.mark.parametrize("point", ["input", "post_tool_call"])
+def test_content_profile_allows_both_intended_workflows(server, point):
+    origin, requests, routes = server
+    routes[ANALYZE] = response(
+        {
+            "categoriesAnalysis": [
+                {"category": category, "severity": 0}
+                for category in azure(origin).categories
+            ]
+        }
+    )
+    routes[SHIELD] = response(
+        {
+            "userPromptAnalysis": {"attackDetected": False},
+            "documentsAnalysis": []
+            if point == "input"
+            else [{"attackDetected": False}],
+        }
+    )
+    b = builder()
+    ctx = (
+        b.input(content="Summarize this")
+        if point == "input"
+        else b.post_tool_call(
+            call_id="c", name="fetch", args={}, value={"text": "A public document"}
+        )
+    )
+    ctx["extensions"] = {"policy_packs": {"user_prompt": "Summarize this"}}
+    original = ctx["target"]
+    outcome = asyncio.run(
+        recipe("profiles").content_emitter(azure(origin), point=point).emit(ctx)
+    )
+    assert outcome.target == original
+    assert [r[1] for r in requests] == [ANALYZE, SHIELD]
+
+
+def test_document_approval_can_take_longer_than_five_seconds(tmp_path):
+    class DelayedReviewer(HumanDecision):
+        async def resolve(self, request):
+            await asyncio.sleep(6)
+            return super().resolve(request)
+
+    host = service(tmp_path, reviewer=DelayedReviewer(True))
+    try:
+        asyncio.run(
+            host.execute(
+                ALICE,
+                "update_document",
+                {"document_id": "shared", "body": "Reviewed later"},
+            )
+        )
+        assert (
+            host.db.execute("SELECT body FROM documents WHERE id='shared'").fetchone()[
+                0
+            ]
+            == "Reviewed later"
+        )
+    finally:
+        host.close()
+
+
+def test_document_review_timeout_is_configurable_and_rolls_back(tmp_path):
+    class SlowReviewer:
+        async def resolve(self, _request):
+            await asyncio.sleep(1)
+            raise AssertionError("Reviewer should have timed out")
+
+    read, write = recipe("profiles").document_emitters(
+        resolver=SlowReviewer(), timeout=0.02
+    )
+    host = recipe("document_service").DocumentService(
+        tmp_path / "short.sqlite", read_emitter=read, write_emitter=write
+    )
+    host.seed("shared", "tenant-a", "Original", ["alice"])
+    try:
+        with pytest.raises(InterceptionBlocked) as blocked:
+            asyncio.run(
+                host.execute(
+                    ALICE,
+                    "update_document",
+                    {"document_id": "shared", "body": "Changed"},
+                )
+            )
+        assert (
+            blocked.value.result.verdict.reason == "host_error:approval_resolver_failed"
+        )
+        assert host.db.execute("SELECT body FROM documents").fetchone()[0] == "Original"
+        assert host.db.execute("SELECT tool_calls FROM usage").fetchone()[0] == 0
+    finally:
+        host.close()
+
+
+def test_separate_connections_wait_without_blocking_the_approver(tmp_path):
+    entered = asyncio.Event()
+
+    class DelayedReviewer(HumanDecision):
+        async def resolve(self, request):
+            entered.set()
+            await asyncio.sleep(0.05)
+            return super().resolve(request)
+
+    first = service(tmp_path, reviewer=DelayedReviewer(True))
+    read, write = recipe("profiles").document_emitters()
+    second = recipe("document_service").DocumentService(
+        tmp_path / "documents.sqlite", read_emitter=read, write_emitter=write
+    )
+
+    async def run():
+        update = asyncio.create_task(
+            first.execute(
+                ALICE, "update_document", {"document_id": "shared", "body": "Approved"}
+            )
+        )
+        await entered.wait()
+        fetch = asyncio.create_task(
+            second.execute(ALICE, "read_document", {"document_id": "shared"})
+        )
+        return await asyncio.wait_for(asyncio.gather(update, fetch), timeout=1)
+
+    try:
+        assert asyncio.run(run()) == ["Approved", "Approved"]
+        assert first.db.execute("SELECT tool_calls FROM usage").fetchone()[0] == 2
+    finally:
+        first.close()
+        second.close()
+
+
+def test_database_lock_deadline_does_not_stall_the_loop(tmp_path):
+    first = service(tmp_path)
+    read, write = recipe("profiles").document_emitters()
+    second = recipe("document_service").DocumentService(
+        tmp_path / "documents.sqlite",
+        read_emitter=read,
+        write_emitter=write,
+        lock_timeout=0.02,
+    )
+    first.db.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(TimeoutError, match="lock wait expired"):
+            asyncio.run(
+                second.execute(ALICE, "read_document", {"document_id": "shared"})
+            )
+        assert not second.db.in_transaction
+    finally:
+        first.db.rollback()
+        first.close()
+        second.close()
+
+
+@pytest.mark.parametrize("timeout", [None, True, 0, -1, float("inf"), float("nan")])
+def test_document_timeouts_are_explicit_finite_bounds(tmp_path, timeout):
+    profiles = recipe("profiles")
+    with pytest.raises(ValueError, match="finite and positive"):
+        profiles.document_emitters(timeout=timeout)
+    read, write = profiles.document_emitters()
+    with pytest.raises(ValueError, match="finite and positive"):
+        recipe("document_service").DocumentService(
+            tmp_path / "invalid.sqlite",
+            read_emitter=read,
+            write_emitter=write,
+            lock_timeout=timeout,
+        )

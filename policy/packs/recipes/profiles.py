@@ -1,20 +1,32 @@
 """Example assembly of the source policy artifacts. This is not a new public SDK."""
 
 import json
+import math
 from pathlib import Path
 
 from agent_control_spec import ActivatedPolicy, parse_manifest
-from agent_hooks import CompositionConfig, CompositionProfile, InterceptionEmitter
+from agent_hooks import (
+    CompositionConfig,
+    CompositionProfile,
+    InterceptionEmitter,
+    Verdict,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class Control:
-    def __init__(self, name, *, config=None, tools=None, dispatcher=None):
+    def __init__(self, name, *, config=None, tools=None, dispatcher=None, point=None):
         if name not in {p.parent.name for p in ROOT.glob("*/manifest.yaml")}:
             raise ValueError("Unknown policy control")
         manifest_path = ROOT / name / "manifest.yaml"
         manifest = parse_manifest(manifest_path.read_text())
+        if point is not None:
+            if point not in manifest["intervention_points"]:
+                raise ValueError(f"{name} does not govern {point}")
+            manifest["intervention_points"] = {
+                point: manifest["intervention_points"][point]
+            }
         if tools is not None:
             manifest["tools"] = tools
         definition = manifest["policies"]["gate"]
@@ -44,9 +56,17 @@ class Control:
         return self.policy.evaluate(ctx["interception_point"], ctx)
 
 
-def emitter(*controls, resolver=None):
+def emitter(*controls, resolver=None, timeout=5):
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise ValueError("Emitter timeout must be finite and positive")
     result = InterceptionEmitter(
         resolver=resolver,
+        timeout=timeout,
         composition=CompositionConfig(profile=CompositionProfile.SEQUENTIAL_RUN_ALL),
     )
     for control in controls:
@@ -54,7 +74,7 @@ def emitter(*controls, resolver=None):
     return result
 
 
-def document_emitters(*, resolver=None, max_operations=50):
+def document_emitters(*, resolver=None, max_operations=50, timeout=300):
     controls = [
         Control(
             "tool-permissions",
@@ -80,7 +100,10 @@ def document_emitters(*, resolver=None, max_operations=50):
         ),
     ]
     # The emitters share immutable controls, never mutable decision inputs.
-    return emitter(*controls, resolver=resolver), emitter(*controls, resolver=resolver)
+    return (
+        emitter(*controls, resolver=resolver, timeout=timeout),
+        emitter(*controls, resolver=resolver, timeout=timeout),
+    )
 
 
 def http_emitter(origins):
@@ -97,13 +120,37 @@ def disclosure_emitter(*, redact=False):
     return emitter(Control("credentials"), Control("pii", config=config))
 
 
+class ClassifierDisclosure:
+    """Screen every application-content field the supplied adapter will transmit."""
+
+    def __init__(self, point):
+        self.point = point
+        self.control = Control("credentials", point=point)
+
+    def intercept(self, ctx):
+        if ctx["interception_point"] != self.point or self.point == "input":
+            return self.control.intercept(ctx)
+        extensions = ctx.get("extensions")
+        if not isinstance(extensions, dict):
+            return Verdict.deny(reason="classifier_context_invalid")
+        metadata = extensions.get("policy_packs")
+        if not isinstance(metadata, dict):
+            return Verdict.deny(reason="classifier_context_invalid")
+        prompt = metadata.get("user_prompt")
+        if not isinstance(prompt, str) or not prompt:
+            return Verdict.deny(reason="classifier_context_invalid")
+        check = dict(ctx)
+        check["target"] = {"document": ctx["target"], "user_prompt": prompt}
+        return self.control.intercept(check)
+
+
 def content_emitter(dispatcher, *, point="input"):
     if point not in {"input", "post_tool_call"}:
         raise ValueError("Content ingestion must be input or post_tool_call")
     controls = [
-        Control("credentials"),
-        Control("content-safety", dispatcher=dispatcher),
-        Control("prompt-injection", dispatcher=dispatcher),
+        ClassifierDisclosure(point),
+        Control("content-safety", dispatcher=dispatcher, point=point),
+        Control("prompt-injection", dispatcher=dispatcher, point=point),
     ]
     # Later classifiers perform I/O. Unlike pure policy composition, they must not
     # run after a disclosure denial.

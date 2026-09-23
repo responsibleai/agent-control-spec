@@ -2,6 +2,7 @@
 
 import asyncio
 import copy
+import math
 import sqlite3
 import uuid
 
@@ -11,8 +12,17 @@ from agent_hooks import AgentContextBuilder
 class DocumentService:
     """Single-process example. principal is supplied by authentication, not tool args."""
 
-    def __init__(self, database, *, read_emitter, write_emitter):
-        self.db = sqlite3.connect(database)
+    def __init__(self, database, *, read_emitter, write_emitter, lock_timeout=30):
+        if (
+            isinstance(lock_timeout, bool)
+            or not isinstance(lock_timeout, (int, float))
+            or not math.isfinite(lock_timeout)
+            or lock_timeout <= 0
+        ):
+            raise ValueError("Database lock timeout must be finite and positive")
+        # SQLite's blocking busy timeout would prevent an async reviewer from waking.
+        self.db = sqlite3.connect(database, timeout=0)
+        self.lock_timeout = lock_timeout
         self.read_emitter = read_emitter
         self.write_emitter = write_emitter
         self.lock = asyncio.Lock()
@@ -38,6 +48,24 @@ class DocumentService:
                 "INSERT INTO grants VALUES (?,?)", [(document, s) for s in subjects]
             )
 
+    async def _begin(self):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.lock_timeout
+        while True:
+            try:
+                self.db.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as error:
+                if error.sqlite_errorcode & 0xFF not in {
+                    sqlite3.SQLITE_BUSY,
+                    sqlite3.SQLITE_LOCKED,
+                }:
+                    raise
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError("Document database lock wait expired") from error
+                await asyncio.sleep(min(0.01, remaining))
+
     async def execute(self, principal, tool, args):
         # Private copies prevent caller mutation while approval awaits a decision.
         principal, args = copy.deepcopy(principal), copy.deepcopy(args)
@@ -50,7 +78,7 @@ class DocumentService:
         async with self.lock:
             # This example intentionally serializes writers, including other SQLite connections.
             # A production distributed service needs its own transaction/reservation design.
-            self.db.execute("BEGIN IMMEDIATE")
+            await self._begin()
             try:
                 document = self.db.execute(
                     "SELECT tenant,body FROM documents WHERE id=?",
