@@ -34,6 +34,29 @@ the tag's publication set. The tag workflow does not publish the generator.
    All legs are idempotent: already-published versions are skipped, so
    a re-run after a partial failure is safe.
 
+## Async adapter contract changes
+
+PR #68 deliberately adds the three `runtime_error:acs_async_*`
+admission reasons to the draft specification and its producer inventory.
+Section 16's exception is limited to these interceptor-produced denials.
+The emitter keeps its `host_error:*` obligations; the scope-allow label
+is not a reserved error.
+
+These additions are unreleased amendments to a Draft that still
+identifies itself as `0.4.0-alpha.1`. This change does not allocate a
+new grammar identifier or bump versions independently of the other SDKs.
+That is a deferral of version allocation,
+not an exemption from section 22: the next published specification
+containing these additive reserved reasons needs a minor-version
+increment, not a patch-only change. Allocate it and update the supported
+versions, schema/fixtures and compatibility cases in the contract-release
+change before publishing that specification.
+
+Runtime package metadata and the manifest/specification identifier are
+separate version surfaces. The prepared `0.4.0-alpha.4` package metadata
+does not satisfy the specification's minor-version requirement or mean
+that either artifact was published.
+
 ## Generator compatibility
 
 The generator and runtime use lockstep version metadata. The generator's minimum

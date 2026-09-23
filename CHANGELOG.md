@@ -24,6 +24,10 @@
   If the owning loop has already closed, `close()` joins workers
   synchronously; `aclose()` on a replacement loop performs that recovery
   off-loop. Cross-loop evaluation remains rejected.
+  The three reserved admission reasons are an explicit, narrow draft
+  contract exception to the host-error guidance, not a general namespace
+  change. Specification minor-version allocation remains a release gate
+  documented in `RELEASING.md`; no new grammar is allocated here.
 - All Python `ActivatedPolicy` constructors now accept `telemetry_sink`,
   `perf_telemetry`, and `limits`, preserving these settings through
   async evaluation. Both file and in-memory activation apply host limits

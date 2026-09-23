@@ -100,7 +100,6 @@ class AsyncAcsInterceptor:
         )
         self._loop: asyncio.AbstractEventLoop | None = None
         self._in_flight: set[asyncio.Future[Verdict]] = set()
-        self._workers: dict[asyncio.Future[Verdict], Future[Verdict]] = {}
         self._waiters: OrderedDict[asyncio.Future[bool], float] = OrderedDict()
         self._reserved = 0
         self._drained = asyncio.Event()
@@ -215,7 +214,6 @@ class AsyncAcsInterceptor:
             worker.add_done_callback(self._report_worker_error)
             work = asyncio.wrap_future(worker, loop=loop)
             self._in_flight.add(work)
-            self._workers[work] = worker
             self._drained.clear()
             work.add_done_callback(self._completed)
         finally:
@@ -227,7 +225,6 @@ class AsyncAcsInterceptor:
 
     def _completed(self, work: asyncio.Future[Verdict]) -> None:
         self._in_flight.remove(work)
-        self._workers.pop(work)
         if not self._in_flight:
             self._drained.set()
         self._wake_waiters()
@@ -310,7 +307,6 @@ class AsyncAcsInterceptor:
                 if work.done() and not work.cancelled():
                     work.exception()
             self._in_flight.clear()
-            self._workers.clear()
             self._waiters.clear()
             self._reserved = 0
 

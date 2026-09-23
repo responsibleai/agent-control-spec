@@ -103,6 +103,15 @@ class SdkTests(unittest.TestCase):
         readme = (ROOT / "sdk/python/README.md").read_text()
         runtime, separator, _ = readme.partition("## Authoring inspection\n")
         self.assertTrue(separator)
+        before_async, separator, remaining = runtime.partition(
+            "## Async hosts and partial-policy scope\n"
+        )
+        self.assertTrue(separator)
+        _, separator, activation = remaining.partition(
+            "## Activating a policy version\n"
+        )
+        self.assertTrue(separator)
+        runtime = before_async + "\n" + activation
         blocks = re.findall(r"```python\n(.*?)\n```", runtime, re.DOTALL)
         self.assertEqual(len(blocks), 5)
         result = subprocess.run(
@@ -121,6 +130,33 @@ class SdkTests(unittest.TestCase):
         self.assertIn("'decision': 'allow'", result.stdout)
         self.assertIn("'decision': 'transform'", result.stdout)
         self.assertIn("'value': 100", result.stdout)
+
+    def test_sdk_readme_async_block(self):
+        if version("agent-control-spec") == "0.4.0a3":
+            self.skipTest("The published alpha.3 baseline has no async interceptor")
+        readme = (ROOT / "sdk/python/README.md").read_text()
+        _, separator, remaining = readme.partition(
+            "## Async hosts and partial-policy scope\n"
+        )
+        self.assertTrue(separator)
+        section, separator, _ = remaining.partition("## Activating a policy version\n")
+        self.assertTrue(separator)
+        blocks = re.findall(r"```python\n(.*?)\n```", section, re.DOTALL)
+        self.assertEqual(len(blocks), 1)
+        subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import asyncio\n"
+                + blocks[0]
+                + "\nassert asyncio.run(serve()) == {'order_id': 'A-1001', 'amount': 100}\n",
+            ],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
 
     def test_sdk_readme_authoring_block(self):
         readme = (ROOT / "sdk/python/README.md").read_text()

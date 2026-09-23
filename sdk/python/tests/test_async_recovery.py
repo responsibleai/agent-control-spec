@@ -44,7 +44,6 @@ def test_idle_pool_is_joined_after_owner_loop_is_gone(async_recovery):
         adapter.close()
     assert all(not thread.is_alive() for thread in threads)
     assert adapter.closed and adapter.in_flight == adapter.waiting == 0
-    assert not adapter._workers
     adapter.close()
     asyncio.run(adapter.aclose())
 
@@ -148,7 +147,6 @@ def test_recovery_waits_for_native_completion_and_survives_awaiter_cancel(
             release.set()
             await adapter.aclose()
         assert adapter.in_flight == adapter.waiting == 0
-        assert not adapter._workers
         assert all(not thread.is_alive() for thread in adapter._executor._threads)
         with pytest.raises(AsyncAcsLoopMismatchError):
             await adapter.intercept(context())

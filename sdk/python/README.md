@@ -29,7 +29,8 @@ and an inert operation. For the composition logic, see
 [ACS and Agent Hooks](https://github.com/responsibleai/agent-control-spec/blob/main/docs/ACS-AND-AGENT-HOOKS.md).
 
 The Python snippets below build on one another. Run them in the same
-interpreter from the repository root. First, register one policy:
+interpreter from the repository root; the async example is independent.
+First, register one policy:
 
 ```python
 from agent_hooks import InterceptionEmitter, EnforcementMode
@@ -63,21 +64,28 @@ that loop.
 from agent_control_spec import ActivatedPolicy, AsyncAcsInterceptor
 from agent_hooks import AgentContextBuilder, InterceptionEmitter
 
-policy = ActivatedPolicy.activate("manifest.yaml")  # startup, not per request
+async_policy = ActivatedPolicy.activate("examples/python_composition/limits.yaml")
 
 
 async def serve():
-    async with AsyncAcsInterceptor(policy, max_concurrency=8) as control:
+    async with AsyncAcsInterceptor(async_policy, max_concurrency=8) as control:
         emitter = InterceptionEmitter(timeout=1.0).register(control, control.name)
         context = AgentContextBuilder(
             agent_id="example", framework="example", session_id="session-1"
         )
-        await emitter.emit(context.agent_startup(tools_registered=["search"]))
-        # The manifest must bind each emitted point. emit raises on denial.
-        await emitter.emit(
-            context.pre_tool_call(call_id="call-1", name="search", args={"q": "x"})
+        outcome = await emitter.emit(
+            context.pre_tool_call(
+                call_id="call-1",
+                name="issue_refund",
+                args={"order_id": "A-1001", "amount": 150},
+            )
         )
+        return outcome.target  # the operation must consume the enforced target
 ```
+
+This isolated tool-call example returns an amount capped to 100. It is
+not a complete lifecycle host: a strict control must also bind any other
+points that host emits, or the host must explicitly configure its scope.
 
 The default is `Scope.STRICT`: evaluate every point, including unbound
 points, preserving the existing fail-closed behavior.
@@ -137,6 +145,11 @@ This is admission order, not execution or completion order across workers.
 submitted calls, so their sum can briefly exclude reserved slots.
 Configuration must use positive integer capacities and a finite positive
 admission timeout.
+
+An expired waiter still occupies its queue entry until the event loop
+processes its timeout or admission removes it. During that interval a
+new call can receive `runtime_error:acs_async_capacity_exceeded` even
+though an older waiter's deadline has passed. Expired work never starts.
 
 The emitter timeout covers admission **and** the awaited evaluation.
 Its expiry yields `host_error:interceptor_timeout`. Caller cancellation
@@ -276,6 +289,10 @@ adapter too. Limits default field by field; inspect `DEFAULT_LIMITS`.
 File activation applies loader limits while resolving `extends`.
 In-memory activation still requires already-composed manifest text
 and rejects unresolved relative bundle paths.
+The synchronous interceptor constructor does not yet apply configured
+limits while loading its manifest. The cross-binding correction and
+constructor coverage are tracked in
+[#82](https://github.com/responsibleai/agent-control-spec/issues/82).
 
 `evaluate()` and `AcsInterceptor.intercept()` are synchronous. GIL
 release is not an asyncio yield, and the emitter's timeout cannot

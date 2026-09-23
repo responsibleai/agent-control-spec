@@ -101,7 +101,10 @@ jobs:
         shell: bash
         run: |
           uv pip install --system ./sdk/python ./generator pytest==9.1.1
-          pytest sdk/python/tests generator -v -o pythonpath=
+          # Each suite needs its own pytest configuration: SDK importlib mode
+          # must not override the generator's shared-fixture imports.
+          pytest sdk/python/tests -v -o pythonpath=
+          pytest generator -v -o pythonpath=
           python -c "import pathlib, agent_control_spec_generator as g; assert pathlib.Path('generator').resolve() not in pathlib.Path(g.__file__).resolve().parents"
 
   lint:
