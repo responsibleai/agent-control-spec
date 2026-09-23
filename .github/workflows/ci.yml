@@ -54,6 +54,7 @@ jobs:
         run: |
           uv pip install --system -r sdk/python/requirements-dev.lock
           uv pip install --system --no-deps --no-build-isolation -e ./sdk/python
+      - run: uv pip check --system
       - run: ruff format --check sdk/python scripts generator && ruff check sdk/python scripts generator
       - run: pytest sdk/python/tests -v
       - name: Install and test the policy generator
@@ -65,6 +66,14 @@ jobs:
           uv pip install --system --no-deps ./generator
           pytest generator -v -o pythonpath=
           python -c "import pathlib, agent_control_spec_generator as g; assert pathlib.Path('generator').resolve() not in pathlib.Path(g.__file__).resolve().parents"
+      - name: Test documentation with the checkout build
+        run: python -m unittest discover -s examples/python_composition -v
+      - name: Test documentation with the published Python packages
+        run: |
+          python -m venv "$RUNNER_TEMP/acs-docs"
+          "$RUNNER_TEMP/acs-docs/bin/python" -m pip install -r examples/python_composition/requirements.txt
+          "$RUNNER_TEMP/acs-docs/bin/python" -m pip check
+          "$RUNNER_TEMP/acs-docs/bin/python" -m unittest discover -s examples/python_composition -v
 
   # Cross-platform build+test of the Rust workspace plus one binding's
   # suite (Python: the maturin wheel builds and pytest runs on every OS).
