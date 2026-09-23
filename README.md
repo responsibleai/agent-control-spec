@@ -34,6 +34,7 @@ those are host obligations defined by agent-hooks.
 | `sdk/python/` | Python binding: `agent_control_spec` package wrapping the engine as an `agent_hooks` interceptor |
 | `sdk/node/` | Node binding: `@responsibleai/agent-control-spec` |
 | `sdk/dotnet/` | .NET binding: `ResponsibleAI.AgentControlSpec` |
+| [`generator/`](generator/README.md) | Optional `acs-policy-gen` authoring tool. Produces draft manifests and Rego from prose, with parser checks and ACS validation |
 | `spec/` | The ACS specification (policy plane) and schemas |
 | `policy/` | Cedar and Rego policy libraries |
 | `fixtures/` | Evaluation fixtures |
@@ -41,5 +42,8 @@ those are host obligations defined by agent-hooks.
 
 ## Status
 
-`0.4.0-alpha.3`, an alpha of the re-based runtime. Depends on
+Python: [SDK quickstart](sdk/python/README.md) and
+[composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
+
+`0.4.0-alpha.4`, an alpha of the re-based runtime. Depends on
 `agent-hooks-sdk 0.1.0-alpha.5`.

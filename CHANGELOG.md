@@ -32,6 +32,23 @@
 - Regenerated the Python development lockfile from its requirements:
   it now installs the declared Agent Hooks `0.1.0a5` and maturin
   `1.15.0`, rather than the stale `0.1.0a3` / `1.8.7` pins.
+- Add the optional `agent-control-spec-generator` package and `acs-policy-gen`
+  command, porting AGT's natural-language authoring flow. It writes draft
+  manifests, Rego and a review report without approving or activating policy.
+  Conditions retain the exact source accepted by the parser; model text is
+  escaped in reports and terminal output. Provider requests refuse redirects,
+  bypass proxies for loopback HTTP, and use bounded response reads. Credentials
+  come from the environment or a key file, not an argv value.
+- Add Python-only `agent_control_spec.authoring.parse_rego_ast` and
+  `REGORUS_AST_VERSION`, backed by the pinned Regorus parser with synchronous
+  input-complexity bounds. No OPA executable is required for authoring.
+- Prepare version `0.4.0-alpha.4` across runtime and generator metadata.
+  The generator requires SDK `0.4.0a4` and shares the version consistency check,
+  but remains outside the tag-driven publication workflow.
+- Require root and Python Cargo lockfiles to resolve the same Regorus version.
+  Generator iteration warnings cover wildcard and unbound-index lookups across
+  collections. Leading unary-minus condition bodies are rejected before they can
+  attach to a generated guard across a newline.
 
 - A manifest chain that fetches any `extends` URL is now URL sourced, and a
   URL sourced manifest may not read host secrets. A fetched document could
@@ -91,6 +108,12 @@
   `Python::attach`, unchanged.
 
 ## 0.4.0-alpha.3
+
+- Python interception is synchronous in this release. `AcsInterceptor`
+  holds the GIL during evaluation; `ActivatedPolicy.evaluate()` releases it.
+  The GIL-release fix listed under Unreleased and the async-interceptor
+  proposal [#68](https://github.com/responsibleai/agent-control-spec/pull/68)
+  are not included in this release.
 
 - Python `__version__` is read from the installed distribution instead of being
   written into `__init__.py`. The literal was a seventh version surface, covered
