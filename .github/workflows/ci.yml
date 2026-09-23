@@ -54,8 +54,26 @@ jobs:
         run: |
           uv pip install --system -r sdk/python/requirements-dev.lock
           uv pip install --system --no-deps --no-build-isolation -e ./sdk/python
-      - run: ruff format --check sdk/python scripts && ruff check sdk/python scripts
+      - run: uv pip check --system
+      - run: ruff format --check sdk/python scripts generator && ruff check sdk/python scripts generator
       - run: pytest sdk/python/tests -v
+      - name: Install and test the policy generator
+        # --no-deps because agent-control-spec is already installed above from
+        # this tree; resolving it would pull the published wheel instead and
+        # the generator would then be validated against a different engine
+        # than the one under test.
+        run: |
+          uv pip install --system --no-deps ./generator
+          pytest generator -v -o pythonpath=
+          python -c "import pathlib, agent_control_spec_generator as g; assert pathlib.Path('generator').resolve() not in pathlib.Path(g.__file__).resolve().parents"
+      - name: Test documentation with the checkout build
+        run: python -m unittest discover -s examples/python_composition -v
+      - name: Test documentation with the published Python packages
+        run: |
+          python -m venv "$RUNNER_TEMP/acs-docs"
+          "$RUNNER_TEMP/acs-docs/bin/python" -m pip install -r examples/python_composition/requirements.txt
+          "$RUNNER_TEMP/acs-docs/bin/python" -m pip check
+          "$RUNNER_TEMP/acs-docs/bin/python" -m unittest discover -s examples/python_composition -v
 
   # Cross-platform build+test of the Rust workspace plus one binding's
   # suite (Python: the maturin wheel builds and pytest runs on every OS).
@@ -74,7 +92,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: "3.12" }
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
-      - name: Install and test the Python binding
+      - name: Install and test the Python binding and generator
         # requirements-dev.lock is compiled on Linux and is not portable;
         # this advisory job installs the package (Rust side still pinned
         # via [tool.maturin] locked=true) plus pytest. agent-hooks-sdk
@@ -82,8 +100,9 @@ jobs:
         # build it from the sdist with the toolchain installed above.
         shell: bash
         run: |
-          uv pip install --system ./sdk/python pytest
-          pytest sdk/python/tests -v
+          uv pip install --system ./sdk/python ./generator pytest==9.1.1
+          pytest sdk/python/tests generator -v -o pythonpath=
+          python -c "import pathlib, agent_control_spec_generator as g; assert pathlib.Path('generator').resolve() not in pathlib.Path(g.__file__).resolve().parents"
 
   lint:
     runs-on: ubuntu-latest

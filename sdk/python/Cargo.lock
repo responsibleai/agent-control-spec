@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-control-spec"
-version = "0.4.0-alpha.3"
+version = "0.4.0-alpha.4"
 dependencies = [
  "agent-hooks-sdk",
  "async-trait",
@@ -28,10 +28,11 @@ dependencies = [
 
 [[package]]
 name = "agent-control-spec-py"
-version = "0.4.0-alpha.3"
+version = "0.4.0-alpha.4"
 dependencies = [
  "agent-control-spec",
  "pyo3",
+ "regorus",
  "serde_json",
 ]
 
