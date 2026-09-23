@@ -1,63 +1,33 @@
-# Configurable PII
+# Personal-data pattern filtering
 
-**Purpose:** deny or redact selected personal-data patterns in text.
-Defaults target email addresses and hyphenated US SSN-like values. This is
-pattern matching, not a claim of complete PII identification or compliance.
+Use this as a configurable plaintext disclosure rule at `input`, `post_model_call`, `post_tool_call` and `output`. It is not a general PII detector or a substitute for a DLP service. Defaults match email addresses and SSN-shaped strings. They do not establish whether an identifier is real.
 
-**Points:** `input`, `post_model_call`, `post_tool_call`, `output`.
-**Target:** `$.target`, either a string or an object with string `content`.
-Additional fields are scanned as nested string values and serialized JSON.
-A match outside `content` denies with `pii_unredactable_fields`, even in
-redaction mode. Safe `role`, `tool_calls` and `finish_reason` fields are
-preserved. Targets without string content, including multimodal/array
-targets, deny with `pii_data_invalid`. Use a dedicated adapter for those
-types rather than discarding content to make the check pass.
+## Ordinary JSON targets
+
+The rule scans strings throughout `$.target`, including nested values, tool-call arguments and object keys. Safe objects, arrays, numbers and null values can pass. In particular, a model response with `content: null` and tool calls is normal and does not fail simply because it has no prose. A tool-call argument that contains a matching personal-data pattern still blocks.
+
+With `action: "deny"`, any match denies with `pii_detected`. With `action: "redact"`, a matching string target or string `content` can be replaced. Matches elsewhere deny with `pii_unredactable_fields`. The policy does not rewrite resource IDs, tool arguments or arbitrary structured data behind the host's back. A clean structured result is allowed in either mode.
 
 ## Configure
-
-`config.json` sets:
 
 ```json
 {
   "pack": {
-    "action": "deny",
+    "action": "redact",
     "patterns": ["\\b\\d{3}-\\d{2}-\\d{4}\\b"],
     "replacement": "[REDACTED]"
   }
 }
 ```
 
-This example permits ordinary business email while still gating SSN-like
-text. The shipped file also includes an email pattern. Select `redact`
-instead of `deny` to replace all matches with the configured replacement.
-Patterns must be a nonempty valid Regorus regex list. Unknown actions or
-malformed configuration deny. A replacement that still matches the
-configured patterns denies with `pii_replacement_unsafe`.
+This configuration permits business email while redacting SSN-like strings. The shipped default additionally matches email and uses `deny`. Configure the detector patterns for the data you actually handle, including legitimate data that must remain usable. Empty or invalid pattern lists deny. A replacement that reintroduces a matching value denies.
 
-The pack reuses `agt.patterns` and `agt.redact.apply_patterns` without
-changing the stock libraries. It produces one replacement for the whole
-governed string, so multiple matching patterns are redacted in one verdict.
+Patterns scan decoded JSON strings and their serialization, not the semantics of images, audio, encrypted values or encoded documents. Do not interpret an allow as evidence those modalities were analyzed. Use an appropriate detector/adapter when a workload requires that coverage.
 
-## Install and enforce transforms
+## Integrate
 
-Follow the [shared install](../README.md#install-and-run), then register
-`AcsInterceptor("policy/packs/pii/manifest.yaml")`. Reactivate after editing
-configuration. A string target produces a `$target` transform. A content
-object produces `$target.content`, preserving its other fields.
-The host must execute/deliver `outcome.target` returned by the enforcing
-emitter, not a cached copy of the original content.
+Follow the [shared install](../README.md#install-and-run). The rule reuses `agt.patterns` and `agt.redact.apply_patterns`. A string target returns a `$target` replacement. A content object returns `$target.content` and preserves other fields.
 
-With `redact`, `Contact a@example.com about 123-45-6789` becomes
-`Contact [REDACTED] about [REDACTED]`. With shipped `deny`, it is blocked.
-An ordinary technical explanation permits unchanged.
+The [document response recipe](../recipes/README.md#disclosure) reads a real database record and delivers `outcome.target` after enforcement. It does not deliver a cached copy of the original record. Apply the same discipline around model/output buffers, and assemble streams before release.
 
-## Coverage and tradeoffs
-
-Tests cover every point and both target shapes, multiple replacements,
-configurable email handling, invalid/unsupported regexes, canonical SDK
-model responses, personal data in other fields and transform forwarding through the real Agent Hooks
-emitter. Composition with credential scanning proves residual credentials
-still block. Text-only tests do not establish image/audio or general JSON
-redaction. Regex matching has false positives, no SSN validity check and
-no linguistic/name/address coverage. Hosts must assemble streams and avoid
-logging original sensitive values.
+Native tests cover multiple matches, configured business-email exceptions, unsafe replacements, null-content tool-call responses, nested results and actual emitted transformations. A generic document-body redactor, name/address classifier, multimodal detector and format-aware file sanitizer are outside this pattern rule.

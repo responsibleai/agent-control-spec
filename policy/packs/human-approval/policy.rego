@@ -3,38 +3,46 @@ package acs.packs.human_approval
 import data.acs.packs.common as c
 import rego.v1
 
+rule_valid(rule) if {
+	is_object(rule)
+	rule.mode in {"allow", "review"}
+	object.keys(rule) == {"mode"}
+}
+
+rule_valid(rule) if {
+	is_object(rule)
+	rule.mode == "threshold"
+	object.keys(rule) == {"mode", "argument_path", "max_without_approval"}
+	data.acs.packs.common.nonempty_strings(rule.argument_path)
+	data.acs.packs.common.natural(rule.max_without_approval)
+}
+
 valid if {
-	data.acs.packs.common.nonempty_strings(data.pack.allowed_tools)
-	data.acs.packs.common.strings(data.pack.approval_tools)
-	every tool in data.pack.approval_tools {
-		tool in data.pack.allowed_tools
+	is_object(data.pack.tools)
+	count(data.pack.tools) > 0
+	every name, rule in data.pack.tools {
+		data.acs.packs.common.nonempty_string(name)
+		rule_valid(rule)
 	}
-	data.acs.packs.common.nonempty_string(data.pack.refund_tool)
-	data.pack.refund_tool in data.pack.allowed_tools
-	data.acs.packs.common.natural(data.pack.refund_limit_minor)
 	data.acs.packs.common.nonempty_string(input.snapshot.tool_call.name)
 }
 
-valid_amount if {
-	data.acs.packs.common.natural(input.policy_target.value.amount_minor)
-}
+rule := data.pack.tools[input.snapshot.tool_call.name]
 
-requires_approval if {
-	input.snapshot.tool_call.name in data.pack.approval_tools
-}
-
-requires_approval if {
-	input.snapshot.tool_call.name == data.pack.refund_tool
-	input.policy_target.value.amount_minor > data.pack.refund_limit_minor
+valid_argument if {
+	data.acs.packs.common.natural(object.get(input.policy_target.value, rule.argument_path, null))
 }
 
 verdict := data.acs.packs.common.deny("approval_data_invalid") if {
 	not valid
 } else := data.acs.packs.common.deny("approval_tool_unknown") if {
-	not input.snapshot.tool_call.name in data.pack.allowed_tools
-} else := data.acs.packs.common.deny("refund_amount_invalid") if {
-	input.snapshot.tool_call.name == data.pack.refund_tool
-	not valid_amount
+	not rule
+} else := data.acs.packs.common.deny("approval_argument_invalid") if {
+	rule.mode == "threshold"
+	not valid_argument
 } else := data.agt.approval.escalate_if(true, "human_approval_required") if {
-	requires_approval
+	rule.mode == "review"
+} else := data.agt.approval.escalate_if(true, "human_approval_required") if {
+	rule.mode == "threshold"
+	object.get(input.policy_target.value, rule.argument_path, null) > rule.max_without_approval
 } else := c.allow

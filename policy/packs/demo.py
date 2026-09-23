@@ -1,85 +1,120 @@
-"""Offline native ACS and agent-hooks host example. No model or tool is executed."""
+"""Run the adoption recipes with a temporary database and a loopback HTTP server."""
 
 import asyncio
+import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from agent_control_spec import AcsInterceptor
-from agent_hooks import (
-    AgentContextBuilder,
-    CompositionConfig,
-    CompositionProfile,
-    InterceptionBlocked,
-    InterceptionEmitter,
-)
-
-PACKS = Path(__file__).resolve().parent
+from agent_hooks import AgentContextBuilder, InterceptionBlocked
+from recipes.document_service import DocumentService
+from recipes.http_client import get
+from recipes.profiles import disclosure_emitter, document_emitters, http_emitter
 
 
-def emitter(*names):
-    host = InterceptionEmitter(
-        composition=CompositionConfig(profile=CompositionProfile.SEQUENTIAL_RUN_ALL)
+async def main(directory, origin, requests):
+    read, write = document_emitters(max_operations=2)
+    service = DocumentService(
+        directory / "documents.sqlite", read_emitter=read, write_emitter=write
     )
-    for name in names:
-        host.register(AcsInterceptor(str(PACKS / name / "manifest.yaml")), name=name)
-    return host
+    service.seed("guide", "team-a", "Contact owner@example.com", ["alice"])
+    alice = {"subject": "alice", "tenant": "team-a", "roles": ["reader", "editor"]}
+    try:
+        text = await service.execute(alice, "read_document", {"document_id": "guide"})
+        builder = AgentContextBuilder(
+            agent_id="demo", framework="example", session_id="demo"
+        )
+        delivered = await disclosure_emitter(redact=True).emit(
+            builder.output(content=text)
+        )
+        assert delivered.target["content"] == "Contact [REDACTED]"
+        print(f"Authorized database read: {delivered.target['content']}")
 
-
-async def main():
-    tools = emitter("tool-permissions", "human-approval", "credentials")
-    output = emitter("pii", "credentials")
-    builder = AgentContextBuilder(
-        agent_id="support", framework="demo", session_id="demo"
-    )
-    # In a real host these values come from authenticated identity, not tool arguments.
-    identity = {"policy_packs": {"subject": "alice", "roles": ["operator"]}}
-    cases = [
-        (
-            "search",
-            tools,
-            builder.pre_tool_call(call_id="1", name="search", args={"q": "returns"}),
-            True,
-        ),
-        (
-            "approval",
-            tools,
-            builder.pre_tool_call(
-                call_id="2", name="send_email", args={"body": "hello"}
-            ),
-            False,
-        ),
-        (
-            "safe-output",
-            output,
-            builder.output(content="Your return is on its way"),
-            True,
-        ),
-        (
-            "pii-output",
-            output,
-            builder.output(content="Contact alice@example.com"),
-            False,
-        ),
-        (
-            "credential-output",
-            output,
-            builder.output(content="TOKEN=synthetic-demo-value"),
-            False,
-        ),
-    ]
-    for label, host, ctx, expected in cases:
-        ctx["extensions"] = identity
         try:
-            outcome = await host.emit(ctx)
+            await service.execute(
+                {**alice, "subject": "bob"},
+                "read_document",
+                {"document_id": "guide", "subject": "alice"},
+            )
         except InterceptionBlocked:
-            assert not expected, label
-            print(f"{label}: blocked")
+            print("Another user's document access: blocked")
         else:
-            assert expected, label
-            # The real operation must consume outcome.target, not pre-emission args.
-            assert outcome.target is not None
-            print(f"{label}: allowed")
-    print("policy packs demo: PASS")
+            raise AssertionError("Unauthorized read executed")
+
+        try:
+            await service.execute(
+                alice,
+                "update_document",
+                {"document_id": "guide", "body": "Unapproved edit"},
+            )
+        except InterceptionBlocked:
+            assert (
+                service.db.execute("SELECT body FROM documents").fetchone()[0] == text
+            )
+            print("Write without reviewer approval: blocked, database unchanged")
+        else:
+            raise AssertionError("Unapproved write executed")
+
+        body = await get(
+            origin + "/document", emitter=http_emitter([origin]), builder=builder
+        )
+        assert body == b"Public reference document"
+        print("Allowed HTTP fetch: received a real loopback response")
+        try:
+            await get(
+                origin + "/redirect", emitter=http_emitter([origin]), builder=builder
+            )
+        except InterceptionBlocked:
+            assert "/private" not in requests
+            print("Unapproved redirect: blocked before the destination was contacted")
+        else:
+            raise AssertionError("Disallowed redirect followed")
+
+        await service.execute(alice, "read_document", {"document_id": "guide"})
+        try:
+            await service.execute(alice, "read_document", {"document_id": "guide"})
+        except InterceptionBlocked:
+            assert service.db.execute("SELECT tool_calls FROM usage").fetchone()[0] == 2
+            print("Persisted operation quota: third operation blocked")
+        else:
+            raise AssertionError("Quota exceeded")
+    finally:
+        service.close()
+    print("policy workflows: PASS")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.path)
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header(
+                    "Location", f"http://localhost:{self.server.server_port}/private"
+                )
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            else:
+                body = b"Public reference document"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with tempfile.TemporaryDirectory(prefix="acs-workflows-") as temporary:
+            asyncio.run(
+                main(Path(temporary), f"http://127.0.0.1:{server.server_port}", seen)
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

@@ -1,1 +1,10 @@
-{"pack": {"allowed_tools": ["search", "read_document", "issue_refund", "send_email", "delete_record"], "approval_tools": ["send_email", "delete_record"], "refund_tool": "issue_refund", "refund_limit_minor": 10000}}
+{
+  "pack": {
+    "tools": {
+      "search": {"mode": "allow"},
+      "read_document": {"mode": "allow"},
+      "send_email": {"mode": "review"},
+      "delete_record": {"mode": "review"}
+    }
+  }
+}

@@ -1,48 +1,17 @@
-# Prompt injection
+# Prompt-injection decisions
 
-**Purpose:** gate user instructions and untrusted tool/retrieval results
-before incorporating them into the agent loop. This pack requires an
-external trusted detector. It is not a keyword denylist or a proven defense
-against all indirect instructions.
+Gate user instructions and untrusted retrieval results before the agent uses them. This decision rule does not detect attacks by itself. The [Azure Prompt Shields adapter](../recipes/README.md#azure-content-safety) supplies a concrete integration rather than requiring an invented "safe" field.
 
-**Points:** `input`, `post_tool_call`. **Target:** `$.target`, any shape your
-detector can fully inspect. Tool results have already been produced at the
-post-tool point. A denial must prevent their subsequent use.
+**Points:** `input`, `post_tool_call`. **Target:** `$.target`. The post-tool point is after retrieval but before the result is incorporated into the model context. Denying it cannot undo the retrieval.
 
-## Configuration and annotation
+## Configure and integrate
 
-`config.json` sets `pack.deny_at` to `0.8`. The threshold must be a number
-greater than zero and at most one. The host `prompt_injection` dispatcher
-must return a normalized score:
+`config.json` sets `pack.deny_at` to `0.8`. A host dispatcher returns `{"score": 0.1}` on a normalized 0..1 contract. The rule permits below the threshold and denies at or above it. Missing, nonnumeric or out-of-range scores deny. A dispatcher error produces a runtime annotation denial.
 
-```json
-{"score": 0.1}
-```
+The supplied Prompt Shields adapter maps boolean attack flags to 0 or 1. They are not calibrated probabilities. Its response validation requires an analysis of the user prompt and every submitted document. Other detectors may supply continuous scores, but their interpretation and threshold calibration belong to that integration.
 
-Scores in `[0, 0.8)` allow by default. Scores in `[0.8, 1]` deny with
-`prompt_injection_detected`. A missing/non-number/out-of-range score denies
-with `prompt_injection_data_invalid`. Missing or failed adapters produce a
-runtime annotation denial, not a clean-content default.
+Use the [shared install](../README.md#install-and-run) and [provider recipe](../recipes/README.md#azure-content-safety). At `input`, the adapter sends the governed target as the user prompt. At `post_tool_call`, it sends the target as a retrieved document and requires the host-captured original user prompt at `extensions.policy_packs.user_prompt`. It does not treat an instruction inside that document as authorization.
 
-## Installation and host obligations
+The profile screens credentials before any external annotation and stops on denial. Keep tool authorization and output controls even after an injection detector allows a message. Separation of instructions from retrieved data remains a host/framework concern.
 
-Use the [shared install](../README.md#install-and-run), then pass your
-dispatcher when constructing
-`AcsInterceptor("policy/packs/prompt-injection/manifest.yaml",
-annotator_dispatcher=detector)` and register it with an enforcing host.
-The dispatcher receives the selected target in the preliminary policy
-input. It must normalize the detector result, cover the whole payload and
-raise on incomplete analysis or service failure. No provider or credentials
-are shipped.
-
-Do not accept an agent's own risk score. Bind annotations to the current
-target, separate retrieved data from privileged instructions and retain
-tool authorization controls even when the detector allows. A low score
-does not authorize tools, disclose secrets or relax approvals.
-
-## Cases and limitations
-
-Native tests cover scores 0, 0.799, 0.8 and 1 at both points, invalid and
-missing scores, adapter failures and composition. Fixed detector fixtures
-test decision semantics, not detection efficacy. Domain-specific detector
-calibration and false-positive handling remain integration work.
+Tests cover numeric boundaries, missing/failed adapters, both real HTTP request shapes, partial provider results and denied inputs that cause zero external requests. Provider responses are fixtures. No live detector efficacy, adversarial robustness, paid model campaign or deployed protection is claimed.

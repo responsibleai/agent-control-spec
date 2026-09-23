@@ -1,58 +1,40 @@
-# Human approval
+# Approval for concrete tool actions
 
-**Purpose:** hold sensitive tools and large refunds for an authenticated
-human decision. The pack can block offline. Permitting a held operation
-requires a real host approval resolver.
+Gate irreversible operations such as document updates, deployments or sending messages at `pre_tool_call`. `$.target` is the actual argument object, and `$.tool_call.name` is the tool the host will execute. There is no mandatory refund workflow.
 
-**Point:** `pre_tool_call`. **Target:** `$.target`, the tool arguments.
-The host sets the actual `$.tool_call.name`.
+## Rules
 
-## Configuration
-
-`config.json` lists known tools and those that always require review.
-Defaults hold `send_email` and `delete_record`, permit ordinary `search`
-and `read_document`, and hold `issue_refund` above 10,000 integer minor
-units. A refund at exactly 10,000 allows this gate. Amounts below zero,
-fractional, boolean, missing or represented as strings deny without an
-approval block. Unknown tools likewise deny without a liftable approval.
+`config.json` maps tool names to one of three modes. Tools without a rule deny. Malformed rules and unexpected rule fields also deny rather than being ignored.
 
 ```json
-{"target": {"amount_minor": 10001}, "tool_call": {"name": "issue_refund"}}
+{
+  "pack": {
+    "tools": {
+      "search": {"mode": "allow"},
+      "deploy": {"mode": "review"},
+      "issue_refund": {
+        "mode": "threshold",
+        "argument_path": ["amount_minor"],
+        "max_without_approval": 10000
+      },
+      "provision": {
+        "mode": "threshold",
+        "argument_path": ["capacity", "instances"],
+        "max_without_approval": 10
+      }
+    }
+  }
+}
 ```
 
-This context fragment requests approval. The policy uses the existing
-`agt.approval.escalate_if` helper. ACS normalizes the intent to a `deny`
-with `approval: {}` and reason `human_approval_required`. It never returns
-allow because an argument contains `approved: true`.
+`allow` passes this gate, not every other policy. `review` always returns an approval request. `threshold` requires a nonnegative integer at the configured path and requests review only above the inclusive limit. Missing, fractional, boolean, negative or string values deny without an approval block. Paths are nonempty lists of object-member names. Choose the units in your application's tool schema. Currency conversion, aggregate refunds, fraud and per-customer entitlements remain separate policies.
 
-Configure `allowed_tools`, `approval_tools`, `refund_tool` and
-`refund_limit_minor` for the application. Approval/refund tools must be in
-the known-tool list. This sample assumes one host-established currency and
-amount unit. Multi-currency conversion, per-customer entitlements, fraud
-checks and aggregate refund limits require additional policy/state.
+The shipped sample allows `search` and `read_document` and reviews `send_email` and `delete_record`. Replace the map with your actual tool inventory. A deployment-only configuration can contain just `{"tools": {"deploy": {"mode": "review"}}}` under `pack`.
 
-## Install and enforce
+## Integrate
 
-Follow the [shared install](../README.md#install-and-run), then register
-`AcsInterceptor("policy/packs/human-approval/manifest.yaml")`.
-Without a resolver, held operations remain blocked.
+Use the [shared installation](../README.md#install-and-run), activate `manifest.yaml`, and register the control with an enforcing Agent Hooks emitter. ACS normalizes `agt.approval.escalate_if` to `deny` plus an approval block. It never grants approval because arguments contain `approved: true`.
 
-The host must present the exact current action to an authenticated reviewer,
-bind the response to the request's context identity and recheck that identity
-before execution. A resolver that approves should return Agent Hooks
-`ApprovalResolution(APPROVE, request.context_identity, Verdict.allow())`
-**only after** the real reviewer approved that request. The test resolver
-is synthetic and must not be copied as an automatic production approver.
+The [document recipe](../recipes/README.md#document-service) makes actual SQLite writes only after authorization and identity-bound approval. Rejected, missing or cancelled approval leaves the database unchanged. Its scripted test reviewer is not a production approver. The host must authenticate reviewers, display the exact action, bind responses to its context identity, enforce expiry/replay rules and implement durable suspension if needed. Preserve additional CLI/framework prompts.
 
-Do not store approval success in agent-controlled arguments. Resolve expiry,
-single-use/replay protection, durable suspension and later resumption in the
-host. Do not replay already-executed actions. Preserve framework and CLI
-permission prompts. Use deny-preserving composition with mandatory controls.
-
-## Coverage
-
-Native tests cover ordinary use, the exact amount boundary, malformed
-amounts, unknown tools and ignored self-approval. Real Agent Hooks host
-tests demonstrate successful identity-bound approval, rejection of a wrong
-identity, and hard-deny precedence in either registration order.
-No approval service, UI or durable approval store is supplied.
+Tests cover standalone deployments, nested capacity thresholds, refund configuration as an optional example, malformed arguments and configuration, unknown tools, actual approved/rejected writes, cancellation and hard-deny precedence. The earlier draft's `refund_tool`/`refund_limit_minor` configuration was replaced before release; the existing upstream stock approval library is unchanged.

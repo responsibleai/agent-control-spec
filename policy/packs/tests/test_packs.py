@@ -286,10 +286,8 @@ def test_pii_deny_allow_and_redact(point, as_object):
     "target",
     [[], {}, {"content": []}],
 )
-def test_pii_refuses_unscanned_structured_targets(target):
-    decide(
-        activate("pii"), context("output", target=target), "deny", "pii_data_invalid"
-    )
+def test_pii_allows_structured_targets_without_pattern_matches(target):
+    decide(activate("pii"), context("output", target=target), "allow")
 
 
 def test_pii_config_allows_business_email_while_still_blocking_ssn():
@@ -316,7 +314,7 @@ def test_pii_other_fields_are_checked_and_not_partially_redacted(action, other):
         policy,
         context("output", target={"content": "hello", **other}),
         "deny",
-        "pii_unredactable_fields",
+        "pii_detected" if action == "deny" else "pii_unredactable_fields",
     )
 
 
@@ -438,8 +436,14 @@ def test_destination_metadata_missing(destination):
     ],
 )
 def test_approval_boundaries(tool, amount, expected, approval):
+    cfg = config("human-approval")
+    cfg["tools"]["issue_refund"] = {
+        "mode": "threshold",
+        "argument_path": ["amount_minor"],
+        "max_without_approval": 10000,
+    }
     verdict = decide(
-        activate("human-approval"),
+        activate("human-approval", config=cfg),
         context(tool=tool, target={"amount_minor": amount, "approved": True}),
         expected,
     )
@@ -447,11 +451,20 @@ def test_approval_boundaries(tool, amount, expected, approval):
 
 
 def test_refund_missing_amount_is_not_approvable():
+    cfg = {
+        "tools": {
+            "issue_refund": {
+                "mode": "threshold",
+                "argument_path": ["amount_minor"],
+                "max_without_approval": 10000,
+            }
+        }
+    }
     verdict = decide(
-        activate("human-approval"),
+        activate("human-approval", config=cfg),
         context(tool="issue_refund"),
         "deny",
-        "refund_amount_invalid",
+        "approval_argument_invalid",
     )
     assert verdict.approval is None
 

@@ -5,7 +5,6 @@ import rego.v1
 
 valid if {
 	data.acs.packs.common.valid_patterns(data.pack.patterns)
-	input.policy_target.value != null
 }
 
 detected if {

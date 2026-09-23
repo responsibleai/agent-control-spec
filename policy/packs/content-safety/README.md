@@ -1,62 +1,25 @@
-# Content safety
+# Harmful-content decisions
 
-**Purpose:** hold user input, retrieved results and generated responses whose
-trusted classifier severity meets a configured threshold. This is a runnable
-decision pack, not an installed content classifier.
+Gate input, generated responses and retrieved content using a classifier's category severities. This is the decision rule. The [Azure Content Safety recipe](../recipes/README.md#azure-content-safety) supplies a reference REST dispatcher and checks its wire contract through real loopback HTTP.
 
-**Points:** `input`, `post_model_call`, `post_tool_call`, `output`.
-**Target:** `$.target`, including structured targets. The classifier must
-inspect all content in that target or fail the annotation. A post-action
-check only prevents subsequent consumption/release, not the action itself.
+**Points:** `input`, `post_model_call`, `post_tool_call`, `output`. **Target:** `$.target`. The dispatcher must inspect the whole governed target or fail. A post-action gate can prevent later consumption/release but cannot undo the earlier action.
 
-## Configuration and classifier contract
+## Configure
 
-`config.json` contains `pack.thresholds`, a nonempty category-to-integer map.
-Defaults deny at severity **4 or above** for hate, self-harm, sexual and
-violence content on a normalized 0..7 scale. Change thresholds and categories
-to match the application's requirements. Do not directly feed scores from a
-different scale into this policy.
+`config.json` contains a nonempty `pack.thresholds` map. Defaults deny at severity 4 or above for `hate`, `self_harm`, `sexual` and `violence` on a 0..7 scale. Choose categories/thresholds to fit the workload and the detector's actual scale.
 
-The host dispatcher for `content_safety` receives the preliminary policy
-input and must return:
+The `content_safety` dispatcher returns:
 
 ```json
 {"scores": {"hate": 0, "self_harm": 0, "sexual": 0, "violence": 3}}
 ```
 
-Every configured category must exist and be an integer from 0 through 7.
-Missing categories, strings, booleans and fractional/out-of-range scores
-deny with `content_safety_data_invalid`. A score at the threshold denies
-with `content_safety_threshold`. An adapter error fails closed in ACS.
-There is no configured provider endpoint and no network fallback.
+Every configured category must be present with an integer severity between 0 and 7. Missing or malformed categories deny with `content_safety_data_invalid`. Meeting the threshold denies with `content_safety_threshold`. Adapter exceptions fail closed in ACS. The supplied Azure adapter requests `EightSeverityLevels`, validates every category and maps the provider's category names into this contract. Do not feed its four-level normalized stock-dispatcher scores directly into a policy expecting 0..7.
 
-## Install and wire
+## Use
 
-Follow the [shared installation](../README.md#install-and-run), preserve
-relative library paths, then construct the interceptor with your dispatcher:
+Follow the [shared install](../README.md#install-and-run), then the [provider setup](../recipes/README.md#azure-content-safety). Pass the dispatcher to `AcsInterceptor` or use the recipe profile. Provision the service and provide credentials through the host. The default manifest has no endpoint and cannot classify content by itself.
 
-```python
-from agent_control_spec import AcsInterceptor
+Screen disclosure before making remote classifier calls. The recipe uses first-deny composition so a credential denial prevents any provider request. Do not assume a later deny in a run-all chain undoes an earlier annotation's network transfer.
 
-# classify implements dispatch(name, declaration, preliminary_policy_input).
-# Register this interceptor with an enforcing Agent Hooks emitter.
-control = AcsInterceptor(
-    "policy/packs/content-safety/manifest.yaml",
-    annotator_dispatcher=classify,
-)
-```
-
-The callable's `preliminary_policy_input["policy_target"]["value"]` is what
-must be classified. Provider adapters own credentials, normalization,
-timeouts, retries and schema validation. Agent-supplied `scores` inside
-the target or extensions are not classifier results.
-
-## Boundaries and coverage
-
-The runtime tests allow severity 3, deny 4, cover every bound point, reject
-missing/malformed categories and exercise unavailable classifiers.
-Composition tests show a credential deny still wins, and clean content can
-pass both controls. Test classifiers return fixed synthetic annotations.
-They do **not** measure safety accuracy, images/audio coverage, multilingual
-coverage, contextual exceptions or classifier resistance to manipulation.
-Do not release streamed content before the complete-target check.
+Unit tests cover every point, threshold edges and malformed annotations. Integration tests verify actual HTTP payloads, response normalization and provider failures against scripted service-shaped responses. They do not establish classifier quality, multilingual coverage, live service availability or deployment safety. The supplied adapter rejects recognized media blocks and over-limit text rather than claiming it analyzed them.

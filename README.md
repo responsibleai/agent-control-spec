@@ -47,8 +47,10 @@ those are host obligations defined by agent-hooks.
 
 ## Policy packs
 
-The [policy pack library](policy/packs/README.md) provides twelve independent
-controls for content, tools, destinations, approval, budgets and trusted
-host metadata. Its [coverage matrix](policy/packs/COVERAGE.md) distinguishes
-runnable decisions from integrations the host must supply. Existing examples
-and stock Rego/Cedar packages retain their paths and semantics.
+The [policy library](policy/packs/README.md) groups reusable rules around
+authorization, egress/routing, disclosure, budgets, approval and classifier
+decisions. Its adoption recipes exercise actual SQLite operations, HTTP
+dispatch and provider wire contracts. The [coverage matrix](policy/packs/COVERAGE.md)
+separates those workflows from specialist integration templates and remaining
+host obligations. Existing examples and stock Rego/Cedar packages retain their
+paths and semantics.

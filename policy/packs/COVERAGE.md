@@ -54,27 +54,28 @@ base does not exhibit that failure. These packs therefore call imported
 functions by fully qualified `data.*` paths. This is an artifact
 compatibility adaptation, not a runtime or stock-library modification.
 
-## New coverage matrix
+## Decision components behind the workflow families
 
 All rows have native ACS allow, deny, boundary, missing-data and composition
-tests in `tests/test_packs.py`. Integration status is described in the
-[library index](README.md). Fixture-generated metadata is not evidence that
-the corresponding host integration has been deployed.
+tests. `tests/test_adoption.py` covers ordinary application shapes and generic
+configuration. `tests/test_workflows.py` exercises the supplied database,
+HTTP and classifier recipes. The [library index](README.md) groups the rules by
+operation instead of treating their directory count as a product requirement.
 
 | Area | Delivered control and boundary | Reused component / deliberate difference | Remaining prerequisite |
 | --- | --- | --- | --- |
-| Input/output safety | `content-safety`, configured severity threshold, all categories required | Provider examples inform normalized contract | Real classifier adapter, complete-target handling, calibration |
-| Indirect/direct injection | `prompt-injection`, score threshold at input and retrieved results | Preserves classifier approach, not a keyword blacklist | Classifier accuracy, instruction/data separation |
-| Credential disclosure | `credentials`, string-leaf and structured key/value scanning at five points | `agt.patterns.matches_any` | Plaintext only, host-controlled credential injection must occur separately |
-| PII | `pii`, configurable deny/redact and text-target validation | `agt.patterns`, `agt.redact.apply_patterns` | Transform application, domain-specific detector coverage |
+| Input/output safety | `content-safety`, configured severity threshold, all categories required | Azure text-analysis REST adapter supplies actual normalization | Service provisioning, live validation, calibration, unsupported modalities |
+| Indirect/direct injection | `prompt-injection`, score threshold at input and retrieved results | Azure Prompt Shields REST adapter distinguishes user prompt from retrieved documents | Classifier accuracy, instruction/data separation |
+| Credential disclosure | `credentials`, string-leaf and structured key/value scanning at six points | `agt.patterns.matches_any`; classifier pipeline stops before I/O on denial | Plaintext only, host-controlled credential injection must occur separately |
+| PII | `pii`, JSON pattern scanning and conservative string/content redaction | `agt.patterns`, `agt.redact.apply_patterns`; normal tool-only responses permit when clean | Domain-specific detector coverage, arbitrary structured/multimodal sanitization |
 | Tool authorization | `tool-permissions`, known catalog plus authenticated role | ACS catalog projection | Complete inventory, trustworthy roles and actual tool binding |
-| Destinations | `destinations`, exact normalized origin/method match | Unlike legacy egress, no wildcard/substring URL inference | URL parsing, redirect/credential checks, DNS and transport enforcement |
-| Approval | `human-approval`, sensitive tools and integer refund boundary | `agt.approval.escalate_if` | Identity-bound resolver, durable suspension, replay prevention |
-| Resources/budgets | `budgets`, used + reserved <= limit, integer counters | Unlike legacy budgets, missing counters never become zero | Atomic ledger, upper-bound reservations and runtime limits |
+| Destinations | `destinations`, exact normalized origin/method match | Reference GET client parses the dispatched URL and mediates redirects | Production transport, DNS/address isolation and authenticated clients |
+| Approval | `human-approval`, domain-neutral per-tool allow/review/argument-threshold rules | `agt.approval.escalate_if`; actual SQLite updates wait for approval | Authenticated reviewer, durable suspension, replay prevention |
+| Resources/budgets | `budgets`, used + reserved <= limit, integer counters | Local recipe commits an operation counter with its database action | Distributed/token/cost accounting, upper-bound reservations and runtime limits |
 | Label flow | `information-flow`, no write down and propagated join labels | Existing IFC lattice/helpers, explicit host extension path | Provenance, label union across inputs, persistent propagation |
 | Model routing | `model-routing`, exact provider/deployment/region tuple | Separates routing from prompt claims and model-name-only checks | Bind to actual endpoint/configuration, control fallback routes |
 | Tool supply chain | `tool-integrity`, pinned SHA-256 per tool | Same goal as stock content-hash, without old AGT snapshot path | Real immutable artifact measurement and trust distribution |
-| Record/resource access | `resource-access`, subject ACL, tenant and operation | Generalizes records/WorkIQ scenario constraints | Authentic identity, fresh ACL/resource catalog, argument binding |
+| Record/resource access | `resource-access`, subject ACL, tenant and operation | Document recipe reads fresh tenant/ACL metadata from the same database transaction as the action | Production authentication/resource catalog integration |
 
 ## Not delivered as protection
 
@@ -92,7 +93,7 @@ new stateful detector, learned risk model or content fingerprint database.
 The stock aggregate remains available for consumers of its older snapshot
 convention.
 
-## Verification map
+## Adoption evidence and verification
 
 `tests/test_packs.py` activates on-disk manifests in the native engine and uses
 native in-memory bundles for configuration variations. It exercises all
@@ -103,22 +104,36 @@ and with a legitimate allow, plus effective-target redaction and
 identity-bound approvals. Configuration and reason assertions distinguish
 policy denials from accidental runtime errors.
 
-CI runs the same cases against the source-built SDK and the pinned published
-wheel, plus `demo.py`. All tests are deterministic and use synthetic inputs.
-No paid model campaign, real classifier accuracy measurement, package
-publication or production enforcement is part of this work.
+The workflow suite goes beyond verdict checks. It observes SQLite contents
+after approved/rejected/cancelled writes, persists quotas across reopen,
+revokes an ACL in the database, and races callers for the last quota slot.
+Its HTTP listener records requests, including the absence of a request to
+a denied redirect destination. The provider tests inspect real POST
+requests and feed documented service response shapes through the supplied
+adapter. Credentials denied before classification produce no provider requests.
 
-### Local results, September 22, 2026
+CI runs these cases against the source-built SDK and the pinned published
+wheel, plus `demo.py`. All inputs and provider replies are synthetic, but
+database and loopback HTTP effects are real. No paid model campaign, live
+classifier accuracy measurement, package publication or production deployment
+is part of this work.
 
-| Validation | Result |
-| --- | --- |
-| Source-built ACS, pack suite plus existing Python SDK suite | 363 passed (269 pack cases and 94 existing SDK cases) |
-| Clean ACS `0.4.0a3` / Agent Hooks `0.1.0a5` wheel environment | 269 pack cases passed |
-| Consumer tests with unavailable `PATH`, `HOME`, `OPA` and `OPA_PATH` | Same 269 passed, proving no external OPA dependency |
-| Offline enforcing-host demo, source and consumer environments | Expected five outcomes and `policy packs demo: PASS` |
-| Rego strict checking, CI-pinned Ruff and actionlint, local doc links | Passed |
+## Adoption boundary
 
-These are local observations, not a claim that a draft pull request's
-remote CI has passed. The comparison used separate environments and checked
-that the consumer import resolved to its installed wheel rather than the
-checkout SDK.
+Authorization, quotas and approval are demonstrated together in a serialized
+document service. Egress is demonstrated in a bounded HTTP client. Disclosure
+is exercised on values actually returned to callers. Classifier rules have a
+concrete text/Prompt Shields adapter. These are reusable reference integrations,
+not replacements for production services' identity, transaction or transport
+systems.
+
+Model routing still needs the application's real model registry/dispatcher.
+IFC and tool-integrity remain specialist templates because this change supplies
+neither full provenance tracking nor trustworthy artifact measurement. They
+remain available without being counted as required controls for every agent.
+
+The document example holds its transaction while awaiting approval and therefore
+is unsuitable for long-lived approval queues or high concurrency. That tradeoff
+is explicit. Distributed accounting and durable human approval are outside it.
+Known pattern-filter limitations and unsupported modalities are likewise not
+made safe by passing a test or documenting them.

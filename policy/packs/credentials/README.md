@@ -4,9 +4,10 @@
 to a model/tool or releasing retrieved/generated content. This pack runs
 offline and does not need host extension metadata.
 
-**Points:** `pre_model_call`, `pre_tool_call`, `post_tool_call`,
-`post_model_call`, `output`. **Target:** `$.target`, any non-null JSON
-value. The policy examines nested string values and a JSON serialization
+**Points:** `input`, `pre_model_call`, `pre_tool_call`, `post_tool_call`,
+`post_model_call`, `output`. **Target:** `$.target`, any JSON value, including
+an explicit null tool result. A missing target still fails during ACS path
+resolution. The policy examines nested string values and a JSON serialization
 of the target to catch structured credential fields.
 
 ## Configure
@@ -46,11 +47,13 @@ The target above allows. These targets deny:
 
 These are target fragments. Use a full Agent Hooks envelope for emission.
 Native tests exercise nested structures, numeric results, legitimate
-credential-management discussion, custom patterns and all five points.
+credential-management discussion, custom patterns and all six points.
 Every other pack is tested in composition with this control.
 
 ## Host requirements and limits
 
+The [classifier recipe](../recipes/README.md#azure-content-safety) also checks
+input before sending it to a remote detector and short-circuits on denial.
 Block before any governed text is sent or released. Scan the whole model
 request, including history and retrieved context, and assembled output,
 not individual stream chunks. Do not include host-injected transport

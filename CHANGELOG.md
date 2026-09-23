@@ -2,11 +2,13 @@
 
 ## Unreleased
 
-- Add twelve configurable Rego policy packs under `policy/packs/`, preserving
-  existing policy libraries and examples. Each pack documents its interception
-  points, required host inputs and enforcement dependencies. Native runtime
-  tests cover allow/deny boundaries, missing data and composition against both
-  the checkout SDK and the pinned published consumer wheel.
+- Add configurable Rego policies and adoption recipes under `policy/packs/`,
+  preserving existing policy libraries and examples. The recipes exercise
+  database authorization, approved writes, persisted quotas, HTTP redirects
+  and Azure Content Safety wire contracts. Approval rules are domain-neutral,
+  disclosure checks handle ordinary structured/tool-only responses, and
+  specialist IFC/integrity integrations are labelled as templates. Native
+  tests run against the checkout SDK and the pinned published consumer wheel.
 - A manifest chain that fetches any `extends` URL is now URL sourced, and a
   URL sourced manifest may not read host secrets. A fetched document could
   name a host environment variable through `api_key_env` or one of the
