@@ -54,7 +54,7 @@
       "additionalProperties": true
     },
     "extends": {
-      "description": "Ordered array of manifest path or HTTPS URL references. File-based loaders resolve entries relative to the including manifest, merge additively, and validate the resolved manifest. URL object entries may include an optional sha256 or SRI integrity pin.",
+      "description": "Ordered array of manifest path or HTTPS URL references. File-based loaders resolve entries relative to the including manifest, merge additively, and validate the resolved manifest. URL object entries may include an optional sha256 or SRI integrity pin. A pin fixes the fetched bytes; it does not grant fetched content access to host environment variables or host files.",
       "type": "array",
       "default": [],
       "items": {
@@ -160,6 +160,29 @@
         }
       ]
     },
+    "pinned_https_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "pattern": "^https://"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "integrity": {
+          "type": "string",
+          "pattern": "^sha256-([A-Za-z0-9+/]{42}|[A-Za-z0-9_-]{42})[AEIMQUYcgkosw048]=?$"
+        }
+      },
+      "oneOf": [
+        { "required": ["sha256"] },
+        { "required": ["integrity"] }
+      ]
+    },
     "path": {
       "type": "string",
       "minLength": 1
@@ -211,6 +234,9 @@
               "type": "string",
               "minLength": 1
             },
+            "bundle_url": {
+              "$ref": "#/$defs/pinned_https_source"
+            },
             "data_paths": {
               "$ref": "#/$defs/string_array"
             },
@@ -222,7 +248,10 @@
               ]
             }
           },
-          "additionalProperties": true
+          "additionalProperties": true,
+          "not": {
+            "required": ["bundle", "bundle_url"]
+          }
         },
         {
           "type": "object",
@@ -241,7 +270,7 @@
           "required": [
             "type"
           ],
-          "description": "AGT D3: cedar is a built-in policy type. Exactly one of policy_set or policy_path is required.",
+          "description": "AGT D3: cedar is a built-in policy type. Exactly one of policy_set or policy_path is required. The Cedar request mapping is fixed by SPECIFICATION.md 12.4, so query is rejected.",
           "properties": {
             "type": {
               "const": "cedar"
@@ -262,9 +291,7 @@
               "type": "string",
               "minLength": 1
             },
-            "query": {
-              "type": "object"
-            }
+            "query": false
           },
           "oneOf": [
             { "required": [ "policy_set" ], "not": { "required": [ "policy_path" ] } },
@@ -332,6 +359,22 @@
       "type": "object",
       "required": [
         "type"
+      ],
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "llm" } } },
+          "then": {
+            "properties": {
+              "system_prompt_url": { "$ref": "#/$defs/pinned_https_source" }
+            },
+            "not": {
+              "anyOf": [
+                { "required": ["system_prompt_url", "system_prompt"] },
+                { "required": ["system_prompt_url", "prompt"] }
+              ]
+            }
+          }
+        }
       ],
       "properties": {
         "type": {

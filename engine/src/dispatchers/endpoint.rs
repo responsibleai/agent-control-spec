@@ -71,6 +71,7 @@ mod tests {
                 (FIELD_TIMEOUT_MS.to_string(), json!(1000)),
                 ("purpose".to_string(), json!("probe")),
             ]),
+            ..Default::default()
         };
 
         let output = EndpointAnnotator
@@ -110,6 +111,7 @@ mod tests {
                 (FIELD_AWS_SESSION_TOKEN.to_string(), json!("token")),
                 ("purpose".to_string(), json!("probe")),
             ]),
+            ..Default::default()
         };
 
         let output = EndpointAnnotator
@@ -150,6 +152,7 @@ mod tests {
                 (FIELD_FROM.to_string(), json!("$target")),
                 (FIELD_TIMEOUT_MS.to_string(), json!(1000)),
             ]),
+            ..Default::default()
         };
 
         let error = EndpointAnnotator
@@ -181,6 +184,7 @@ mod tests {
                 (FIELD_FROM.to_string(), json!("$target")),
                 (FIELD_TIMEOUT_MS.to_string(), json!(1000)),
             ]),
+            ..Default::default()
         };
 
         let error = EndpointAnnotator

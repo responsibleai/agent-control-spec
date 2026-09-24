@@ -7,6 +7,7 @@ export declare class ExternalObject<T> {
     [K: symbol]: T
   }
 }
+
 /**
  * The engine's default resource caps as a JSON object string. A host
  * that raises one cap reads this to see what it is overriding, so a
@@ -62,7 +63,7 @@ export declare function interceptorNewWithHooks(manifestPath: string, annotatorD
  * This is the overlay case: a base policy plus deltas an environment
  * layers on it, resolved the same way the engine resolves `extends`.
  */
-export declare function mergeManifests(sourcesJson: string): string
+export declare function mergeManifests(sourcesJson: string, limitsJson?: string | undefined | null): string
 
 /**
  * Parse manifest YAML into an object (JSON encoded) without
@@ -74,7 +75,7 @@ export declare function mergeManifests(sourcesJson: string): string
  * `validate_manifest_detailed` to judge whether the fragment is
  * runnable.
  */
-export declare function parseManifest(source: string): string
+export declare function parseManifest(source: string, limitsJson?: string | undefined | null): string
 
 /**
  * Activate the manifest at `manifest_path`, readying every policy it
@@ -275,7 +276,7 @@ export declare function validateArtifactsDetailed(manifestYaml: string, bundlesJ
  * on that split so it does not relabel boundary failures as grammar
  * failures.
  */
-export declare function validateManifest(source: string): string | null
+export declare function validateManifest(source: string, limitsJson?: string | undefined | null): string | null
 
 /**
  * Validate manifest source and return findings as a JSON array.
@@ -287,7 +288,7 @@ export declare function validateManifest(source: string): string | null
  * answers yes/no with a single message and cannot be rendered
  * per-field.
  */
-export declare function validateManifestDetailed(source: string): string
+export declare function validateManifestDetailed(source: string, limitsJson?: string | undefined | null): string
 
 /**
  * Validate a manifest file, resolving `extends` first.
@@ -295,4 +296,4 @@ export declare function validateManifestDetailed(source: string): string
  * The entry point for a manifest that inherits. Reads from disk and may
  * fetch URL `extends`, exactly as loading a runtime would.
  */
-export declare function validateManifestFile(path: string): string | null
+export declare function validateManifestFile(path: string, limitsJson?: string | undefined | null): string | null

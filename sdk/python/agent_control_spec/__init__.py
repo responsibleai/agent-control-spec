@@ -72,12 +72,18 @@ PERF_TELEMETRY_LEVELS: tuple[str, ...] = ("off", "external", "full")
 #: a shared default. Fields:
 #:
 #: - ``max_snapshot_bytes``: cap on the canonicalized context snapshot.
-#: - ``max_policy_input_depth``: JSON nesting depth accepted anywhere.
+#: - ``max_policy_input_depth``: policy input/output JSON nesting depth.
 #: - ``max_annotators_per_point``: annotators the engine will dispatch.
 #: - ``max_annotator_output_bytes``: per-annotator serialized output.
 #: - ``max_policy_output_bytes``: policy-decision serialized output.
 #: - ``max_extends_depth``: manifest ``extends`` chain length.
-#: - ``max_merged_manifest_bytes``: composed manifest total size.
+#: - ``max_merged_manifest_bytes``: manifest source, expanded scalar and composed size.
+#: - ``max_manifest_depth``: manifest collection nesting depth.
+#: - ``max_manifest_nodes``: expanded YAML nodes, including keys.
+#: - ``max_manifest_events``: scanned events and alias replay events, separately.
+#: - ``max_manifest_aliases``: YAML alias references and per-anchor expansions.
+#: - ``max_manifest_anchors``: YAML anchor definitions.
+#: - ``max_manifest_anchor_events``: retained anchor event copies.
 #: - ``max_manifest_url_bytes``: per-URL fetch body cap.
 #: - ``manifest_url_timeout_ms``: per-URL fetch deadline.
 #: - ``max_manifest_url_redirects``: per-URL fetch redirect count.
@@ -376,7 +382,7 @@ class ActivatedPolicy:
 ManifestInvalidError = _native.ManifestInvalid
 
 
-def validate_manifest(source: str) -> None:
+def validate_manifest(source: str, *, limits: Mapping[str, int] | None = None) -> None:
     """Validate manifest source against the grammar.
 
     Raises :class:`ManifestInvalidError` when the manifest is rejected,
@@ -392,19 +398,23 @@ def validate_manifest(source: str) -> None:
     raises :class:`ValueError` rather than
     :class:`ManifestInvalidError`; use :func:`validate_manifest_file`.
     """
-    _native.validate_manifest(source)
+    _native.validate_manifest(source, limits)
 
 
-def validate_manifest_file(path: str) -> None:
+def validate_manifest_file(
+    path: str, *, limits: Mapping[str, int] | None = None
+) -> None:
     """Validate a manifest file, resolving ``extends`` first.
 
     Use this for a manifest that inherits. It reads from disk and may
     fetch URL ``extends``, exactly as loading a runtime would.
     """
-    _native.validate_manifest_file(path)
+    _native.validate_manifest_file(path, limits)
 
 
-def validate_manifest_detailed(source: str) -> list[ValidationDiagnostic]:
+def validate_manifest_detailed(
+    source: str, *, limits: Mapping[str, int] | None = None
+) -> list[ValidationDiagnostic]:
     """Return structured validation diagnostics for a manifest source.
 
     Each diagnostic is ``{"code": str, "message": str, "severity":
@@ -421,7 +431,7 @@ def validate_manifest_detailed(source: str) -> list[ValidationDiagnostic]:
     want per-field feedback. :func:`validate_manifest` is the boolean
     shortcut for callers that only care whether validation passed.
     """
-    return json.loads(_native.validate_manifest_diagnostics(source))
+    return json.loads(_native.validate_manifest_diagnostics(source, limits))
 
 
 def validate_artifacts(
@@ -433,6 +443,8 @@ def validate_artifacts(
     Each diagnostic is ``{"code": str, "message": str, "severity":
     "error"}`` and matches the C ABI's ``acs_artifact_diagnostics``
     wire shape. An empty list means both halves are sound.
+    Manifest parsing resource limits raise ``ValueError`` rather than
+    returning a grammar finding.
 
     :func:`validate_manifest_detailed` answers only for the document.
     A manifest can satisfy the grammar, name a Rego bundle, and still
@@ -454,7 +466,9 @@ def validate_artifacts(
     return json.loads(_native.validate_artifacts_diagnostics(manifest_source, payload))
 
 
-def parse_manifest(source: str) -> dict[str, Any]:
+def parse_manifest(
+    source: str, *, limits: Mapping[str, int] | None = None
+) -> dict[str, Any]:
     """Parse manifest source into a ``dict`` without validating.
 
     An authoring tool that needs to inspect a fragment before deciding
@@ -465,10 +479,12 @@ def parse_manifest(source: str) -> dict[str, Any]:
     Raises :class:`ManifestInvalidError` when the source is not
     well-formed YAML or the manifest grammar rejects it structurally.
     """
-    return json.loads(_native.parse_manifest(source))
+    return json.loads(_native.parse_manifest(source, limits))
 
 
-def merge_manifests(sources: Iterable[str]) -> dict[str, Any]:
+def merge_manifests(
+    sources: Iterable[str], *, limits: Mapping[str, int] | None = None
+) -> dict[str, Any]:
     """Compose an ordered chain of manifest sources into one ``dict``.
 
     Later sources overlay earlier ones under the same merge grammar
@@ -485,7 +501,7 @@ def merge_manifests(sources: Iterable[str]) -> dict[str, Any]:
     entry does not parse.
     """
     materialized = list(sources)
-    return json.loads(_native.merge_manifests(materialized))
+    return json.loads(_native.merge_manifests(materialized, limits))
 
 
 def supported_manifest_versions() -> tuple[str, ...]:

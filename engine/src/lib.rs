@@ -24,6 +24,7 @@ mod hex;
 pub mod interceptor;
 pub mod limits;
 pub mod manifest;
+mod manifest_deserializer;
 #[cfg(feature = "opa")]
 pub mod opa;
 pub mod paths;
@@ -55,8 +56,8 @@ pub use annotation::{
 #[cfg(feature = "cedar")]
 pub use cedar::CedarBuiltinDispatcher;
 pub use cedar::{
-    build_cedar_request, translate_advice, CedarEntity, CedarPolicyDispatcher, CedarRequest,
-    CedarTestDispatcher,
+    build_cedar_request, most_restrictive_advice, translate_advice, CedarEntity,
+    CedarPolicyDispatcher, CedarRequest, CedarTestDispatcher,
 };
 #[cfg(feature = "default-dispatchers")]
 pub use dispatchers::{
@@ -88,3 +89,5 @@ pub use stream_session::{
     MAX_RUNE_OFFSET, STREAMING_FAIL_CLOSED_REASON, VERDICT_INVALID_REASON,
 };
 pub use telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetryEventType, TelemetrySink};
+#[cfg(test)]
+mod artifact_tests;

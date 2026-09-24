@@ -18,7 +18,9 @@
 // problems only (bad UTF-8, non-object context, poisoned handle).
 
 use agent_control_spec::annotation::{AnnotatorDispatcher, AnnotatorInvocation};
-use agent_control_spec::dispatchers::{default_annotator_dispatcher, BindingPolicyDispatcher};
+use agent_control_spec::dispatchers::{
+    default_annotator_dispatcher, default_annotator_dispatcher_with_limits, BindingPolicyDispatcher,
+};
 use agent_control_spec::policy::PreparedPolicyInvocation;
 use agent_control_spec::runtime::PolicyDispatcher;
 use agent_control_spec::stream_session::{
@@ -210,8 +212,26 @@ pub unsafe extern "C" fn acs_validate_manifest(
     source_len: usize,
     err_out: *mut *mut c_char,
 ) -> i32 {
+    acs_validate_manifest_with_limits(source, source_len, std::ptr::null(), err_out)
+}
+
+/// Validate manifest source with optional JSON resource limit overrides.
+///
+/// # Safety
+/// Same pointer contract as `acs_validate_manifest`; `limits_json` must be
+/// null or a valid NUL-terminated UTF-8 JSON object.
+#[no_mangle]
+pub unsafe extern "C" fn acs_validate_manifest_with_limits(
+    source: *const u8,
+    source_len: usize,
+    limits_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> i32 {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(limits) = read_manifest_limits(limits_json, err_out) else {
+            return ACS_MANIFEST_CALL_FAILED;
+        };
         let bytes: &[u8] = if source_len == 0 {
             &[]
         } else if source.is_null() {
@@ -227,11 +247,15 @@ pub unsafe extern "C" fn acs_validate_manifest(
                 return ACS_MANIFEST_CALL_FAILED;
             }
         };
-        let manifest = match Manifest::parse_yaml_str(source) {
+        let manifest = match Manifest::parse_yaml_str_with_limits(source, limits) {
             Ok(m) => m,
-            Err(e) => {
+            Err(e @ RuntimeError::ManifestInvalid(_)) => {
                 set_err(err_out, format!("{e}"));
                 return ACS_MANIFEST_INVALID;
+            }
+            Err(other) => {
+                set_err(err_out, format!("{other}"));
+                return ACS_MANIFEST_CALL_FAILED;
             }
         };
         if !manifest.extends.is_empty() {
@@ -1100,7 +1124,7 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
                 },
                 call,
             }),
-            None => default_annotator_dispatcher(),
+            None => default_annotator_dispatcher_with_limits(limits),
         };
         let policy: Arc<dyn PolicyDispatcher> = match policy_fn {
             Some(call) => Arc::new(HostPolicyDispatcher {
@@ -1110,7 +1134,7 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
                 },
                 call,
             }),
-            None => Arc::new(BindingPolicyDispatcher::new()),
+            None => Arc::new(BindingPolicyDispatcher::with_limits(limits)),
         };
         let telemetry: Arc<dyn TelemetrySink> = match telemetry_fn {
             Some(call) => Arc::new(HostTelemetrySink {
@@ -1155,9 +1179,8 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
 
 /// Parse manifest text and return it as JSON.
 ///
-/// Parsing is not validation: this answers what the document says, which
-/// an authoring or migration tool needs before the document is
-/// runnable. Freed with `acs_free_string`.
+/// This legacy C entry point also validates cross-references.
+/// Freed with `acs_free_string`.
 ///
 /// # Safety
 /// `yaml` must be a valid NUL-terminated string.
@@ -1166,12 +1189,53 @@ pub unsafe extern "C" fn acs_manifest_parse(
     yaml: *const c_char,
     err_out: *mut *mut c_char,
 ) -> *mut c_char {
+    acs_manifest_parse_with_limits(yaml, std::ptr::null(), err_out)
+}
+
+unsafe fn read_manifest_limits(
+    limits_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> Option<Limits> {
+    if limits_json.is_null() {
+        return Some(Limits::default());
+    }
+    let raw = read_utf8(limits_json, "limits_json", err_out)?;
+    let value = match serde_json::from_str(raw) {
+        Ok(value) => value,
+        Err(error) => {
+            set_err(err_out, format!("limits_json does not parse: {error}"));
+            return None;
+        }
+    };
+    match agent_control_spec::wire::limits_from_json(&value) {
+        Ok(limits) => Some(limits),
+        Err(error) => {
+            set_err(err_out, error.to_string());
+            None
+        }
+    }
+}
+
+/// Parse and validate a manifest with optional JSON resource limit overrides.
+///
+/// # Safety
+/// Same pointer contract as `acs_manifest_parse`; `limits_json` must be
+/// null or a valid NUL-terminated UTF-8 JSON object.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_parse_with_limits(
+    yaml: *const c_char,
+    limits_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
         let Some(source) = read_utf8(yaml, "yaml", err_out) else {
             return std::ptr::null_mut();
         };
-        match Manifest::from_yaml_str(source) {
+        let Some(limits) = read_manifest_limits(limits_json, err_out) else {
+            return std::ptr::null_mut();
+        };
+        match Manifest::from_yaml_str_with_limits(source, limits) {
             Ok(manifest) => match serde_json::to_string(&manifest) {
                 Ok(json) => to_c_string(json, err_out),
                 Err(e) => {
@@ -1208,6 +1272,20 @@ pub unsafe extern "C" fn acs_manifest_merge(
     yamls_json: *const c_char,
     err_out: *mut *mut c_char,
 ) -> *mut c_char {
+    acs_manifest_merge_with_limits(yamls_json, std::ptr::null(), err_out)
+}
+
+/// Compose manifest text with optional JSON resource limit overrides.
+///
+/// # Safety
+/// Same pointer contract as `acs_manifest_merge`; `limits_json` must be
+/// null or a valid NUL-terminated UTF-8 JSON object.
+#[no_mangle]
+pub unsafe extern "C" fn acs_manifest_merge_with_limits(
+    yamls_json: *const c_char,
+    limits_json: *const c_char,
+    err_out: *mut *mut c_char,
+) -> *mut c_char {
     clear_err(err_out);
     let result = catch_unwind(AssertUnwindSafe(|| {
         let Some(raw) = read_utf8(yamls_json, "yamls_json", err_out) else {
@@ -1228,7 +1306,10 @@ pub unsafe extern "C" fn acs_manifest_merge(
             return std::ptr::null_mut();
         }
         let borrowed: Vec<&str> = sources.iter().map(String::as_str).collect();
-        match Manifest::from_yaml_chain(&borrowed) {
+        let Some(limits) = read_manifest_limits(limits_json, err_out) else {
+            return std::ptr::null_mut();
+        };
+        match Manifest::from_yaml_chain_with_limits(&borrowed, limits) {
             Ok(manifest) => match serde_json::to_string(&manifest) {
                 Ok(json) => to_c_string(json, err_out),
                 Err(e) => {
@@ -1274,9 +1355,17 @@ pub unsafe extern "C" fn acs_manifest_diagnostics(
         let findings = match Manifest::from_yaml_str(source) {
             Ok(manifest) => match manifest.validate() {
                 Ok(()) => Vec::new(),
-                Err(e) => vec![wire::diagnostic_json(&e)],
+                Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+                Err(other) => {
+                    set_err(err_out, format!("{other}"));
+                    return std::ptr::null_mut();
+                }
             },
-            Err(e) => vec![wire::diagnostic_json(&e)],
+            Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+            Err(other) => {
+                set_err(err_out, format!("{other}"));
+                return std::ptr::null_mut();
+            }
         };
         match serde_json::to_string(&findings) {
             Ok(json) => to_c_string(json, err_out),
@@ -1336,7 +1425,11 @@ pub unsafe extern "C" fn acs_artifact_diagnostics(
         // does not parse would otherwise be reported as an activation
         // failure, which names the wrong half.
         let findings = match Manifest::from_yaml_str(source) {
-            Err(e) => vec![wire::diagnostic_json(&e)],
+            Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+            Err(other) => {
+                set_err(err_out, format!("{other}"));
+                return std::ptr::null_mut();
+            }
             Ok(manifest) => match manifest.validate() {
                 Err(e) => vec![wire::diagnostic_json(&e)],
                 Ok(()) => match ActivatedPolicy::activate_from_memory(source, bundles) {
@@ -2110,6 +2203,84 @@ intervention_points:
         .to_string()
     }
 
+    #[test]
+    fn hook_constructor_passes_url_limits_to_default_annotators_only() {
+        unsafe extern "C" fn annotate(
+            ctx: *mut c_void,
+            _name: *const c_char,
+            _invocation: *const c_char,
+            _input: *const c_char,
+            _error: *mut *mut c_char,
+        ) -> *mut c_char {
+            *(ctx as *mut usize) += 1;
+            CString::new(r#"{"label":"safe"}"#).unwrap().into_raw()
+        }
+        unsafe extern "C" fn policy(
+            ctx: *mut c_void,
+            _invocation: *const c_char,
+            _error: *mut *mut c_char,
+        ) -> *mut c_char {
+            *(ctx as *mut usize) += 1;
+            CString::new(r#"{"decision":"allow"}"#).unwrap().into_raw()
+        }
+        unsafe extern "C" fn free(_ctx: *mut c_void, value: *mut c_char) {
+            drop(CString::from_raw(value));
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("fixtures")
+            .join("pinned-prompt.yaml");
+        let path = path.to_str().unwrap().as_bytes();
+        let limits = CString::new(r#"{"manifest_url_timeout_ms":0}"#).unwrap();
+        for (custom_annotator, custom_policy) in
+            [(false, false), (false, true), (true, false), (true, true)]
+        {
+            let mut annotator_calls = 0_usize;
+            let mut policy_calls = 0_usize;
+            let mut err = std::ptr::null_mut();
+            let handle = unsafe {
+                acs_interceptor_new_with_hooks(
+                    path.as_ptr(),
+                    path.len(),
+                    if custom_annotator {
+                        Some(annotate)
+                    } else {
+                        None
+                    },
+                    (&mut annotator_calls as *mut usize).cast(),
+                    if custom_policy { Some(policy) } else { None },
+                    (&mut policy_calls as *mut usize).cast(),
+                    None,
+                    std::ptr::null_mut(),
+                    Some(free),
+                    std::ptr::null(),
+                    limits.as_ptr(),
+                    &mut err,
+                )
+            };
+            assert!(err.is_null(), "constructor failed");
+            assert!(!handle.is_null());
+            let verdict = intercept(
+                handle,
+                r#"{"interception_point":"input","input":{"content":"hello","role":"user"}}"#,
+            );
+            unsafe { acs_interceptor_free(handle) };
+            assert_eq!(annotator_calls, usize::from(custom_annotator));
+            assert_eq!(policy_calls, usize::from(custom_annotator && custom_policy));
+            if custom_annotator {
+                assert_eq!(verdict["decision"], "allow");
+            } else {
+                assert_eq!(verdict["decision"], "deny");
+                assert_eq!(verdict["reason"], "runtime_error:annotation_failed");
+                assert!(verdict["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("timeout of 0 ms"));
+            }
+        }
+    }
+
     fn validate(bytes: &[u8]) -> (i32, Option<String>) {
         let mut err: *mut c_char = std::ptr::null_mut();
         let code = unsafe { acs_validate_manifest(bytes.as_ptr(), bytes.len(), &mut err) };
@@ -2145,6 +2316,79 @@ intervention_points:
             "a non-UTF-8 buffer is a boundary failure, not a bad manifest"
         );
         assert!(message.unwrap().contains("UTF-8"));
+    }
+
+    #[test]
+    fn text_resource_limits_are_boundary_failures_and_overridable() {
+        let source = format!("{}\n# {}", valid_manifest_source(), "x".repeat(1_048_576));
+        let (code, message) = validate(source.as_bytes());
+        assert_eq!(code, ACS_MANIFEST_CALL_FAILED);
+        assert!(message
+            .unwrap()
+            .contains("runtime_error:resource_limit_exceeded"));
+        let limits = CString::new(r#"{"max_merged_manifest_bytes":2097152}"#).unwrap();
+        let mut error = std::ptr::null_mut();
+        let code = unsafe {
+            acs_validate_manifest_with_limits(
+                source.as_ptr(),
+                source.len(),
+                limits.as_ptr(),
+                &mut error,
+            )
+        };
+        assert_eq!(code, ACS_MANIFEST_VALID);
+        assert!(error.is_null());
+        let limits = CString::new(r#"{"max_manifest_nodes":1}"#).unwrap();
+        let code = unsafe {
+            acs_validate_manifest_with_limits(
+                source.as_ptr(),
+                source.len(),
+                limits.as_ptr(),
+                &mut error,
+            )
+        };
+        assert_eq!(code, ACS_MANIFEST_CALL_FAILED);
+        unsafe { acs_free_string(error) };
+    }
+
+    #[test]
+    fn diagnostic_entry_points_do_not_report_resource_failures_as_findings() {
+        let oversized = format!("{}\n# {}", valid_manifest_source(), "x".repeat(1_048_576));
+        let excessive_depth = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: {}0{}",
+            "[".repeat(65),
+            "]".repeat(65)
+        );
+        for source in [&oversized, &excessive_depth, "x: ["] {
+            let source = CString::new(source.as_bytes()).unwrap();
+            for artifacts in [false, true] {
+                let mut error = std::ptr::null_mut();
+                let result = unsafe {
+                    if artifacts {
+                        acs_artifact_diagnostics(source.as_ptr(), std::ptr::null(), &mut error)
+                    } else {
+                        acs_manifest_diagnostics(source.as_ptr(), &mut error)
+                    }
+                };
+                if source.to_bytes() == b"x: [" {
+                    assert!(error.is_null());
+                    assert!(!result.is_null());
+                    let findings: serde_json::Value =
+                        serde_json::from_str(unsafe { CStr::from_ptr(result) }.to_str().unwrap())
+                            .unwrap();
+                    assert_eq!(findings[0]["code"], "runtime_error:manifest_invalid");
+                    unsafe { acs_free_string(result) };
+                } else {
+                    assert!(result.is_null());
+                    assert!(!error.is_null());
+                    assert!(unsafe { CStr::from_ptr(error) }
+                        .to_str()
+                        .unwrap()
+                        .contains("runtime_error:resource_limit_exceeded"));
+                    unsafe { acs_free_string(error) };
+                }
+            }
+        }
     }
 
     #[test]
@@ -2421,6 +2665,85 @@ intervention_points:
 
     /// Malformed JSON is a boundary error, not a policy that quietly
     /// activates without the modules the host meant to supply.
+    static LAST_INVOCATION: Mutex<Option<String>> = Mutex::new(None);
+
+    unsafe extern "C" fn recording_annotator(
+        _ctx: *mut c_void,
+        _annotator_name: *const c_char,
+        invocation_json: *const c_char,
+        _policy_input_json: *const c_char,
+        _err_out: *mut *mut c_char,
+    ) -> *mut c_char {
+        let invocation = CStr::from_ptr(invocation_json).to_str().unwrap().to_owned();
+        *LAST_INVOCATION.lock().unwrap() = Some(invocation);
+        CString::new(r#"{"label":"safe"}"#).unwrap().into_raw()
+    }
+
+    unsafe extern "C" fn free_hook_string(_ctx: *mut c_void, value: *mut c_char) {
+        if !value.is_null() {
+            drop(CString::from_raw(value));
+        }
+    }
+
+    /// Manifest provenance stays inside the engine. A local manifest may
+    /// name a host environment variable, and a host dispatcher receives
+    /// the invocation the manifest wrote, with no provenance key added.
+    #[test]
+    fn local_manifest_naming_api_key_env_constructs_without_a_provenance_key() {
+        let dir = std::env::temp_dir().join(format!("acs-ffi-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("llm-env-manifest.yaml");
+        std::fs::write(
+            &path,
+            concat!(
+                "agent_control_specification_version: \"0.4.0-alpha.1\"\n",
+                "policies:\n  allow:\n    type: test\n    verdict:\n      decision: allow\n",
+                "annotators:\n  judge:\n    type: llm\n    api_key_env: ACS_FFI_LOCAL_TEST_KEY\n",
+                "intervention_points:\n  input:\n    policy_target: \"$.input\"\n",
+                "    policy:\n      id: allow\n",
+                "    annotations:\n      judge:\n        from: \"$target\"\n"
+            ),
+        )
+        .unwrap();
+        let path = path.to_str().unwrap().as_bytes();
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_interceptor_new_with_hooks(
+                path.as_ptr(),
+                path.len(),
+                Some(recording_annotator),
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+                Some(free_hook_string),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        if !err.is_null() {
+            let msg = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+            unsafe { acs_free_string(err) };
+            panic!("constructor failed: {msg}");
+        }
+        assert!(!handle.is_null());
+
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hi","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+
+        assert_eq!(verdict["decision"], "allow");
+        let invocation: Value =
+            serde_json::from_str(LAST_INVOCATION.lock().unwrap().as_deref().unwrap()).unwrap();
+        assert_eq!(invocation["api_key_env"], "ACS_FFI_LOCAL_TEST_KEY");
+        assert!(invocation.get("url_sourced").is_none(), "{invocation}");
+    }
+
     #[test]
     fn activating_from_memory_rejects_malformed_bundles_json() {
         let manifest =

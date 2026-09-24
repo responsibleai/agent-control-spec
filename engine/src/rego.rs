@@ -28,6 +28,8 @@
 //!
 //! * A `bundle` MUST be a directory or a single policy/data file. OPA's
 //!   packaged `.tar.gz` bundles are not read; the error message says so.
+//!   Pinned HTTPS `bundle_url` archives likewise require the opt-in OPA
+//!   dispatcher and are rejected here, including during warm-up.
 //! * Rego parses as v1 by default. A bundle written for OPA 0.x without
 //!   `import rego.v1` needs [`RegorusRegoRunner::with_rego_v0`] or
 //!   `ACS_REGO_V0=1`.
@@ -90,7 +92,7 @@
 //!   evaluation and one for warming.
 
 use crate::{
-    policy::{rego_adapter_data_paths, InMemoryRegoBundle},
+    policy::{is_rule_path, rego_adapter_data_paths, InMemoryRegoBundle},
     runtime::PolicyDispatcher,
     JsonValue, PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
 };
@@ -454,6 +456,7 @@ impl RegorusRegoRunner {
     /// Only meaningful with the policy cache enabled; without it there is
     /// nowhere to keep the result and this is a no-op.
     pub fn warm(&self, invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+        Self::reject_remote_bundle(invocation)?;
         if self.cache.is_none() {
             return Ok(());
         }
@@ -525,6 +528,7 @@ impl RegorusRegoRunner {
     }
 
     pub fn evaluate(&self, invocation: &RegoPolicyInvocation) -> Result<JsonValue, RuntimeError> {
+        Self::reject_remote_bundle(invocation)?;
         let key = self.cache_key(invocation)?;
         let query = invocation.query.clone();
         let input = invocation.canonical_input.clone();
@@ -598,6 +602,17 @@ impl RegorusRegoRunner {
             ))),
             DeadlineOutcome::Unavailable(error) => Err(error),
         }
+    }
+
+    fn reject_remote_bundle(invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+        if invocation.bundle_url()?.is_some() {
+            return Err(RuntimeError::PolicyInvocationFailed(
+                "Regorus does not support bundle_url archives; use the opt-in OPA dispatcher \
+                 or supply a local directory or in-memory Rego modules"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn cache_key(&self, invocation: &RegoPolicyInvocation) -> Result<CacheKey, RuntimeError> {
@@ -1301,27 +1316,6 @@ fn eval_error(err: &impl std::fmt::Display) -> RuntimeError {
 /// samples by more than that and in the wrong order.
 fn may_retry_after(elapsed: Duration, timeout: Duration) -> bool {
     elapsed < timeout
-}
-
-/// Whether `query` is a plain rule path such as
-/// `data.agent_control_specification.input.verdict`, as opposed to an
-/// expression like `count(numbers.range(1, 5))`.
-///
-/// Deliberately conservative: anything with whitespace, an operator, a
-/// call, or a subscript falls back to the general path, because reading
-/// a rule and evaluating an expression are not interchangeable and
-/// guessing wrong would change a verdict.
-fn is_rule_path(query: &str) -> bool {
-    let Some(rest) = query.strip_prefix("data.") else {
-        return false;
-    };
-    !rest.is_empty()
-        && rest.split('.').all(|segment| {
-            !segment.is_empty()
-                && segment
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
-        })
 }
 
 /// Projects a rule's value the way [`single_expression_value`] projects a

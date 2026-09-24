@@ -1,13 +1,13 @@
 use crate::dispatchers::{
     bundled::{TransportRequest, TransportResponse},
     constants::*,
+    host_env,
     resolve::failed,
 };
-use crate::{JsonValue, RuntimeError};
+use crate::{AnnotatorInvocation, JsonValue, RuntimeError};
 use serde_json::json;
 use std::{
     collections::BTreeMap,
-    env,
     error::Error,
     io::{self, Read},
     time::Duration,
@@ -208,17 +208,20 @@ pub fn timeout_ms(
 
 pub fn env_api_key(
     annotator_name: &str,
-    fields: &BTreeMap<String, JsonValue>,
+    annotator: &AnnotatorInvocation,
 ) -> Result<Option<Authorization>, RuntimeError> {
+    let fields = &annotator.fields;
     let Some(env_name) = optional_string_field(fields, FIELD_API_KEY_ENV) else {
         return Ok(None);
     };
-    let key = env::var(env_name).map_err(|_| {
-        failed(
-            annotator_name,
-            format!("API key environment variable '{env_name}' is not set"),
-        )
-    })?;
+    let key = host_env::read(annotator.url_sourced, env_name)
+        .map_err(|message| failed(annotator_name, message))?
+        .ok_or_else(|| {
+            failed(
+                annotator_name,
+                format!("API key environment variable '{env_name}' is not set"),
+            )
+        })?;
     Ok(Some(authorization(fields, key)))
 }
 
@@ -301,5 +304,62 @@ mod tests {
 
         assert_eq!(error.reason(), "runtime_error:annotation_failed");
         assert!(error.detail().contains("HTTP request failed"));
+    }
+
+    #[test]
+    fn env_api_key_refuses_url_sourced() {
+        let annotator = AnnotatorInvocation {
+            url_sourced: true,
+            fields: BTreeMap::from([(
+                FIELD_API_KEY_ENV.to_string(),
+                json!("ACS_URL_SOURCED_CLASSIFIER_KEY"),
+            )]),
+        };
+
+        let error = match env_api_key("classifier", &annotator) {
+            Ok(_) => panic!("URL sourced credential read must be refused"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.reason(), "runtime_error:annotation_failed");
+        assert!(error.detail().contains("URL sourced manifest"), "{error}");
+        assert!(
+            error.detail().contains("ACS_URL_SOURCED_CLASSIFIER_KEY"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn env_api_key_without_field_is_none_even_when_url_sourced() {
+        let annotator = AnnotatorInvocation {
+            url_sourced: true,
+            fields: BTreeMap::new(),
+        };
+
+        assert!(matches!(env_api_key("classifier", &annotator), Ok(None)));
+    }
+
+    /// The flag rides the invocation in process only. It is neither in the
+    /// JSON a host dispatcher receives nor in the payload an endpoint
+    /// annotator posts.
+    #[test]
+    fn invocation_json_and_endpoint_payload_have_no_provenance_key() {
+        let annotator = AnnotatorInvocation {
+            url_sourced: true,
+            fields: BTreeMap::from([
+                (ANNOTATOR_TYPE.to_string(), json!(TYPE_ENDPOINT)),
+                ("purpose".to_string(), json!("probe")),
+            ]),
+        };
+
+        let wire = serde_json::to_value(&annotator).unwrap();
+        assert_eq!(wire, json!({"type": "endpoint", "purpose": "probe"}));
+
+        let payload = endpoint_payload("hello".to_string(), &annotator.fields);
+        assert_eq!(
+            payload,
+            json!({"input": "hello", "fields": {"purpose": "probe"}})
+        );
+        assert!(!payload.to_string().contains("url_sourced"));
     }
 }

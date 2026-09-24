@@ -1,4 +1,4 @@
-use crate::dispatchers::{constants::*, http};
+use crate::dispatchers::{constants::*, host_env, http};
 use crate::JsonValue;
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Mutex};
@@ -79,7 +79,19 @@ pub struct ResolvedClassifierConfig {
 }
 
 impl ResolvedClassifierConfig {
+    /// Resolves the fields as host authored: `api_key_env` is read from
+    /// the process environment. Prefer `from_fields_with_provenance` when
+    /// the invocation carries a `url_sourced` flag.
     pub fn from_fields(fields: &BTreeMap<String, JsonValue>) -> Result<Self, String> {
+        Self::from_fields_with_provenance(fields, false)
+    }
+
+    /// Resolves the fields, refusing the `api_key_env` read when the
+    /// invocation came from a URL sourced manifest.
+    pub fn from_fields_with_provenance(
+        fields: &BTreeMap<String, JsonValue>,
+        url_sourced: bool,
+    ) -> Result<Self, String> {
         let provider = http::optional_string_field(fields, FIELD_PROVIDER)
             .ok_or_else(|| "missing required field 'provider'".to_string())?
             .to_ascii_lowercase();
@@ -89,10 +101,11 @@ impl ResolvedClassifierConfig {
             .unwrap_or_default()
             .to_string();
         let api_key = match http::optional_string_field(fields, FIELD_API_KEY_ENV) {
-            Some(env_name) => Some(
-                std::env::var(env_name)
-                    .map_err(|_| format!("API key environment variable '{env_name}' is not set"))?,
-            ),
+            Some(env_name) => {
+                Some(host_env::read(url_sourced, env_name)?.ok_or_else(|| {
+                    format!("API key environment variable '{env_name}' is not set")
+                })?)
+            }
             None => None,
         };
         let threshold = optional_f64_field(fields, FIELD_THRESHOLD).unwrap_or(0.5);

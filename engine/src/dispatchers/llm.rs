@@ -1,10 +1,10 @@
 use crate::dispatchers::{
     bundled::{HttpTransport, TransportRequest, TransportResponse, UreqHttpTransport},
     constants::*,
-    http, resolve,
+    host_env, http, resolve,
 };
 use crate::hex::lower as hex;
-use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, RuntimeError};
+use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, Limits, RuntimeError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -12,11 +12,23 @@ use std::collections::BTreeMap;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LlmAnnotator;
 
+/// An LLM annotator whose pinned prompt fetches use the host's URL limits.
+#[derive(Debug, Clone, Copy)]
+pub struct ConfiguredLlmAnnotator {
+    limits: Limits,
+}
+
 impl LlmAnnotator {
     pub fn new() -> Self {
         Self
     }
 
+    pub fn with_limits(self, limits: Limits) -> ConfiguredLlmAnnotator {
+        ConfiguredLlmAnnotator { limits }
+    }
+
+    /// Uses the supplied transport for inference POST requests only.
+    /// Pinned prompt GET requests use the HTTPS fetcher with default URL limits.
     pub fn dispatch_with_transport(
         &self,
         annotator_name: &str,
@@ -29,6 +41,7 @@ impl LlmAnnotator {
             annotator,
             preliminary_policy_input,
             transport,
+            Limits::default(),
         )
     }
 }
@@ -45,6 +58,43 @@ impl AnnotatorDispatcher for LlmAnnotator {
             annotator,
             preliminary_policy_input,
             &UreqHttpTransport,
+            Limits::default(),
+        )
+    }
+}
+
+impl ConfiguredLlmAnnotator {
+    /// Uses the supplied transport for inference POST requests only.
+    /// Pinned prompt GET requests use the HTTPS fetcher with this annotator's URL limits.
+    pub fn dispatch_with_transport(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &JsonValue,
+        transport: &dyn HttpTransport,
+    ) -> Result<JsonValue, RuntimeError> {
+        dispatch_with_transport(
+            annotator_name,
+            annotator,
+            preliminary_policy_input,
+            transport,
+            self.limits,
+        )
+    }
+}
+
+impl AnnotatorDispatcher for ConfiguredLlmAnnotator {
+    fn dispatch(
+        &self,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        preliminary_policy_input: &JsonValue,
+    ) -> Result<JsonValue, RuntimeError> {
+        self.dispatch_with_transport(
+            annotator_name,
+            annotator,
+            preliminary_policy_input,
+            &UreqHttpTransport,
         )
     }
 }
@@ -54,6 +104,7 @@ fn dispatch_with_transport(
     annotator: &AnnotatorInvocation,
     preliminary_policy_input: &JsonValue,
     transport: &dyn HttpTransport,
+    limits: Limits,
 ) -> Result<JsonValue, RuntimeError> {
     if annotator.field(ANNOTATOR_TYPE).and_then(JsonValue::as_str) != Some(TYPE_LLM) {
         return Err(resolve::failed(
@@ -61,7 +112,12 @@ fn dispatch_with_transport(
             "LLM dispatcher received a non-LLM annotator",
         ));
     }
-    let cfg = LlmConfig::from_fields(annotator_name, &annotator.fields)?;
+    let cfg = LlmConfig::from_fields(
+        annotator_name,
+        &annotator.fields,
+        annotator.url_sourced,
+        limits,
+    )?;
     let policy_target =
         resolve::policy_target_text(annotator_name, annotator, preliminary_policy_input)?;
     let request = request_for_provider(annotator_name, &cfg, &policy_target)?;
@@ -103,6 +159,9 @@ struct LlmConfig {
     aws_session_token_env: Option<String>,
     aws_amz_date: Option<String>,
     aws_date: Option<String>,
+    /// Whether the invocation came from a URL sourced manifest. Every
+    /// host environment read consults it through `host_env`.
+    url_sourced: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,6 +192,8 @@ impl LlmConfig {
     fn from_fields(
         annotator_name: &str,
         fields: &BTreeMap<String, JsonValue>,
+        url_sourced: bool,
+        limits: Limits,
     ) -> Result<Self, RuntimeError> {
         let provider = LlmProvider::parse(http::optional_string_field(fields, FIELD_PROVIDER))
             .map_err(|error| resolve::failed(annotator_name, error))?;
@@ -143,10 +204,17 @@ impl LlmConfig {
                 _ => DEFAULT_MODEL,
             })
             .to_string();
-        let prompt = http::optional_string_field(fields, FIELD_SYSTEM_PROMPT)
-            .or_else(|| http::optional_string_field(fields, FIELD_PROMPT))
-            .unwrap_or(DEFAULT_SYSTEM_PROMPT)
-            .to_string();
+        Self::reject_pre_fetch_host_env_access(annotator_name, provider, fields, url_sourced)?;
+        let prompt = match crate::annotation::system_prompt_source(fields)
+            .map_err(|err| resolve::failed(annotator_name, err.detail()))?
+        {
+            Some(source) => crate::manifest::fetch_pinned_https_text(&source, limits)
+                .map_err(|err| resolve::failed(annotator_name, err.detail()))?,
+            None => http::optional_string_field(fields, FIELD_SYSTEM_PROMPT)
+                .or_else(|| http::optional_string_field(fields, FIELD_PROMPT))
+                .unwrap_or(DEFAULT_SYSTEM_PROMPT)
+                .to_string(),
+        };
         Ok(Self {
             provider,
             endpoint: opt_string(fields, FIELD_ENDPOINT),
@@ -176,6 +244,7 @@ impl LlmConfig {
             aws_session_token_env: opt_string(fields, FIELD_AWS_SESSION_TOKEN_ENV),
             aws_amz_date: opt_string(fields, FIELD_AWS_AMZ_DATE),
             aws_date: opt_string(fields, FIELD_AWS_DATE),
+            url_sourced,
         })
     }
 
@@ -189,13 +258,68 @@ impl LlmConfig {
         }
         let env_name = self.api_key_env.as_deref().or(default_env);
         match env_name {
-            Some(env_name) => std::env::var(env_name).map(Some).map_err(|_| {
-                resolve::failed(
-                    annotator_name,
-                    format!("API key environment variable '{env_name}' is not set"),
-                )
-            }),
+            Some(env_name) => host_env::read(self.url_sourced, env_name)
+                .map_err(|message| resolve::failed(annotator_name, message))?
+                .ok_or_else(|| {
+                    resolve::failed(
+                        annotator_name,
+                        format!("API key environment variable '{env_name}' is not set"),
+                    )
+                })
+                .map(Some),
             None => Ok(None),
+        }
+    }
+
+    fn reject_pre_fetch_host_env_access(
+        annotator_name: &str,
+        provider: LlmProvider,
+        fields: &BTreeMap<String, JsonValue>,
+        url_sourced: bool,
+    ) -> Result<(), RuntimeError> {
+        if !url_sourced {
+            return Ok(());
+        }
+
+        let api_key = http::optional_string_field(fields, FIELD_API_KEY);
+        let api_key_env = http::optional_string_field(fields, FIELD_API_KEY_ENV);
+        let reject_api_key_env = |default_env: Option<&str>| -> Result<(), RuntimeError> {
+            if api_key.is_none() {
+                if let Some(env_name) = api_key_env.or(default_env) {
+                    host_env::read(url_sourced, env_name)
+                        .map_err(|message| resolve::failed(annotator_name, message))?;
+                }
+            }
+            Ok(())
+        };
+
+        match provider {
+            LlmProvider::OpenAi => reject_api_key_env(Some(DEFAULT_OPENAI_API_KEY_ENV)),
+            LlmProvider::OpenAiCompatible => reject_api_key_env(None),
+            LlmProvider::AzureOpenAi => reject_api_key_env(Some(DEFAULT_AZURE_OPENAI_API_KEY_ENV)),
+            LlmProvider::Gemini => reject_api_key_env(Some(DEFAULT_GEMINI_API_KEY_ENV)),
+            LlmProvider::Ollama => Ok(()),
+            LlmProvider::Bedrock => {
+                if http::optional_string_field(fields, FIELD_AWS_REGION).is_none() {
+                    host_env::read(url_sourced, "AWS_REGION")
+                        .map_err(|message| resolve::failed(annotator_name, message))?;
+                }
+                secret_field_or_env(
+                    annotator_name,
+                    http::optional_string_field(fields, FIELD_AWS_ACCESS_KEY_ID),
+                    http::optional_string_field(fields, FIELD_AWS_ACCESS_KEY_ID_ENV),
+                    DEFAULT_AWS_ACCESS_KEY_ID_ENV,
+                    url_sourced,
+                )?;
+                secret_field_or_env(
+                    annotator_name,
+                    http::optional_string_field(fields, FIELD_AWS_SECRET_ACCESS_KEY),
+                    http::optional_string_field(fields, FIELD_AWS_SECRET_ACCESS_KEY_ENV),
+                    DEFAULT_AWS_SECRET_ACCESS_KEY_ENV,
+                    url_sourced,
+                )?;
+                Ok(())
+            }
         }
     }
 }
@@ -392,35 +516,44 @@ fn bedrock_request(
     cfg: &LlmConfig,
     policy_target: &str,
 ) -> Result<TransportRequest, RuntimeError> {
-    let region = cfg
-        .aws_region
-        .clone()
-        .or_else(|| std::env::var("AWS_REGION").ok())
-        .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
-        .ok_or_else(|| {
-            resolve::failed(
-                annotator_name,
-                "bedrock requires 'aws_region' or AWS_REGION",
-            )
-        })?;
+    let region = match cfg.aws_region.clone() {
+        Some(region) => region,
+        None => {
+            let from_env = |env_name: &str| {
+                host_env::read(cfg.url_sourced, env_name)
+                    .map_err(|message| resolve::failed(annotator_name, message))
+            };
+            match from_env("AWS_REGION")? {
+                Some(region) => region,
+                None => from_env("AWS_DEFAULT_REGION")?.ok_or_else(|| {
+                    resolve::failed(
+                        annotator_name,
+                        "bedrock requires 'aws_region' or AWS_REGION",
+                    )
+                })?,
+            }
+        }
+    };
     let access_key = secret_field_or_env(
         annotator_name,
         cfg.aws_access_key_id.as_deref(),
         cfg.aws_access_key_id_env.as_deref(),
         DEFAULT_AWS_ACCESS_KEY_ID_ENV,
+        cfg.url_sourced,
     )?;
     let secret_key = secret_field_or_env(
         annotator_name,
         cfg.aws_secret_access_key.as_deref(),
         cfg.aws_secret_access_key_env.as_deref(),
         DEFAULT_AWS_SECRET_ACCESS_KEY_ENV,
+        cfg.url_sourced,
     )?;
     let session_token = cfg.aws_session_token.clone().or_else(|| {
         let env_name = cfg
             .aws_session_token_env
             .as_deref()
             .unwrap_or(DEFAULT_AWS_SESSION_TOKEN_ENV);
-        std::env::var(env_name).ok()
+        host_env::read_optional(cfg.url_sourced, env_name)
     });
     let model = require_non_empty(annotator_name, FIELD_MODEL, &cfg.model)?;
     let url = cfg.endpoint.clone().unwrap_or_else(|| {
@@ -607,17 +740,20 @@ fn secret_field_or_env(
     direct: Option<&str>,
     env_name: Option<&str>,
     default_env: &str,
+    url_sourced: bool,
 ) -> Result<String, RuntimeError> {
     if let Some(value) = direct {
         return Ok(value.to_string());
     }
     let env_name = env_name.unwrap_or(default_env);
-    std::env::var(env_name).map_err(|_| {
-        resolve::failed(
-            annotator_name,
-            format!("credential environment variable '{env_name}' is not set"),
-        )
-    })
+    host_env::read(url_sourced, env_name)
+        .map_err(|message| resolve::failed(annotator_name, message))?
+        .ok_or_else(|| {
+            resolve::failed(
+                annotator_name,
+                format!("credential environment variable '{env_name}' is not set"),
+            )
+        })
 }
 
 fn merge_provider_config(mut body: JsonValue, provider_config: &JsonValue) -> JsonValue {
@@ -837,7 +973,19 @@ mod tests {
         for (key, value) in pairs {
             fields.insert((*key).to_string(), value.clone());
         }
-        AnnotatorInvocation { fields }
+        AnnotatorInvocation {
+            url_sourced: false,
+            fields,
+        }
+    }
+
+    /// The same invocation as `annotator`, stamped as coming from a URL
+    /// sourced manifest, the way `Runtime::collect_annotations` does it.
+    fn tainted(pairs: &[(&str, JsonValue)]) -> AnnotatorInvocation {
+        AnnotatorInvocation {
+            url_sourced: true,
+            ..annotator(pairs)
+        }
     }
 
     fn pi() -> JsonValue {
@@ -850,6 +998,197 @@ mod tests {
             .dispatch_with_transport("judge", &annotator, &pi(), &transport)
             .expect("dispatch succeeds");
         (output, transport.last_request().expect("request captured"))
+    }
+
+    /// Dispatches a URL sourced invocation and asserts it fails closed
+    /// before any request is sent, naming the environment variable it
+    /// refused to read.
+    fn assert_refused_before_request(annotator: AnnotatorInvocation, env_name: &str) {
+        let transport = StubHttpTransport::with_response(200, "{}");
+
+        let error = LlmAnnotator::new()
+            .dispatch_with_transport("judge", &annotator, &pi(), &transport)
+            .expect_err("URL sourced host environment read is refused");
+
+        assert!(
+            matches!(error, RuntimeError::AnnotationFailed(_)),
+            "{error}"
+        );
+        assert!(error.detail().contains("URL sourced manifest"), "{error}");
+        assert!(error.detail().contains(env_name), "{error}");
+        assert!(
+            transport.last_request().is_none(),
+            "no request may leave before the credential is resolved"
+        );
+    }
+
+    #[test]
+    fn url_sourced_openai_default_env_fails_closed() {
+        // The provider default is a host environment read with no field
+        // to point at, so only the provenance flag can stop it.
+        assert_refused_before_request(
+            tainted(&[(FIELD_ENDPOINT, json!("https://attacker.example/v1"))]),
+            DEFAULT_OPENAI_API_KEY_ENV,
+        );
+        assert_refused_before_request(
+            tainted(&[
+                (FIELD_PROVIDER, json!("azure_openai")),
+                (
+                    FIELD_ENDPOINT,
+                    json!("https://attacker.example/openai/deployments/d/chat/completions"),
+                ),
+            ]),
+            DEFAULT_AZURE_OPENAI_API_KEY_ENV,
+        );
+        assert_refused_before_request(
+            tainted(&[
+                (FIELD_PROVIDER, json!("gemini")),
+                (FIELD_ENDPOINT, json!("https://attacker.example/v1")),
+            ]),
+            DEFAULT_GEMINI_API_KEY_ENV,
+        );
+    }
+
+    #[test]
+    fn url_sourced_provenance_is_checked_before_pinned_prompt_fetch() {
+        let transport = StubHttpTransport::with_response(200, "{}");
+        let error = LlmAnnotator::new()
+            .dispatch_with_transport(
+                "judge",
+                &tainted(&[(
+                    "system_prompt_url",
+                    json!({
+                        "url": "https://127.0.0.1:1/system.txt",
+                        "sha256": "00".repeat(32),
+                    }),
+                )]),
+                &pi(),
+                &transport,
+            )
+            .expect_err("provenance must be refused before fetching the prompt");
+
+        assert!(error.detail().contains("URL sourced manifest"), "{error}");
+        assert!(
+            error.detail().contains(DEFAULT_OPENAI_API_KEY_ENV),
+            "{error}"
+        );
+        assert!(!error.detail().contains("connect"), "{error}");
+        assert!(transport.last_request().is_none());
+    }
+
+    /// Defence in depth: the loader refuses an explicit `api_key_env` in
+    /// a URL sourced chain, so this path is reached only by a host that
+    /// built the invocation itself.
+    #[test]
+    fn url_sourced_explicit_api_key_env_fails_closed() {
+        assert_refused_before_request(
+            tainted(&[
+                (FIELD_ENDPOINT, json!("https://attacker.example/v1")),
+                (FIELD_API_KEY_ENV, json!("ACS_URL_SOURCED_TEST_KEY")),
+            ]),
+            "ACS_URL_SOURCED_TEST_KEY",
+        );
+    }
+
+    #[test]
+    fn url_sourced_llm_uses_inline_api_key() {
+        let (_output, request) = dispatch(
+            tainted(&[
+                (FIELD_ENDPOINT, json!("https://judge.example/v1")),
+                (FIELD_API_KEY, json!("inline-key")),
+            ]),
+            r#"{"choices":[{"message":{"content":"{\"label\":\"safe\"}"}}]}"#,
+        );
+
+        assert_eq!(request.headers[HEADER_AUTHORIZATION], "Bearer inline-key");
+    }
+
+    #[test]
+    fn url_sourced_openai_compatible_without_key_still_posts() {
+        let (_output, request) = dispatch(
+            tainted(&[
+                (FIELD_PROVIDER, json!("openai_compatible")),
+                (
+                    FIELD_ENDPOINT,
+                    json!("http://127.0.0.1:8000/v1/chat/completions"),
+                ),
+            ]),
+            r#"{"choices":[{"message":{"content":"{\"label\":\"safe\"}"}}]}"#,
+        );
+
+        assert!(!request.headers.contains_key(HEADER_AUTHORIZATION));
+    }
+
+    #[test]
+    fn url_sourced_bedrock_without_inline_credentials_fails_closed() {
+        assert_refused_before_request(
+            tainted(&[
+                (FIELD_PROVIDER, json!("bedrock")),
+                (FIELD_MODEL, json!("anthropic.claude-3-haiku-20240307-v1:0")),
+                (FIELD_AWS_REGION, json!("us-east-1")),
+            ]),
+            DEFAULT_AWS_ACCESS_KEY_ID_ENV,
+        );
+    }
+
+    #[test]
+    fn url_sourced_bedrock_without_inline_region_fails_closed() {
+        assert_refused_before_request(
+            tainted(&[
+                (FIELD_PROVIDER, json!("bedrock")),
+                (FIELD_MODEL, json!("anthropic.claude-3-haiku-20240307-v1:0")),
+                (FIELD_AWS_ACCESS_KEY_ID, json!("AKIDEXAMPLE")),
+                (FIELD_AWS_SECRET_ACCESS_KEY, json!("secret")),
+            ]),
+            "AWS_REGION",
+        );
+    }
+
+    /// The region falls back to `AWS_REGION`, then `AWS_DEFAULT_REGION`.
+    /// The second is set here, so the refusal holds only if the dispatcher
+    /// refused the first read outright rather than finding the variable
+    /// unset and reading on to a value.
+    #[test]
+    fn url_sourced_bedrock_ignores_a_set_default_region_variable() {
+        std::env::set_var("AWS_DEFAULT_REGION", "us-west-2");
+
+        assert_refused_before_request(
+            tainted(&[
+                (FIELD_PROVIDER, json!("bedrock")),
+                (FIELD_MODEL, json!("anthropic.claude-3-haiku-20240307-v1:0")),
+                (FIELD_AWS_ACCESS_KEY_ID, json!("AKIDEXAMPLE")),
+                (FIELD_AWS_SECRET_ACCESS_KEY, json!("secret")),
+            ]),
+            "AWS_REGION",
+        );
+    }
+
+    #[test]
+    fn url_sourced_bedrock_with_inline_credentials_signs_and_omits_session_token() {
+        // The variable is set, so the assertion below holds only if the
+        // dispatcher refused to look, not because there was nothing to find.
+        const SESSION_TOKEN_ENV: &str = "ACS_URL_SOURCED_SESSION_TOKEN";
+        std::env::set_var(SESSION_TOKEN_ENV, "host-session-token");
+
+        let (output, request) = dispatch(
+            tainted(&[
+                (FIELD_PROVIDER, json!("bedrock")),
+                (FIELD_MODEL, json!("anthropic.claude-3-haiku-20240307-v1:0")),
+                (FIELD_AWS_REGION, json!("us-east-1")),
+                (FIELD_AWS_ACCESS_KEY_ID, json!("AKIDEXAMPLE")),
+                (FIELD_AWS_SECRET_ACCESS_KEY, json!("secret")),
+                (FIELD_AWS_SESSION_TOKEN_ENV, json!(SESSION_TOKEN_ENV)),
+                (FIELD_AWS_AMZ_DATE, json!("20240101T000000Z")),
+                (FIELD_AWS_DATE, json!("20240101")),
+            ]),
+            r#"{"output":{"message":{"content":[{"text":"{\"label\":\"safe\"}"}]}}}"#,
+        );
+
+        assert_eq!(output["label"], json!("safe"));
+        assert!(request.headers[HEADER_AUTHORIZATION].starts_with("AWS4-HMAC-SHA256"));
+        // The host's session token is never borrowed for a URL sourced
+        // manifest, even when the named variable is set.
+        assert!(!request.headers.contains_key("x-amz-security-token"));
     }
 
     #[test]

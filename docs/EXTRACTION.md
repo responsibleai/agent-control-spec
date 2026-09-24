@@ -35,4 +35,5 @@ policies and returns agent-hooks verdicts.
 | `tests/conformance/` | `tests/conformance/` | Executable corpus ported, minus the approval-seam and evaluate-only cases (host obligations under AGENT-HOOKS-0.1 §8–§9, covered by that contract's kit). |
 | `examples/` | `examples/` | Imported for the end-to-end suites; `basic_host.rs` still speaks the superseded API and is pending a rewrite as an emitter-based host. |
 | — | `conformance/agent-hooks/` | New: vendored AGENT-HOOKS-0.1 vector corpus, provenance, and the per-part conformance report produced by `engine/tests/agent_hooks_conformance.rs`. |
-| `integrations/`, `generator/`, `benchmarks/`, `deploy/` | — | Out of scope for the runtime repository. |
+| `integrations/`, `benchmarks/`, `deploy/` | — | Out of scope for the runtime repository. |
+| `generator/` | `generator/` | The natural-language path is ported as `agent-control-spec-generator`; guided `acs-generate init` remains in AGT. Regorus parses authoring conditions through the Python native binding, without an OPA executable. ACS `validate_artifacts` and `ActivatedPolicy.from_memory` compile and smoke-evaluate the rendered policy. Generated targets use `$.target`, including at model-call points whose old L1 paths no longer exist. See `generator/README.md` for the source revision and port boundaries. |
