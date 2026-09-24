@@ -12,9 +12,10 @@ sections 1.1, 6, 16, 20, and 21 require that result and forbid a manifest-level
 fail-open path.
 
 Some controls intentionally govern only a declared subset of an Agent Hooks
-surface. That scope must be explicit in the resolved artifact and in every
-interception record. It must not turn an evaluation error into a configurable
-allow.
+surface. That scope must be explicit in the resolved artifact and ACS-native
+decision telemetry. Generic Agent Hooks records identify it when their
+composition profile retains per-interceptor `verdicts[]`. It must not turn an
+evaluation error into a configurable allow.
 
 ## Contract
 
@@ -22,11 +23,20 @@ Under a newly allocated manifest grammar version, add a root-only
 `ungoverned_points` list:
 
 ```yaml
+agent_control_specification_version: "0.6.0-alpha.1"
+
+policies:
+  tool_gate:
+    type: rego
+    bundle: ./policy/tool.rego
+    query: data.tool_gate.verdict
+
 intervention_points:
   pre_tool_call:
+    policy_target: $.tool_call.args
+    tool_name_from: $.tool_call.name
     policy:
-      type: rego
-      path: policy/tool.rego
+      id: tool_gate
 
 ungoverned_points:
   - agent_startup
@@ -51,8 +61,9 @@ Validation rules:
   a remote fragment from widening scope.
 - `ungoverned_points` is not inherited or merged. A declaration in any
   non-root document is invalid, so the resolved scope is visible in one place.
-- Existing manifest and policy-input limits run before returning the scope
-  verdict.
+- Existing request/context bounds and snapshot structural and size limits that
+  do not require a binding run before returning the scope verdict. The path
+  does not resolve `policy_target` or construct a canonical policy input.
 
 | Request | Result |
 | --- | --- |
@@ -90,18 +101,19 @@ Agent Hooks record.
 
 ## Host-side scope
 
-The Python async adapter proposed in #68 has a separate host choice:
-`Scope.BOUND_POINTS_ONLY`. A host using that mode never calls ACS for known
-unbound points, so this manifest declaration is not consulted. Such a bypass
-returns the fixed host reason `host_scope:bound_points_only`, which is reserved
-from policy output and distinguishable from both a bound policy allow and
-`scope:unbound_point`.
+If the Python async adapter proposed in #68 lands, it introduces a separate
+host choice, `Scope.BOUND_POINTS_ONLY`. A host using that mode never calls ACS
+for known unbound points, so this manifest declaration is not consulted. Such a
+bypass returns the fixed host reason `host_scope:bound_points_only`, which is
+reserved from policy output and distinguishable from both a bound policy allow
+and `scope:unbound_point`.
 
-`Scope.STRICT`, the default, calls ACS for every point and therefore honors
-`ungoverned_points`. Only Python has this host-side switch today. The manifest
-declaration is the cross-language mechanism for Rust, Python, Node, FFI, and
-.NET. A deployment that requires manifest scope to be enforced uses strict host
-scope.
+In that proposed adapter, `Scope.STRICT` is the default and calls ACS for every
+point, so it honors `ungoverned_points`. No host-side scope switch is present in
+the released cross-language SDK contract today. The manifest declaration is the
+proposed cross-language mechanism for Rust, Python, Node, FFI, and .NET. A
+deployment that requires manifest scope to be enforced must use a host path
+that calls ACS for every point.
 
 ## Version and rollout
 
@@ -147,12 +159,13 @@ Add cases proving:
 - fetched or non-root declarations fail, including pinned URLs;
 - local root declarations survive resolved serialization;
 - mixed-version chains fail and same-version chains remain unchanged;
-- limits run before the scope verdict and no annotator or policy runs on that
+- applicable request/context and snapshot limits run before the scope verdict,
+  no canonical policy input is built, and no annotator or policy runs on that
   path;
 - another control's denial still wins under the configured Agent Hooks
   composition profile;
-- strict and `BOUND_POINTS_ONLY` host scope produce their respective reserved
-  reasons.
+- if #68 lands, strict and `BOUND_POINTS_ONLY` host scope produce their
+  respective reserved reasons.
 
 Keep the existing `spec-08-intervention-points.case-07.json` and the
 `intervention-point-unknown` case in
