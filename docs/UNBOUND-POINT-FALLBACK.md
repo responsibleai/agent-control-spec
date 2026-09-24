@@ -34,7 +34,6 @@ policies:
 intervention_points:
   pre_tool_call:
     policy_target: $.tool_call.args
-    tool_name_from: $.tool_call.name
     policy:
       id: tool_gate
 
