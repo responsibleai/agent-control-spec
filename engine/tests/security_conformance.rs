@@ -1,7 +1,7 @@
 use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint, JsonValue, Limits,
     Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError, TelemetryEvent,
-    TelemetryEventType, TelemetrySink, Verdict,
+    TelemetryEventType, TelemetrySink,
 };
 use serde_json::{json, Value};
 use std::{

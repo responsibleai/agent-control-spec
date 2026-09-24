@@ -23,6 +23,53 @@ public sealed class AcsManifestTests
     }
 
     [Fact]
+    public void TextResourceLimitsAreBoundaryFailuresAndCanBeConfigured()
+    {
+        var source = Valid + "\n# " + new string('x', 1_048_576);
+        var error = Assert.Throws<AgentControlSpecNativeException>(() => AcsManifest.Validate(source));
+        Assert.Contains("runtime_error:resource_limit_exceeded", error.Message);
+        AcsManifest.Validate(source, new Dictionary<string, ulong> { ["max_merged_manifest_bytes"] = 2_097_152 });
+        Assert.Throws<AgentControlSpecNativeException>(() =>
+            AcsManifest.Validate(Valid, new Dictionary<string, ulong> { ["max_manifest_nodes"] = 1 }));
+        AcsManifest.Validate(Valid, new Dictionary<string, ulong> { ["max_policy_input_depth"] = 0 });
+        foreach (var operation in new Func<string, IReadOnlyDictionary<string, ulong>, string>[]
+        {
+            (text, limits) => AcsManifestTools.Parse(text, limits),
+            (text, limits) => AcsManifestTools.Merge([text], limits),
+        })
+        {
+            var failure = Assert.Throws<AgentControlSpecNativeException>(() =>
+                operation(source, new Dictionary<string, ulong>()));
+            Assert.Contains("runtime_error:resource_limit_exceeded", failure.Message);
+            Assert.NotEmpty(operation(source, new Dictionary<string, ulong> { ["max_merged_manifest_bytes"] = 2_097_152 }));
+            Assert.Throws<AgentControlSpecNativeException>(() =>
+                operation(Valid, new Dictionary<string, ulong> { ["max_manifest_nodes"] = 1 }));
+        }
+    }
+
+    [Fact]
+    public void DiagnosticEntryPointsThrowOnResourceFailures()
+    {
+        foreach (var operation in new Func<string, IReadOnlyList<ManifestDiagnostic>>[]
+        {
+            AcsManifestTools.Diagnostics,
+            text => AcsManifestTools.ValidateArtifacts(text),
+        })
+        {
+            foreach (var source in new[]
+            {
+                Valid + "\n# " + new string('x', 1_048_576),
+                "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: " + new string('[', 65) + "0" + new string(']', 65),
+            })
+            {
+                var error = Assert.Throws<AgentControlSpecNativeException>(() => operation(source));
+                Assert.Contains("runtime_error:resource_limit_exceeded", error.Message);
+            }
+            Assert.Equal("runtime_error:manifest_invalid", Assert.Single(operation("x: [")).Code);
+        }
+    }
+
+    [Fact]
     public void UnsupportedVersionIsRejectedWithTheEngineMessage()
     {
         var source = Valid.Replace("\"0.4.0-alpha.1\"", "\"0.3.1-beta\"");

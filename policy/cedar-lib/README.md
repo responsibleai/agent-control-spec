@@ -29,24 +29,105 @@ CLI `run-tests` subcommand. The runner script `run_tests.sh` invokes
 `cedar check-parse` and `cedar run-tests` against every pair and
 returns non zero on any failure.
 
-## How the Cedar verdict shape maps to AGT verdicts
+## How the request context is built
 
-The cedar dispatcher in `policy-engine/core/src/cedar.rs` evaluates the
-policy set against the request built per D3.2 and produces an AGT
-verdict per D3.3.
+The bundled dispatcher in `engine/src/cedar.rs` builds the Cedar request
+from the policy input per `spec/SPECIFICATION.md` §12.4. The context is
+the whole snapshot, `envelope` included, plus the annotations as one
+nested `annotations` record. That is the shape every file here reads.
+
+| Policy reads | Comes from |
+| --- | --- |
+| `context.tool_call.args.host` | `snapshot.tool_call.args.host` |
+| `context.envelope.budgets.tool_call_count` | `snapshot.envelope.budgets.tool_call_count` |
+| `context.input.body` | `snapshot.input.body` |
+| `context.annotations.confidence.score` | the `confidence` annotator's output, member `score` |
+
+Values translate as follows. A JSON integer becomes a `Long`. Every
+other JSON number, `100.0` and `1e2` included, becomes a `decimal`
+rounded to four fractional digits, ties to even; compare it with
+`decimal("...")` literals through `.greaterThan` and its siblings. A
+`Long` and a `decimal` never compare equal: `<`, `>` and the decimal
+methods across the two types fail the evaluation closed, but `==`, `!=`,
+`contains`, `containsAll` and `containsAny` are silently `false` (`true`
+for `!=`). A gate that tests a snapshot number for equality or
+membership against a `Long` literal misses `100.0`; pin the type with a
+schema, or use an ordering comparison. A `null` record member is
+dropped, so guard reads with `has`. A `null` set element, an integer
+outside the `Long` range, a float outside the decimal range, a record
+key Cedar's JSON format reserves (`__entity`, `__extn`, `__expr`), or a
+snapshot member named `annotations` fails the evaluation closed with
+`runtime_error:policy_invocation_failed`. The mapping cannot be
+overridden: a cedar policy that sets `query`, or a cedar binding with any
+field other than `id`, is rejected when the manifest loads.
+
+## How the Cedar verdict shape maps to AGT verdicts
 
 | Cedar evaluation result | AGT verdict |
 | --- | --- |
-| `Deny` (any `forbid` matched) | `{decision: "deny", reason: <first contributing policy id>}` |
+| `Deny`, one or more `forbid` matched | `{decision: "deny", reason: <@id of the first contributing forbid, in file order>}` |
+| `Deny`, nothing matched | `{decision: "deny", reason: "no_matching_policy"}` |
+| Any decision, Cedar reports an evaluation error for any policy | `{decision: "deny", reason: "runtime_error:policy_invocation_failed"}`; no `@id` surfaces, and the dispatcher detail names the policy and the error kind only |
 | `Allow` with no advice | `{decision: "allow"}` |
-| `Allow` with `@advice` annotation | The advice JSON validated against `cedar_advice.schema.json` and translated to `{decision: "warn"|"escalate"|"transform", ...}` |
+| `Allow`, one or more contributing permits carry `@advice` | The most restrictive advice, `escalate` over `transform` over `warn`, first in file order among equals, validated against `cedar_advice.schema.json` and translated to `{decision: "warn"|"escalate"|"transform", ...}` |
 
 The `@id` annotation on each `forbid` policy is the AGT deny reason
-that surfaces on the verdict. The `@advice` annotation on a `permit`
+that surfaces on the verdict; a `forbid` without one, or with an empty
+or blank `@id`, surfaces its Cedar policy id, `policy<n>` for the n-th
+policy in the file. An unguarded read of a missing attribute is an
+evaluation error, and one such error anywhere in the set fails the
+request closed even when another `forbid` fired, so guard every
+optional read with `has`. The `@advice` annotation on a `permit`
 carries the cedar advice JSON payload. The schema enforces that
 `advice.verdict` is one of `warn`, `escalate`, or `transform`. A
-`transform` advice MUST carry a `transform.path` rooted at
-`$target` and a replacement `transform.value`.
+`transform` advice MUST carry a `transform.path` rooted at `$target`
+and a replacement `transform.value`. When several permits with advice
+match one request, the most restrictive advice wins, and the first in
+file order among equals; file order gives no other precedence. Advice
+on every matching permit must be valid, or the request fails closed.
+This library declares approval (escalate) before redact (transform)
+before drift (warn) so the file reads in the same order the dispatcher
+ranks them.
+
+## Schemas
+
+A `schema_path` makes Cedar check the policy set, the entities and the
+request against the schema. The request context is never empty, so the
+schema MUST declare the §12.4 context shape for every action it lists, or
+every request is rejected. Cedar records are closed: a member the
+snapshot carries and the schema does not declare is an error. Declare
+members the snapshot may omit with `"required": false`, and members that
+arrive as floats as `{"type": "Extension", "name": "decimal"}`. The
+dispatcher builds the context without the schema and checks it against
+the schema afterwards, so a `decimal` typed attribute matches a JSON
+number only, and an attribute typed as an entity never matches: a
+snapshot cannot name an entity. A minimal shape for `pre_tool_call` with
+the egress and budget gates:
+
+```json
+"pre_tool_call": {"appliesTo": {
+  "principalTypes": ["Agent"], "resourceTypes": ["Tool"],
+  "context": {"type": "Record", "attributes": {
+    "envelope": {"type": "Record", "attributes": {
+      "agent": {"type": "Record", "attributes": {"id": {"type": "String"}}},
+      "budgets": {"type": "Record", "required": false, "attributes": {
+        "tool_call_count": {"type": "Long", "required": false},
+        "token_count": {"type": "Long", "required": false}
+      }}
+    }},
+    "tool_call": {"type": "Record", "attributes": {
+      "name": {"type": "String"},
+      "args": {"type": "Record", "attributes": {
+        "host": {"type": "String", "required": false}
+      }}
+    }},
+    "annotations": {"type": "Record", "attributes": {}}
+  }}
+}}
+```
+
+This library ships without a schema because tool `args` differ per
+host.
 
 ## Binding a Cedar policy from an AGT manifest
 
@@ -59,9 +140,12 @@ policies:
     type: cedar
     policy_path: ./policy/cedar-lib/agt_default.cedar
     entities_path: ./policy/data/resources.json
-hooks:
+intervention_points:
   pre_tool_call:
-    policy: default
+    tool_name_from: $snap.tool_call.name
+    policy_target: $snap.tool_call.args
+    policy:
+      id: default
 ```
 
 The host loads the resource entity attributes that parameterise the
@@ -96,12 +180,15 @@ worth knowing.
   that wholesale replaces `$target.value` with the literal
   `"[REDACTED]"`. The Rego library `data.agt.redact` runs
   `regex.replace` to substitute matched spans in place.
-- **Integer scoring only.** Cedar long values are integer typed and
-  cannot compare floats with `>=` without a decimal conversion.
-  Confidence and drift scores in the Cedar mirror MUST be scaled to
+- **Decimal, not float.** A JSON float reaches the context as a Cedar
+  `decimal` with four fractional digits, and a decimal does not compare
+  with a `Long`: `<` and `>=` across the two fail closed, `==` and
+  `contains` are silently false. This library reads only integer
+  counts and scores, so confidence and drift scores MUST be scaled to
   integer ranges (for example 0..100) before they reach the snapshot.
-  The float budgets `elapsed_seconds` and `cost_usd` are not modelled
-  in `budgets.cedar`.
+  The float budgets `elapsed_seconds` and `cost_usd` arrive as decimals
+  and are not modelled in `budgets.cedar`; a host policy can compare
+  them with `decimal("...")` literals and `.greaterThanOrEqual`.
 - **No lattice agility at evaluation time.** Cedar cannot iterate
   over a set to compute lattice closures inside policy evaluation.
   The `ifc.cedar` library expects the host to precompute the closure
@@ -112,10 +199,11 @@ worth knowing.
 
 ## Test runner
 
-Install the Cedar CLI once.
+Install the Cedar CLI once. CI pins 4.12.0, the version of the
+`cedar-policy` crate the engine links.
 
 ```sh
-cargo install cedar-policy-cli --version '^4'
+cargo install cedar-policy-cli --version 4.12.0 --locked
 ```
 
 Run the suite.
@@ -125,5 +213,6 @@ Run the suite.
 ```
 
 The runner sets `CEDAR_BIN` from the environment when present and
-falls back to `cedar` on `PATH`, then to `~/.cargo/bin/cedar`. CI
-calls the runner directly.
+falls back to `cedar` on `PATH`, then to `~/.cargo/bin/cedar`. The
+`cedar-lib` job in `.github/workflows/ci.yml` builds the pinned CLI from
+its checksum-verified crate tarball and calls the runner directly.

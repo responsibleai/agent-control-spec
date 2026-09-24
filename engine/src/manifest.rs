@@ -32,7 +32,7 @@ pub struct Manifest {
     pub extends: Vec<ManifestExtends>,
     #[serde(default)]
     pub policies: BTreeMap<String, PolicyConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_intervention_points")]
     pub intervention_points: BTreeMap<InterceptionPoint, InterventionPointConfig>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolConfig>,
@@ -175,11 +175,183 @@ pub struct ApprovalResolverConfig {
     pub additional_properties: BTreeMap<String, JsonValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum ManifestExtends {
     Reference(String),
     Url(ManifestUrlExtends),
+}
+
+impl<'de> Deserialize<'de> for ManifestExtends {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct ExtendsVisitor;
+        impl<'de> serde::de::Visitor<'de> for ExtendsVisitor {
+            type Value = ManifestExtends;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an extends reference string or URL mapping")
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(ManifestExtends::Reference(value.to_string()))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                ManifestUrlExtends::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(ManifestExtends::Url)
+            }
+        }
+        deserializer.deserialize_any(ExtendsVisitor)
+    }
+}
+
+// String map keys let path-tracking deserializers retain the actual point name
+// rather than an opaque enum key ("?") when a nested binding is malformed.
+fn deserialize_intervention_points<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<InterceptionPoint, InterventionPointConfig>, D::Error> {
+    struct PointsVisitor;
+    impl<'de> serde::de::Visitor<'de> for PointsVisitor {
+        type Value = BTreeMap<InterceptionPoint, InterventionPointConfig>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a mapping of intervention points")
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut points = BTreeMap::new();
+            while let Some(key) = map.next_key::<String>()? {
+                let point = InterceptionPoint::deserialize(
+                    serde::de::value::StringDeserializer::<A::Error>::new(key),
+                )?;
+                points.insert(point, map.next_value()?);
+            }
+            Ok(points)
+        }
+    }
+    deserializer.deserialize_any(PointsVisitor)
+}
+
+fn manifest_error_path(path: &serde_path_to_error::Path) -> String {
+    use serde_path_to_error::Segment;
+    let mut output = String::new();
+    for segment in path {
+        match segment {
+            Segment::Unknown => {}
+            Segment::Seq { index } => output.push_str(&format!("[{index}]")),
+            Segment::Map { key } | Segment::Enum { variant: key } => {
+                if !output.is_empty() {
+                    output.push('.');
+                }
+                output.push_str(key);
+            }
+        }
+    }
+    output
+}
+
+fn manifest_limit_message(kind: &str, count: usize, field: &str, limit: usize) -> String {
+    format!("manifest {kind} {count} exceeds {field} limit {limit}")
+}
+
+fn manifest_budget_message(
+    error: &serde_saphyr::Error,
+    reported: Option<&serde_saphyr::budget::BudgetBreach>,
+    limits: Limits,
+) -> Option<String> {
+    use serde_saphyr::{budget::BudgetBreach, Error};
+    let breach = reported.or(match error {
+        Error::Budget { breach, .. } => Some(breach),
+        _ => None,
+    });
+    let (kind, count, field, limit) = if let Some(breach) = breach {
+        match *breach {
+            BudgetBreach::Events { events } => (
+                "events",
+                events,
+                "max_manifest_events",
+                limits.max_manifest_events,
+            ),
+            BudgetBreach::Aliases { aliases } => (
+                "aliases",
+                aliases,
+                "max_manifest_aliases",
+                limits.max_manifest_aliases,
+            ),
+            BudgetBreach::Anchors { anchors } => (
+                "anchors",
+                anchors,
+                "max_manifest_anchors",
+                limits.max_manifest_anchors,
+            ),
+            BudgetBreach::Depth { depth } => (
+                "depth",
+                depth,
+                "max_manifest_depth",
+                limits.max_manifest_depth,
+            ),
+            BudgetBreach::Nodes { nodes } => (
+                "nodes",
+                nodes,
+                "max_manifest_nodes",
+                limits.max_manifest_nodes,
+            ),
+            BudgetBreach::ScalarBytes { total_scalar_bytes } => (
+                "expanded scalar bytes",
+                total_scalar_bytes,
+                "max_merged_manifest_bytes",
+                limits.max_merged_manifest_bytes,
+            ),
+            BudgetBreach::RecordedAnchorEvents {
+                recorded_anchor_events,
+            } => (
+                "retained anchor events",
+                recorded_anchor_events,
+                "max_manifest_anchor_events",
+                limits.max_manifest_anchor_events,
+            ),
+            BudgetBreach::RecordedAnchorBytes {
+                recorded_anchor_bytes,
+            } => (
+                "retained anchor bytes",
+                recorded_anchor_bytes,
+                "max_merged_manifest_bytes",
+                limits.max_merged_manifest_bytes,
+            ),
+            // Disabled features cannot charge their budgets. Keep future parser
+            // limits fail-closed without exposing their Debug representation.
+            _ => return Some("manifest exceeds a parser resource limit".to_string()),
+        }
+    } else {
+        match *error {
+            Error::AliasReplayLimitExceeded {
+                total_replayed_events,
+                max_total_replayed_events,
+                ..
+            } => (
+                "replayed events",
+                total_replayed_events,
+                "max_manifest_events",
+                max_total_replayed_events,
+            ),
+            Error::AliasExpansionLimitExceeded {
+                expansions,
+                max_expansions_per_anchor,
+                ..
+            } => (
+                "anchor expansions",
+                expansions,
+                "max_manifest_aliases",
+                max_expansions_per_anchor,
+            ),
+            Error::AliasReplayStackDepthExceeded {
+                depth, max_depth, ..
+            } => ("alias replay depth", depth, "max_manifest_depth", max_depth),
+            _ => return None,
+        }
+    };
+    Some(manifest_limit_message(kind, count, field, limit))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -599,6 +771,14 @@ impl Manifest {
     }
 
     pub fn from_yaml_chain(inputs: &[&str]) -> Result<Self, RuntimeError> {
+        Self::from_yaml_chain_with_limits(inputs, Limits::default())
+    }
+
+    /// Parse and compose text fragments with explicit manifest resource budgets.
+    pub fn from_yaml_chain_with_limits(
+        inputs: &[&str],
+        limits: Limits,
+    ) -> Result<Self, RuntimeError> {
         if inputs.is_empty() {
             return Err(RuntimeError::ManifestInvalid(
                 "manifest yaml chain must not be empty".to_string(),
@@ -607,14 +787,18 @@ impl Manifest {
 
         let mut manifests = Vec::with_capacity(inputs.len());
         for (index, input) in inputs.iter().enumerate() {
-            let manifest: Self = serde_yaml::from_str(input).map_err(|err| {
-                RuntimeError::ManifestInvalid(format!(
-                    "failed to parse manifest chain entry {index} as YAML: {err}"
-                ))
-            })?;
+            let manifest =
+                Self::parse_yaml_str_with_limits(input, limits).map_err(|err| match err {
+                    RuntimeError::ManifestInvalid(detail) => RuntimeError::ManifestInvalid(
+                        format!("failed to parse manifest chain entry {index} as YAML: {detail}"),
+                    ),
+                    other => other,
+                })?;
             manifests.push(manifest);
         }
-        Self::merge_chain(manifests)
+        let manifest = Self::merge_chain(manifests)?;
+        ManifestLoader::with_limits(limits).validate_merged_manifest_size(Some(&manifest))?;
+        Ok(manifest)
     }
 
     /// Deserialize without validating.
@@ -623,13 +807,103 @@ impl Manifest {
     /// `extends` has been merged, so a caller holding a single document
     /// needs to inspect `extends` before deciding whether validation can
     /// give a meaningful answer.
+    ///
+    /// Returns `ManifestInvalid` for grammar/type errors and
+    /// `ResourceLimitExceeded` when a manifest parsing budget is breached.
     pub fn parse_yaml_str(input: &str) -> Result<Self, RuntimeError> {
-        serde_yaml::from_str(input).map_err(|err| RuntimeError::ManifestInvalid(err.to_string()))
+        Self::parse_yaml_str_with_limits(input, Limits::default())
+    }
+
+    /// Deserialize without validating, using the manifest fields of [`Limits`].
+    /// Policy input/output depth does not affect manifest parsing.
+    pub fn parse_yaml_str_with_limits(input: &str, limits: Limits) -> Result<Self, RuntimeError> {
+        if input.len() > limits.max_merged_manifest_bytes {
+            return Err(RuntimeError::ResourceLimitExceeded(manifest_limit_message(
+                "source bytes",
+                input.len(),
+                "max_merged_manifest_bytes",
+                limits.max_merged_manifest_bytes,
+            )));
+        }
+        let normalized = preserve_scalar_types(input, limits)?;
+        // Alias diagnostics can wrap the typed error. Use the structured budget report.
+        let parser_limit = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let reported_limit = std::rc::Rc::clone(&parser_limit);
+        let mut path = serde_path_to_error::Track::new();
+        serde_saphyr::with_deserializer_from_str_with_options(
+            &normalized,
+            serde_saphyr::options! {
+                strict_booleans: true,
+                no_schema: true,
+                reject_unsupported_tags: true,
+                reject_non_finite_typeless_float: true,
+                duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+                merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
+                with_snippet: false,
+                emit_comments: false,
+                alias_limits: serde_saphyr::alias_limits! {
+                    max_total_replayed_events: limits.max_manifest_events,
+                    max_replay_stack_depth: limits.max_manifest_depth,
+                    max_alias_expansions_per_anchor: limits.max_manifest_aliases,
+                },
+                budget: serde_saphyr::budget! {
+                    max_depth: limits.max_manifest_depth,
+                    flow_nesting_limit: limits.max_manifest_depth.saturating_add(1),
+                    max_nodes: limits.max_manifest_nodes,
+                    max_events: limits.max_manifest_events,
+                    max_aliases: limits.max_manifest_aliases,
+                    max_anchors: limits.max_manifest_anchors,
+                    enforce_alias_anchor_ratio: false,
+                    max_documents: 1,
+                    simple_key_max_lookahead: 1024,
+                    max_total_scalar_bytes: limits.max_merged_manifest_bytes,
+                    max_recorded_anchor_bytes: limits.max_merged_manifest_bytes,
+                    max_recorded_anchor_events: limits.max_manifest_anchor_events,
+                },
+            }
+            .with_budget_report(move |report| {
+                *reported_limit.borrow_mut() = report.breached.clone();
+            }),
+            |de| {
+                Self::deserialize(serde_path_to_error::Deserializer::new(
+                    crate::manifest_deserializer::Strict(de),
+                    &mut path,
+                ))
+            },
+        )
+        .map_err(|err| {
+            let path = manifest_error_path(&path.path());
+            let prefix = if path.is_empty() {
+                String::new()
+            } else {
+                format!("{path}: ")
+            };
+            if let Some(message) =
+                manifest_budget_message(&err, parser_limit.borrow().as_ref(), limits)
+            {
+                let location = err
+                    .location()
+                    .map(|location| {
+                        format!(" at line {}, column {}", location.line(), location.column())
+                    })
+                    .unwrap_or_default();
+                RuntimeError::ResourceLimitExceeded(format!("{prefix}{message}{location}"))
+            } else {
+                RuntimeError::ManifestInvalid(format!(
+                    "{prefix}{}",
+                    err.render_with_formatter(&serde_saphyr::UserMessageFormatter)
+                ))
+            }
+        })
     }
 
     pub fn from_yaml_str(input: &str) -> Result<Self, RuntimeError> {
-        let manifest: Self = serde_yaml::from_str(input)
-            .map_err(|err| RuntimeError::ManifestInvalid(err.to_string()))?;
+        Self::from_yaml_str_with_limits(input, Limits::default())
+    }
+
+    /// Deserialize and validate with explicit manifest resource budgets.
+    pub fn from_yaml_str_with_limits(input: &str, limits: Limits) -> Result<Self, RuntimeError> {
+        let manifest = Self::parse_yaml_str_with_limits(input, limits)?;
         manifest.validate()?;
         Ok(manifest)
     }
@@ -1249,7 +1523,7 @@ impl ManifestLoader {
                 location.label()
             ))
         })?;
-        let mut manifest = parse_manifest_source(&source, &location)?;
+        let mut manifest = parse_manifest_source(&source, &location, self.limits)?;
         validate_extends_entries(&manifest, &location)?;
         if let ManifestLocation::Url(url) = &location {
             // Every fetched body, transitive and relative hops included,
@@ -1313,7 +1587,7 @@ impl ManifestLoader {
                 included_manifest,
                 &ManifestSource::Location(included_source),
             )?;
-            self.validate_merged_manifest_size(&resolved)?;
+            self.validate_merged_manifest_size(resolved.as_ref())?;
         }
         self.stack.pop();
 
@@ -1323,7 +1597,7 @@ impl ManifestLoader {
             manifest,
             &ManifestSource::Location(location.clone()),
         )?;
-        self.validate_merged_manifest_size(&resolved)?;
+        self.validate_merged_manifest_size(resolved.as_ref())?;
         Ok(resolved.expect("current manifest should always be merged"))
     }
 
@@ -1333,12 +1607,27 @@ impl ManifestLoader {
         _including: &ManifestLocation,
     ) -> Result<Vec<u8>, RuntimeError> {
         match location {
-            ManifestLocation::Path(path) => fs::read(path).map_err(|err| {
-                RuntimeError::ManifestUnreadable(format!(
-                    "failed to read manifest file '{}': {err}",
-                    path.display()
-                ))
-            }),
+            ManifestLocation::Path(path) => {
+                let mut body = Vec::new();
+                fs::File::open(path)
+                    .and_then(|file| {
+                        file.take(self.limits.max_merged_manifest_bytes.saturating_add(1) as u64)
+                            .read_to_end(&mut body)
+                    })
+                    .map_err(|err| {
+                        RuntimeError::ManifestUnreadable(format!(
+                            "failed to read manifest file '{}': {err}",
+                            path.display()
+                        ))
+                    })?;
+                if body.len() > self.limits.max_merged_manifest_bytes {
+                    return Err(RuntimeError::ResourceLimitExceeded(format!(
+                        "manifest source '{}' exceeds the byte limit",
+                        path.display()
+                    )));
+                }
+                Ok(body)
+            }
             ManifestLocation::Url(url) => self.fetch_url_body(url),
         }
     }
@@ -1361,7 +1650,7 @@ impl ManifestLoader {
 
     fn validate_merged_manifest_size(
         &self,
-        resolved: &Option<Manifest>,
+        resolved: Option<&Manifest>,
     ) -> Result<(), RuntimeError> {
         let Some(manifest) = resolved else {
             return Ok(());
@@ -1414,10 +1703,295 @@ fn canonicalize_manifest_path(
     })
 }
 
+// Preserve legacy numeric strings and YAML 1.2 boolean capitalization.
+// Token spans distinguish scalar syntax from string content and comments.
+fn preserve_scalar_types(
+    input: &str,
+    limits: Limits,
+) -> Result<std::borrow::Cow<'_, str>, RuntimeError> {
+    use serde_saphyr::granit_parser::{self, ErrorKind, Event, Parser, ScalarStyle};
+
+    let parser = Parser::new_from_str_with_options(
+        input,
+        granit_parser::options! {
+            emit_comments: false,
+            flow_nesting_limit: limits.max_manifest_depth.saturating_add(1),
+            block_nesting_limit: limits.max_manifest_depth.saturating_add(1),
+        },
+    );
+    let mut output = String::new();
+    let mut copied = 0;
+    let mut documents = 0;
+    for (events, event) in parser.enumerate() {
+        if events >= limits.max_manifest_events {
+            return Err(RuntimeError::ResourceLimitExceeded(manifest_limit_message(
+                "events",
+                events.saturating_add(1),
+                "max_manifest_events",
+                limits.max_manifest_events,
+            )));
+        }
+        let (event, span) = event.map_err(|error| {
+            if matches!(error.kind(), ErrorKind::RecursionLimitExceeded) {
+                RuntimeError::ResourceLimitExceeded(format!(
+                    "manifest depth exceeds max_manifest_depth limit {}",
+                    limits.max_manifest_depth
+                ))
+            } else {
+                RuntimeError::ManifestInvalid(error.to_string())
+            }
+        })?;
+        if matches!(event, Event::DocumentStart(..)) {
+            documents += 1;
+            if documents > 1 {
+                return Err(RuntimeError::ManifestInvalid(
+                    "expected exactly one YAML document".to_string(),
+                ));
+            }
+        }
+        let tag = match &event {
+            Event::Scalar(_, _, _, tag)
+            | Event::MappingStart(_, _, tag)
+            | Event::SequenceStart(_, _, tag) => tag,
+            _ => &None,
+        };
+        if tag
+            .as_ref()
+            .is_some_and(|tag| tag.handle().is_empty() && tag.suffix() == "!")
+        {
+            return Err(RuntimeError::ManifestInvalid(format!(
+                "non-specific YAML tags are not supported at line {}, column {}",
+                span.start.line(),
+                span.start.col() + 1
+            )));
+        }
+        let Event::Scalar(value, style, _, tag) = event else {
+            continue;
+        };
+        let boolean_tag = tag
+            .as_ref()
+            .is_some_and(|tag| tag.is_yaml_core_schema_tag("bool"));
+        let kind = tag.as_ref().and_then(|tag| tag.core_suffix());
+        let string_tag = kind == Some("str");
+        let integer_tag = kind == Some("int");
+        let float_tag = kind == Some("float");
+        let null_tag = kind == Some("null");
+        let invalid = |message: &str| {
+            RuntimeError::ManifestInvalid(format!(
+                "{message} at line {}, column {}",
+                span.start.line(),
+                span.start.col() + 1
+            ))
+        };
+        if tag.is_some() && !boolean_tag && !string_tag && !integer_tag && !float_tag && !null_tag {
+            return Err(invalid("unsupported YAML scalar tag"));
+        }
+        if style != ScalarStyle::Plain && (tag.is_none() || string_tag) {
+            continue;
+        }
+        let boolean = if tag
+            .as_ref()
+            .is_none_or(|tag| tag.is_yaml_core_schema_tag("bool"))
+        {
+            match value.as_ref() {
+                "true" | "True" | "TRUE" => Some("true"),
+                "false" | "False" | "FALSE" => Some("false"),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if boolean_tag && boolean.is_none() {
+            return Err(invalid("invalid YAML boolean"));
+        }
+        let mut explicit_scalar = None;
+        if null_tag {
+            if !matches!(value.as_ref(), "" | "~" | "null" | "Null" | "NULL") {
+                return Err(invalid("invalid YAML null"));
+            }
+            explicit_scalar = Some("null".to_string());
+        }
+        if float_tag {
+            let number = value
+                .parse::<f64>()
+                .map_err(|_| invalid("invalid YAML float"))?;
+            if !number.is_finite() {
+                return Err(invalid("YAML numbers must be finite"));
+            }
+            explicit_scalar =
+                Some(serde_json::to_string(&number).map_err(|_| invalid("invalid YAML float"))?);
+        }
+        let mixed_keyword = (boolean.is_none()
+            && (value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false")))
+            || (value.eq_ignore_ascii_case("null")
+                && !matches!(value.as_ref(), "null" | "Null" | "NULL"));
+        let unsigned = value.strip_prefix(['+', '-']).unwrap_or(&value);
+        let leading_zero = unsigned.len() > 1
+            && unsigned.starts_with('0')
+            && unsigned.bytes().all(|byte| byte.is_ascii_digit());
+        let (digits, radix) = if let Some(digits) = unsigned.strip_prefix("0x") {
+            (digits, 16)
+        } else if let Some(digits) = unsigned.strip_prefix("0o") {
+            (digits, 8)
+        } else if let Some(digits) = unsigned.strip_prefix("0b") {
+            (digits, 2)
+        } else {
+            (unsigned, 10)
+        };
+        if !string_tag
+            && !float_tag
+            && !leading_zero
+            && !digits.is_empty()
+            && digits.chars().all(|ch| ch.is_digit(radix))
+        {
+            let magnitude = u64::from_str_radix(digits, radix).map_err(|_| {
+                RuntimeError::ManifestInvalid(
+                    "YAML integer exceeds the supported 64-bit range".to_string(),
+                )
+            })?;
+            if value.starts_with('-') && magnitude > (i64::MAX as u64) + 1 {
+                return Err(RuntimeError::ManifestInvalid(
+                    "YAML integer exceeds the supported 64-bit range".to_string(),
+                ));
+            }
+            if integer_tag {
+                explicit_scalar = Some(if value.starts_with('-') {
+                    format!("-{magnitude}")
+                } else {
+                    magnitude.to_string()
+                });
+            }
+        }
+        if integer_tag && explicit_scalar.is_none() {
+            return Err(invalid("invalid YAML integer"));
+        }
+        let separated_number = unsigned.contains('_')
+            && unsigned.starts_with(|ch: char| ch.is_ascii_digit() || ch == '.')
+            && !unsigned.chars().any(char::is_whitespace);
+        let legacy_prefix = [("0X", 16), ("0O", 8), ("0B", 2)]
+            .iter()
+            .any(|(prefix, radix)| {
+                unsigned.strip_prefix(*prefix).is_some_and(|digits| {
+                    !digits.is_empty() && digits.chars().all(|ch| ch.is_digit(*radix))
+                })
+            });
+        if !leading_zero
+            && !separated_number
+            && !legacy_prefix
+            && boolean.is_none()
+            && !mixed_keyword
+            && !string_tag
+            && explicit_scalar.is_none()
+        {
+            continue;
+        }
+        let range = span.byte_range().ok_or_else(|| {
+            RuntimeError::ManifestInvalid("missing YAML scalar source range".to_string())
+        })?;
+        let block = matches!(style, ScalarStyle::Literal | ScalarStyle::Folded);
+        let mut replacement_start = range.start;
+        let mut prefix_start = copied;
+        if tag.is_some() && !string_tag {
+            let start = span
+                .tag_start()
+                .and_then(|marker| marker.byte_offset())
+                .ok_or_else(|| {
+                    RuntimeError::ManifestInvalid("missing YAML tag source range".to_string())
+                })?;
+            let prefix = input.get(copied..start).ok_or_else(|| {
+                RuntimeError::ManifestInvalid("invalid YAML tag source range".to_string())
+            })?;
+            let tag_source = input.get(start..range.start).ok_or_else(|| {
+                RuntimeError::ManifestInvalid("invalid YAML tag source range".to_string())
+            })?;
+            let length = tag_source
+                .find(char::is_whitespace)
+                .unwrap_or(tag_source.len());
+            output.push_str(prefix);
+            output.extend(std::iter::repeat_n(' ', length));
+            prefix_start = start + length;
+        }
+        if block {
+            let mut cursor = prefix_start;
+            loop {
+                let remaining = input
+                    .get(cursor..range.end)
+                    .ok_or_else(|| invalid("invalid YAML block scalar range"))?;
+                let ch = remaining
+                    .chars()
+                    .next()
+                    .ok_or_else(|| invalid("missing YAML block scalar header"))?;
+                match ch {
+                    '|' | '>' => {
+                        replacement_start = cursor;
+                        break;
+                    }
+                    '#' => cursor += remaining.find('\n').unwrap_or(remaining.len()),
+                    '&' => {
+                        cursor += remaining
+                            .find(char::is_whitespace)
+                            .ok_or_else(|| invalid("invalid YAML block scalar properties"))?
+                    }
+                    ch if ch.is_whitespace() => cursor += ch.len_utf8(),
+                    _ => return Err(invalid("invalid YAML block scalar header")),
+                }
+            }
+        }
+        let prefix = input.get(prefix_start..replacement_start).ok_or_else(|| {
+            RuntimeError::ManifestInvalid("invalid YAML scalar source range".to_string())
+        })?;
+        output.push_str(prefix);
+        if string_tag && range.is_empty() {
+            output.push(' ');
+        }
+        if let Some(explicit_scalar) = explicit_scalar {
+            output.push_str(&explicit_scalar);
+        } else if let Some(boolean) = boolean {
+            output.push_str(boolean);
+        } else {
+            output.push_str(
+                &serde_json::to_string(if string_tag && range.is_empty() {
+                    ""
+                } else {
+                    value.as_ref()
+                })
+                .map_err(|error| RuntimeError::ManifestInvalid(error.to_string()))?,
+            );
+        }
+        if block {
+            // Block spans consume separators before the next node; retain their layout.
+            let replaced = input
+                .get(replacement_start..range.end)
+                .ok_or_else(|| invalid("invalid YAML block scalar range"))?;
+            let tail = &replaced[replaced.trim_end_matches(char::is_whitespace).len()..];
+            let removed_lines = replaced.bytes().filter(|byte| *byte == b'\n').count();
+            let tail_lines = tail.bytes().filter(|byte| *byte == b'\n').count();
+            output.extend(std::iter::repeat_n(
+                '\n',
+                removed_lines.saturating_sub(tail_lines),
+            ));
+            output.push_str(tail);
+        }
+        copied = range.end;
+    }
+    if copied == 0 {
+        Ok(std::borrow::Cow::Borrowed(input))
+    } else {
+        output.push_str(&input[copied..]);
+        Ok(std::borrow::Cow::Owned(output))
+    }
+}
+
 fn parse_manifest_source(
     source: &str,
     location: &ManifestLocation,
+    limits: Limits,
 ) -> Result<Manifest, RuntimeError> {
+    if source.len() > limits.max_merged_manifest_bytes {
+        return Err(RuntimeError::ResourceLimitExceeded(
+            "manifest source exceeds the byte limit".to_string(),
+        ));
+    }
     let parse_as_json = location.is_json();
     if parse_as_json {
         serde_json::from_str(source).map_err(|err| {
@@ -1427,11 +2001,12 @@ fn parse_manifest_source(
             ))
         })
     } else {
-        serde_yaml::from_str(source).map_err(|err| {
-            RuntimeError::ManifestInvalid(format!(
-                "failed to parse manifest '{}' as YAML: {err}",
+        Manifest::parse_yaml_str_with_limits(source, limits).map_err(|err| match err {
+            RuntimeError::ManifestInvalid(detail) => RuntimeError::ManifestInvalid(format!(
+                "failed to parse manifest '{}' as YAML: {detail}",
                 location.label()
-            ))
+            )),
+            other => other,
         })
     }
 }
@@ -2885,7 +3460,7 @@ intervention_points:
         let local = Manifest::from_path(&local_root).unwrap();
         assert!(!local.url_sourced());
         assert!(local.url_sources().is_empty());
-        let parsed = Manifest::from_yaml_str(&serde_yaml::to_string(&manifest).unwrap()).unwrap();
+        let parsed = Manifest::from_yaml_str(&serde_saphyr::to_string(&manifest).unwrap()).unwrap();
         assert!(!parsed.url_sourced());
     }
 
@@ -2924,7 +3499,7 @@ intervention_points:
 
         let json = serde_json::to_value(&tainted).unwrap();
         assert!(json.get("url_sources").is_none(), "{json}");
-        let yaml = serde_yaml::to_string(&tainted).unwrap();
+        let yaml = serde_saphyr::to_string(&tainted).unwrap();
         assert!(!yaml.contains("url_sources"), "{yaml}");
     }
 

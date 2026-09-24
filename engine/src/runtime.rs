@@ -4,7 +4,7 @@ use crate::{
     manifest::Manifest,
     policy::{prepare_policy_invocation, PolicyConfig, PreparedPolicyInvocation},
     policy_input::build_policy_input,
-    policy_output::{normalize_policy_output, runtime_error_verdict},
+    policy_output::{normalize_policy_output, runtime_error_verdict, EVIDENCE_TRUNCATED_REASON},
     telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetryEventType, TelemetrySink},
     tool_projection::project_tool,
     JsonPath, JsonValue, Limits, PathEnv, PerfTelemetry, RuntimeError,
@@ -527,7 +527,24 @@ impl Runtime {
                 None => (None, Vec::new()),
             };
 
-        self.emit_event(
+        // Section 13.3: when the runtime degraded the evidence, the keys
+        // above are the kept subset. Mark the event so a consumer does
+        // not read them as the whole map. The runtime owns the marker
+        // reason, so its presence on the verdict is the runtime's own
+        // statement and not a dispatcher's.
+        let evidence_truncated = verdict
+            .warnings
+            .iter()
+            .any(|warning| warning.reason.as_deref() == Some(EVIDENCE_TRUNCATED_REASON));
+        let mark_evidence = |event: TelemetryEvent| {
+            if evidence_truncated {
+                event.with_metadata(EVIDENCE_TRUNCATED_REASON, "true")
+            } else {
+                event
+            }
+        };
+
+        self.emit_event(mark_evidence(
             TelemetryEvent::new(TelemetryEventType::Decision, intervention_point)
                 .with_decision(verdict.decision)
                 .with_optional_reason_code(
@@ -541,14 +558,14 @@ impl Runtime {
                 .with_duration_ms(duration_ms)
                 .with_optional_action_identity(action_identity)
                 .with_evidence(evidence_artefact.as_deref(), evidence_keys.clone()),
-        );
+        ));
 
         // AGT D2: when the decision is `Transform`, emit the dedicated
         // `intervention_point.transformed` event in addition to the
         // base Decision event so that single-event consumers and
         // multi-event consumers both see the transformation.
         if verdict.decision == agent_hooks::Decision::Transform {
-            self.emit_event(
+            self.emit_event(mark_evidence(
                 TelemetryEvent::new(
                     TelemetryEventType::InterventionPointTransformed,
                     intervention_point,
@@ -565,7 +582,7 @@ impl Runtime {
                 .with_duration_ms(duration_ms)
                 .with_optional_action_identity(action_identity)
                 .with_evidence(evidence_artefact.as_deref(), evidence_keys),
-            );
+            ));
         }
     }
 

@@ -57,12 +57,12 @@ const native = require("../binding.js") as {
   ): unknown;
   policyEvaluate(handle: unknown, point: string, contextJson: string): string;
   policyInterventionPoints(handle: unknown): string[];
-  validateManifestFile(path: string): string | null;
-  validateManifest(source: string): string | null;
-  validateManifestDetailed(source: string): string;
+  validateManifestFile(path: string, limitsJson?: string): string | null;
+  validateManifest(source: string, limitsJson?: string): string | null;
+  validateManifestDetailed(source: string, limitsJson?: string): string;
   validateArtifactsDetailed(manifestYaml: string, bundlesJson: string): string;
-  parseManifest(source: string): string;
-  mergeManifests(sourcesJson: string): string;
+  parseManifest(source: string, limitsJson?: string): string;
+  mergeManifests(sourcesJson: string, limitsJson?: string): string;
   supportedManifestVersions(): string[];
   streamSessionNew(configJson: string): unknown;
   streamSessionObserve(handle: unknown, sourceType: string, runes: number): number;
@@ -251,8 +251,20 @@ export interface Limits {
   max_policy_output_bytes?: number;
   /** Manifest `extends` chain length. */
   max_extends_depth?: number;
-  /** Composed manifest total size cap in bytes. */
+  /** Manifest source, expanded scalar and composed size cap in bytes. */
   max_merged_manifest_bytes?: number;
+  /** Manifest collection depth, independent of policy input/output. */
+  max_manifest_depth?: number;
+  /** Expanded YAML nodes, including keys. */
+  max_manifest_nodes?: number;
+  /** Scan and alias replay event caps, each applied separately. */
+  max_manifest_events?: number;
+  /** Alias references and per-anchor expansions. */
+  max_manifest_aliases?: number;
+  /** Anchor definitions. */
+  max_manifest_anchors?: number;
+  /** Cumulative retained anchor event copies. */
+  max_manifest_anchor_events?: number;
   /** Per-URL manifest fetch body cap in bytes. */
   max_manifest_url_bytes?: number;
   /** Per-URL manifest fetch deadline in milliseconds. */
@@ -605,7 +617,7 @@ export class ManifestInvalidError extends Error {
  * is evaluated, so this works before a policy is runnable and without
  * a loadable policy bundle.
  */
-export function validateManifest(source: string): void {
+export function validateManifest(source: string, limits?: Readonly<Limits>): void {
   if (typeof source !== "string") {
     throw new TypeError(`validateManifest expects a string, received ${typeof source}`);
   }
@@ -620,7 +632,7 @@ export function validateManifest(source: string): void {
   // The native call returns the engine's message for a rejected
   // manifest and throws only when the call itself fails, so a boundary
   // failure propagates as itself rather than being relabelled.
-  const rejection = native.validateManifest(source);
+  const rejection = native.validateManifest(source, JSON.stringify(limits));
   if (rejection !== null && rejection !== undefined) {
     throw new ManifestInvalidError(rejection);
   }
@@ -632,11 +644,11 @@ export function validateManifest(source: string): void {
  * Use this for a manifest that inherits. It reads from disk and may
  * fetch URL `extends`, exactly as loading a runtime would.
  */
-export function validateManifestFile(path: string): void {
+export function validateManifestFile(path: string, limits?: Readonly<Limits>): void {
   if (typeof path !== "string") {
     throw new TypeError(`validateManifestFile expects a string, received ${typeof path}`);
   }
-  const rejection = native.validateManifestFile(path);
+  const rejection = native.validateManifestFile(path, JSON.stringify(limits));
   if (rejection !== null && rejection !== undefined) {
     throw new ManifestInvalidError(rejection);
   }
@@ -686,14 +698,14 @@ export interface ManifestDiagnostic {
  *
  * Throws when the YAML does not parse.
  */
-export function parseManifest(source: string): Record<string, unknown> {
+export function parseManifest(source: string, limits?: Readonly<Limits>): Record<string, unknown> {
   if (typeof source !== "string") {
     throw new TypeError(`parseManifest expects a string, received ${typeof source}`);
   }
   if (UNPAIRED_SURROGATE.test(source)) {
     throw new TypeError("parseManifest received a string with an unpaired surrogate");
   }
-  return JSON.parse(native.parseManifest(source)) as Record<string, unknown>;
+  return JSON.parse(native.parseManifest(source, JSON.stringify(limits))) as Record<string, unknown>;
 }
 
 /**
@@ -707,7 +719,7 @@ export function parseManifest(source: string): Record<string, unknown> {
  * Throws when a source does not parse, when the merged result is
  * invalid, or when `sources` is empty.
  */
-export function mergeManifests(sources: readonly string[]): Record<string, unknown> {
+export function mergeManifests(sources: readonly string[], limits?: Readonly<Limits>): Record<string, unknown> {
   if (!Array.isArray(sources)) {
     throw new TypeError("mergeManifests expects an array of manifest sources");
   }
@@ -721,7 +733,7 @@ export function mergeManifests(sources: readonly string[]): Record<string, unkno
       );
     }
   }
-  return JSON.parse(native.mergeManifests(JSON.stringify(sources))) as Record<
+  return JSON.parse(native.mergeManifests(JSON.stringify(sources), JSON.stringify(limits))) as Record<
     string,
     unknown
   >;
@@ -739,7 +751,7 @@ export function mergeManifests(sources: readonly string[]): Record<string, unkno
  * Throws only on boundary problems (non-string input, unpaired
  * surrogate); an invalid manifest returns a non-empty array.
  */
-export function validateManifestDetailed(source: string): readonly ManifestDiagnostic[] {
+export function validateManifestDetailed(source: string, limits?: Readonly<Limits>): readonly ManifestDiagnostic[] {
   if (typeof source !== "string") {
     throw new TypeError(
       `validateManifestDetailed expects a string, received ${typeof source}`,
@@ -751,7 +763,7 @@ export function validateManifestDetailed(source: string): readonly ManifestDiagn
     );
   }
   return Object.freeze(
-    JSON.parse(native.validateManifestDetailed(source)) as ManifestDiagnostic[],
+    JSON.parse(native.validateManifestDetailed(source, JSON.stringify(limits))) as ManifestDiagnostic[],
   );
 }
 
@@ -779,7 +791,7 @@ export function validateManifestDetailed(source: string): readonly ManifestDiagn
  * the wrong half.
  *
  * Throws only on boundary problems (non-string manifest, unpaired
- * surrogate, non-object bundles); a broken manifest or Rego module
+ * surrogate, non-object bundles, manifest parsing resource limits); a broken manifest or Rego module
  * returns a non-empty array.
  */
 export function validateArtifacts(

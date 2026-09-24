@@ -19,7 +19,7 @@ if ! command -v "$CEDAR_BIN" >/dev/null 2>&1; then
     CEDAR_BIN="$HOME/.cargo/bin/cedar"
   else
     echo "error: cedar executable not found on PATH" >&2
-    echo "install with: cargo install cedar-policy-cli --version '^4'" >&2
+    echo "install with: cargo install cedar-policy-cli --version 4.12.0 --locked" >&2
     exit 127
   fi
 fi

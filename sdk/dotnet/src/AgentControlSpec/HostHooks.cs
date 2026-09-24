@@ -75,11 +75,17 @@ public static class AcsManifestTools
     };
 
     /// <summary>
-    /// Parse manifest text and return it as JSON. Parsing is not
-    /// validation: this answers what the document says, which a tool
-    /// needs before the document is runnable.
+    /// Parse and validate manifest text and return it as JSON.
     /// </summary>
     public static string Parse(string yaml) => Native.ManifestParse(yaml);
+
+    /// <summary>Parse and validate text with explicit manifest resource limits.</summary>
+    public static string Parse(string yaml, IReadOnlyDictionary<string, ulong> limits)
+    {
+        ArgumentNullException.ThrowIfNull(yaml);
+        ArgumentNullException.ThrowIfNull(limits);
+        return Native.ManifestParse(yaml, JsonSerializer.Serialize(limits));
+    }
 
     /// <summary>
     /// Compose a chain of manifest documents into one, outermost base
@@ -89,6 +95,14 @@ public static class AcsManifestTools
     public static string Merge(IEnumerable<string> yamls) =>
         Native.ManifestMerge(JsonSerializer.Serialize(yamls.ToArray()));
 
+    /// <summary>Compose manifest text with explicit manifest resource limits.</summary>
+    public static string Merge(IEnumerable<string> yamls, IReadOnlyDictionary<string, ulong> limits)
+    {
+        ArgumentNullException.ThrowIfNull(yamls);
+        ArgumentNullException.ThrowIfNull(limits);
+        return Native.ManifestMerge(JsonSerializer.Serialize(yamls.ToArray()), JsonSerializer.Serialize(limits));
+    }
+
     /// <summary>
     /// Validate manifest text and return every finding. An empty list
     /// means valid.
@@ -96,7 +110,8 @@ public static class AcsManifestTools
     /// <remarks>
     /// <see cref="AcsManifest.Validate"/> answers yes or no by throwing,
     /// which a linter cannot render against a document. This returns the
-    /// findings instead.
+    /// findings instead. Manifest parsing resource limits still throw
+    /// <see cref="AgentControlSpecNativeException"/>.
     /// </remarks>
     public static IReadOnlyList<ManifestDiagnostic> Diagnostics(string yaml) =>
         JsonSerializer.Deserialize<List<ManifestDiagnostic>>(Native.ManifestDiagnostics(yaml), Json)
@@ -120,6 +135,8 @@ public static class AcsManifestTools
     /// at activation, so this activates in memory and reports what that
     /// surfaced, which moves the failure from a host's first agent action
     /// to its CI.
+    /// Manifest parsing resource limits throw
+    /// <see cref="AgentControlSpecNativeException"/> rather than returning findings.
     /// </remarks>
     public static IReadOnlyList<ManifestDiagnostic> ValidateArtifacts(
         string manifestYaml, string? bundles = null) =>

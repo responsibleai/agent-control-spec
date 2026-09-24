@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Agent Control Specification: a stateless policy decision runtime implementing the agent-hooks interceptor contract"
 readme = "../README.md"
 keywords = ["agents", "policy", "security", "runtime"]
@@ -67,7 +67,8 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
-serde_yaml = "0.9"
+serde-saphyr = { version = "1.2", default-features = false, features = ["deserialize"] }
+serde_path_to_error = "0.1.20"
 sha2 = "0.11"
 base64 = "0.23"
 url = "2"
@@ -79,6 +80,7 @@ regorus = { version = "0.12", features = ["arc"], optional = true }
 tempfile = { version = "3.20", optional = true }
 
 [dev-dependencies]
+serde-saphyr = { version = "1.2", default-features = false, features = ["serialize", "deserialize"] }
 agent-hooks-sdk = { version = "0.1.0-alpha.3", features = ["ctk"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 jsonschema = { version = "0.47", default-features = false }
