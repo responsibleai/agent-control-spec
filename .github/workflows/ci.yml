@@ -14,6 +14,15 @@ permissions:
   contents: read
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: "1.89.0"
+      - run: cargo check --workspace --all-features --locked
+
   rust:
     runs-on: ubuntu-latest
     steps:
@@ -37,6 +46,34 @@ jobs:
         run: cargo test -p agent-control-spec --no-default-features --features opa,default-dispatchers --locked --lib
         env:
           AGENT_CONTROL_REQUIRE_OPA: "1"
+      # A build with only the cedar feature once stopped compiling and
+      # nothing here ran it. This runs the engine unit tests and the
+      # cedar integration suites with that feature set.
+      - name: Cedar-only build and tests
+        run: cargo test -p agent-control-spec --no-default-features --features cedar --locked
+
+  # The stock Cedar library under policy/cedar-lib has its own test
+  # corpus, run by the Cedar CLI. The CLI is published as a crate, not
+  # as a binary release, so the pinned crate tarball is checksum-verified
+  # and built here. It is extracted outside the checkout so cargo does
+  # not read it as a member of this workspace. The version matches the
+  # cedar-policy crate the engine links (Cargo.lock).
+  # Advisory: the job is not yet in the branch-protection required-check
+  # set, so a red run does not block a merge. Adding it there is a
+  # repo-admin step once the job has reported on main.
+  cedar-lib:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install cedar-policy-cli (pinned, checksum-verified)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/cedar-policy-cli.crate" \
+            https://static.crates.io/crates/cedar-policy-cli/cedar-policy-cli-4.13.0.crate
+          echo "a3d4735d77e5d6ab7e851e4a3ce4052b4a7a3e6a01ca14b57e98147bfa354df4  $RUNNER_TEMP/cedar-policy-cli.crate" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cedar-policy-cli.crate" -C "$RUNNER_TEMP"
+          cargo install --locked --path "$RUNNER_TEMP/cedar-policy-cli-4.13.0"
+      - run: policy/cedar-lib/run_tests.sh
 
   python:
     runs-on: ubuntu-latest

@@ -42,6 +42,10 @@ those are host obligations defined by agent-hooks.
 
 ## Status
 
+Rust builds require Rust 1.89 or newer. See
+[manifest parsing](docs/manifest-parsing.md) for YAML typing rules, host-controlled
+parsing budgets and parser dependency details.
+
 Python: [SDK quickstart](sdk/python/README.md) and
 [composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
 

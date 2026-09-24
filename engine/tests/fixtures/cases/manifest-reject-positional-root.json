@@ -1,0 +1,12 @@
+{
+  "case_kind": "manifest",
+  "covers": [
+    "positional_manifest_rejection"
+  ],
+  "description": "A YAML sequence must not deserialize positionally into the manifest struct.",
+  "expect_valid": false,
+  "expected_error_reason": "runtime_error:manifest_invalid",
+  "id": "manifest-reject-positional-root",
+  "manifest_yaml": "- 0.4.0-alpha.1\n- {}\n- []\n- {p: {type: test}}\n- {input: {policy_target: $snap.input, policy: {id: p}}}\n",
+  "schema_version": 1
+}

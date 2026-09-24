@@ -1,0 +1,42 @@
+{
+  "$schema": "../cases.schema.json",
+  "id": "spec-12-cedar-context.case-01",
+  "spec_section": "12.4",
+  "title": "bundled cedar dispatcher evaluates a context-gated forbid against the snapshot",
+  "claimable": true,
+  "operation": "evaluate",
+  "sdk_support": {
+    "rust": "required",
+    "python": "required",
+    "node": "required",
+    "dotnet": "optional"
+  },
+  "manifest_yaml": "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  p:\n    type: cedar\n    policy_set: |\n      @id(\"amount_too_high\")\n      forbid(principal, action, resource) when {\n        context has tool_call && context.tool_call has args &&\n        context.tool_call.args has amount && context.tool_call.args.amount > 100\n      };\n      permit(principal, action, resource);\nintervention_points:\n  pre_tool_call:\n    tool_name_from: $snap.tool_call.name\n    policy:\n      id: p\n    policy_target: $snap.tool_call.args\ntools:\n  pay:\n    type: Tool\n",
+  "intervention_point": "pre_tool_call",
+  "snapshot": {
+    "envelope": {
+      "agent": {
+        "id": "agent-1"
+      }
+    },
+    "tool_call": {
+      "id": "call-1",
+      "name": "pay",
+      "args": {
+        "amount": 500
+      }
+    }
+  },
+  "policy_behavior": "builtin",
+  "policy_response": null,
+  "expected": {
+    "decision": "deny",
+    "reason": "amount_too_high",
+    "approval": "absent",
+    "transformed_policy_target": null
+  },
+  "references": [
+    "spec/SPECIFICATION.md",
+    "policy/cedar-lib/README.md"
+  ]
+}

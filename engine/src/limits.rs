@@ -9,6 +9,16 @@ pub struct Limits {
     pub max_policy_output_bytes: usize,
     pub max_extends_depth: usize,
     pub max_merged_manifest_bytes: usize,
+    /// Manifest collection nesting; independent of policy input/output depth.
+    pub max_manifest_depth: usize,
+    /// Expanded YAML nodes, including mapping keys.
+    pub max_manifest_nodes: usize,
+    /// YAML scan events and alias replay events (each budget is separate).
+    pub max_manifest_events: usize,
+    pub max_manifest_aliases: usize,
+    pub max_manifest_anchors: usize,
+    /// Cumulative retained anchor event copies, including nested anchors.
+    pub max_manifest_anchor_events: usize,
     pub max_manifest_url_bytes: usize,
     pub manifest_url_timeout_ms: u64,
     pub max_manifest_url_redirects: usize,
@@ -24,6 +34,12 @@ impl Default for Limits {
             max_policy_output_bytes: 262_144,
             max_extends_depth: 16,
             max_merged_manifest_bytes: 1_048_576,
+            max_manifest_depth: 64,
+            max_manifest_nodes: 100_000,
+            max_manifest_events: 300_000,
+            max_manifest_aliases: 50_000,
+            max_manifest_anchors: 50_000,
+            max_manifest_anchor_events: 10_000,
             max_manifest_url_bytes: 1_048_576,
             manifest_url_timeout_ms: 30_000,
             max_manifest_url_redirects: 5,

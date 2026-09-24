@@ -96,6 +96,7 @@ NOT_A_CAPABILITY = {
     "normalize_policy_output": "internal to verdict normalization",
     "runtime_error_verdict": "internal to verdict normalization",
     "translate_advice": "internal to Cedar dispatch",
+    "most_restrictive_advice": "internal to Cedar dispatch",
     "InterceptionPointExt": "Rust ergonomics on a foreign enum",
     "canonical_json": "agent-hooks owns identity and canonicalization",
     # Constants, readable from a verdict or a spec document.

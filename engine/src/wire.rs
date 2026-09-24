@@ -17,7 +17,9 @@
 use crate::error::RuntimeError;
 use crate::limits::Limits;
 use crate::perf_telemetry::PerfTelemetry;
-use serde_json::{json, Map, Value};
+#[cfg(feature = "streaming")]
+use serde_json::Map;
+use serde_json::{json, Value};
 
 #[cfg(feature = "streaming")]
 use crate::stream_session::{
@@ -48,7 +50,7 @@ pub fn perf_telemetry_str(level: PerfTelemetry) -> &'static str {
 /// Apply a JSON object of resource cap overrides onto the defaults.
 ///
 /// Each field is individually optional, so a host raising one cap does
-/// not restate the other nine. A field present but not a non-negative
+/// not restate every other cap. A field present but not a non-negative
 /// integer is refused rather than silently kept at its default: a host
 /// that asked for a smaller bound and got the larger one would believe
 /// it was protected when it was not.
@@ -83,6 +85,12 @@ pub fn limits_from_json(value: &Value) -> Result<Limits, RuntimeError> {
     apply!(max_policy_output_bytes, usize);
     apply!(max_extends_depth, usize);
     apply!(max_merged_manifest_bytes, usize);
+    apply!(max_manifest_depth, usize);
+    apply!(max_manifest_nodes, usize);
+    apply!(max_manifest_events, usize);
+    apply!(max_manifest_aliases, usize);
+    apply!(max_manifest_anchors, usize);
+    apply!(max_manifest_anchor_events, usize);
     apply!(max_manifest_url_bytes, usize);
     apply!(manifest_url_timeout_ms, u64);
     apply!(max_manifest_url_redirects, usize);
@@ -105,7 +113,7 @@ pub fn limits_from_json(value: &Value) -> Result<Limits, RuntimeError> {
 }
 
 /// Every field [`limits_from_json`] accepts, in declaration order.
-pub const LIMIT_FIELDS: [&str; 10] = [
+pub const LIMIT_FIELDS: [&str; 16] = [
     "max_snapshot_bytes",
     "max_policy_input_depth",
     "max_annotators_per_point",
@@ -113,6 +121,12 @@ pub const LIMIT_FIELDS: [&str; 10] = [
     "max_policy_output_bytes",
     "max_extends_depth",
     "max_merged_manifest_bytes",
+    "max_manifest_depth",
+    "max_manifest_nodes",
+    "max_manifest_events",
+    "max_manifest_aliases",
+    "max_manifest_anchors",
+    "max_manifest_anchor_events",
     "max_manifest_url_bytes",
     "manifest_url_timeout_ms",
     "max_manifest_url_redirects",
@@ -128,6 +142,12 @@ pub fn limits_json(limits: &Limits) -> Value {
         "max_policy_output_bytes": limits.max_policy_output_bytes,
         "max_extends_depth": limits.max_extends_depth,
         "max_merged_manifest_bytes": limits.max_merged_manifest_bytes,
+        "max_manifest_depth": limits.max_manifest_depth,
+        "max_manifest_nodes": limits.max_manifest_nodes,
+        "max_manifest_events": limits.max_manifest_events,
+        "max_manifest_aliases": limits.max_manifest_aliases,
+        "max_manifest_anchors": limits.max_manifest_anchors,
+        "max_manifest_anchor_events": limits.max_manifest_anchor_events,
         "max_manifest_url_bytes": limits.max_manifest_url_bytes,
         "manifest_url_timeout_ms": limits.manifest_url_timeout_ms,
         "max_manifest_url_redirects": limits.max_manifest_url_redirects,
