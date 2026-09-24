@@ -69,10 +69,10 @@ jobs:
       - name: Install cedar-policy-cli (pinned, checksum-verified)
         run: |
           curl -fsSL -o "$RUNNER_TEMP/cedar-policy-cli.crate" \
-            https://static.crates.io/crates/cedar-policy-cli/cedar-policy-cli-4.12.0.crate
-          echo "7fd56e71cfb7bad516acc36499a54fa1dac39e411127f2f58f1dd8f023a69b8a  $RUNNER_TEMP/cedar-policy-cli.crate" | sha256sum -c -
+            https://static.crates.io/crates/cedar-policy-cli/cedar-policy-cli-4.13.0.crate
+          echo "a3d4735d77e5d6ab7e851e4a3ce4052b4a7a3e6a01ca14b57e98147bfa354df4  $RUNNER_TEMP/cedar-policy-cli.crate" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/cedar-policy-cli.crate" -C "$RUNNER_TEMP"
-          cargo install --locked --path "$RUNNER_TEMP/cedar-policy-cli-4.12.0"
+          cargo install --locked --path "$RUNNER_TEMP/cedar-policy-cli-4.13.0"
       - run: policy/cedar-lib/run_tests.sh
 
   python:
