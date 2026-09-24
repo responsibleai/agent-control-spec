@@ -1,0 +1,16 @@
+agent_control_specification_version: 0.4.0-alpha.1
+policies:
+  orders:
+    type: rego
+    bundle: ./policy/orders.rego
+    query: data.refund_orders.verdict
+intervention_points:
+  pre_tool_call:
+    policy_target: $.tool_call.args
+    tool_name_from: $.tool_call.name
+    policy:
+      id: orders
+tools:
+  issue_refund:
+    type: Tool
+    id: issue_refund

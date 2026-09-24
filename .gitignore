@@ -9,6 +9,11 @@ dist/
 bin/
 obj/
 
+# setuptools and pytest byproducts of a local `pip install ./generator`.
+*.egg-info/
+.pytest_cache/
+/generator/build/
+
 # Per-RID engine binaries staged for the .NET package (built, never committed).
 /sdk/dotnet/native/
 

@@ -2,6 +2,125 @@
 
 ## Unreleased
 
+- Replace archived `serde_yaml` and its transpiled libyaml dependency with
+  `serde-saphyr` (caret `1.2`, locked to `1.2.0`) and `granit-parser` `1.2.1`.
+  Building the engine requires Rust 1.89, now checked in CI. Regorus YAML
+  capabilities remain unchanged and may use a different YAML implementation.
+- YAML manifest parsing rejects duplicate keys, unsupported tags (including
+  non-specific `!`), non-finite numbers and positional sequences in place of
+  structs. YAML merge keys remain ordinary keys. Typed string fields and mapping
+  keys spelled like numbers, booleans or null must be quoted; an empty plain
+  value is null, not an empty string. Use `policy_target: ""` to leave an overlay
+  target unset. Legacy spellings such as `010`, `1_000`, `0X1F` and `tRuE` retain
+  their string types, including when used as keys. Numeric fields do not coerce
+  these strings or ordinary quoted strings.
+- Explicit core tags determine scalar types: `!!int "1"` is numeric and
+  `!!null ""` or an empty `!!null` block is null. An optional string set to an
+  explicitly tagged null is absent. Parsing unsigned `-0` yields zero (fields
+  requiring positive values still reject it at validation). A leading UTF-8 BOM
+  and tabs separating mapping colons from values are accepted. Unknown reserved
+  directives, space-then-tab indentation and tabs after sequence dashes are
+  accepted; a tab starting block indentation and embedded BOMs remain invalid.
+  `intervention_points: null` remains invalid, unlike an omitted or empty map.
+  Diagnostics retain field paths and
+  line/column locations without source snippets or parser-configuration advice.
+- Manifest source and expanded scalar bytes are bounded by
+  `Limits.max_merged_manifest_bytes` (1 MiB), also used for composed manifests.
+  Text-chain composition intentionally checks the serialized combined size:
+  individually admissible overlays can exceed the cap when merged.
+  Local YAML **and JSON** reads stop after this cap plus one byte. YAML budgets
+  default to depth 64 (formerly the old parser's fixed 128), 100,000 expanded
+  nodes including keys, 300,000 scanned/replayed events excluding comments, 50,000 aliases and
+  anchors, and 10,000 retained anchor event copies. Each is configurable through
+  a dedicated `max_manifest_*` limit; manifest depth is independent of
+  `max_policy_input_depth`. Every anchor retains at least one event, so the
+  retained-event budget limits default anchor definitions to at most 10,000,
+  even though the nominal anchor limit is 50,000.
+  Alias reuse is not limited by a ratio heuristic.
+  Exceeded budgets retain `runtime_error:resource_limit_exceeded`, not grammar
+  rejection, across Rust, Python, Node, FFI and .NET text validation, including
+  manifest and artifact diagnostics. Budget messages name the exceeded count
+  and limit field with at most one location, not parser debug variants or
+  repeated alias locations. Diagnostics omit unknown path segments and the
+  root placeholder without stripping punctuation from actual keys.
+  Python/Node parse, validate and merge exceptions consistently retain the
+  `runtime_error:manifest_invalid:` prefix; findings carry a separate code.
+- Specify manifest parsing among the activities that runtimes MUST bound;
+  engine limit fields and defaults remain documented implementation choices.
+- Fix the existing no-default-features build by making manifest Rego adapter
+  path validation available without enabling Rego or OPA dispatchers.
+- Add Rust `parse_yaml_str_with_limits`, `from_yaml_str_with_limits` and
+  `from_yaml_chain_with_limits`; Python/Node manifest tooling accepts optional
+  limits, FFI has additive `_with_limits` text functions, and .NET
+  `AcsManifest.Validate` and `AcsManifestTools.Parse`/`Merge` accept a limits dictionary. Existing no-options calls
+  use defaults. Rust `Limits` gains six fields; exhaustive struct literals must
+  supply them or use `..Limits::default()`. See [manifest parsing](docs/manifest-parsing.md) for contracts and
+  dependency evidence.
+- Add the optional `agent-control-spec-generator` package and `acs-policy-gen`
+  command, porting AGT's natural-language authoring flow. It writes draft
+  manifests, Rego and a review report without approving or activating policy.
+  Conditions retain the exact source accepted by the parser; model text is
+  escaped in reports and terminal output. Provider requests refuse redirects,
+  bypass proxies for loopback HTTP, and use bounded response reads. Credentials
+  come from the environment or a key file, not an argv value.
+- Add Python-only `agent_control_spec.authoring.parse_rego_ast` and
+  `REGORUS_AST_VERSION`, backed by the pinned Regorus parser with synchronous
+  input-complexity bounds. No OPA executable is required for authoring.
+- Prepare version `0.4.0-alpha.4` across runtime and generator metadata.
+  The generator requires SDK `0.4.0a4` and shares the version consistency check,
+  but remains outside the tag-driven publication workflow.
+- Require root and Python Cargo lockfiles to resolve the same Regorus version.
+  Generator iteration warnings cover wildcard and unbound-index lookups across
+  collections. Leading unary-minus condition bodies are rejected before they can
+  attach to a generated guard across a newline.
+- `CedarRequest.context` replaces `CedarRequest.context_keys` and holds
+  the Cedar JSON value the mapping produces. `CedarPolicyInvocation` drops
+  its never populated `query` field. A cedar policy that sets `query`, or
+  a cedar binding with any field other than `id`, now fails with
+  `runtime_error:manifest_invalid` instead of being ignored.
+- The bundled Cedar dispatcher evaluated every request with an empty
+  context, mapped every `Deny` to `no_matching_policy` and ignored
+  `@advice`. Every `has` guarded `forbid` in the shipped `policy/cedar-lib`
+  failed open, an unguarded read failed closed, a context-gated `permit`
+  never allowed, and the library's escalate, transform and warn permits
+  were plain allows. The dispatcher now builds the context from the
+  snapshot, `envelope` included, plus the annotations as one nested
+  `annotations` record; takes the deny reason from the `@id` of the first
+  contributing `forbid`; translates the `@advice` of every contributing
+  `permit`, the most restrictive winning; and fails closed on an
+  evaluation error in any policy. Specification 12.4 states the value
+  rules: a float becomes a `decimal`, a null record member drops, a null
+  set element fails closed, and a value Cedar cannot hold or a key its
+  JSON format reserves fails closed with a detail that names the key and
+  not the value. A schema now has to declare the context shape for each
+  action; the dispatcher builds the context without the schema and checks
+  it against the schema afterwards, so a schema cannot turn snapshot data
+  into an entity reference. Advice with a member outside
+  `cedar_advice.schema.json` fails closed with
+  `runtime_error:policy_output_invalid`. Closes #83.
+- A `cedar-lib` CI job runs the library's own Cedar test corpus with a
+  pinned, checksum-verified `cedar-policy-cli`.
+- Evidence over the AGENT-HOOKS-0.1 section 5.3 cap (10240 canonical
+  bytes) no longer fails the whole verdict closed with
+  `runtime_error:policy_output_invalid`. The runtime keeps the decision,
+  reason, message, transform, result labels and the dispatcher's warnings
+  as returned, keeps the artefact whole when it fits alone and drops it
+  otherwise, keeps verification pointers in RFC 8785 member order up to
+  the cap, and appends one `evidence_truncated` warning carrying the
+  original size, the cap, the artefact outcome, the kept and total pointer
+  counts and the sha256 of the full canonical evidence. The `decision` and
+  `intervention_point.transformed` telemetry events carry
+  `evidence_truncated: true` in their metadata when the marker is present,
+  since their pointer keys then name only the kept pointers. The runtime
+  owns that warning reason: a dispatcher warning that uses it fails closed. A
+  dispatcher warning whose reason starts with the reserved `runtime_error:`
+  or `host_error:` prefix fails closed too; section 18.1 forbids it and the
+  agent-hooks wire decoder rejects it, but the runtime used to pass it
+  through. Malformed evidence still fails closed, and an evidence member other than
+  `artefact` and `verification_pointers`, which the runtime used to drop
+  in silence, now fails closed too. The error detail for malformed
+  evidence names the failure class and no longer repeats the dispatcher's
+  pointer key. Closes #86.
 - Add configurable Rego policies and adoption recipes under `policy/packs/`,
   preserving existing policy libraries and examples. The recipes exercise
   database authorization, approved writes, persisted quotas, HTTP redirects
@@ -67,6 +186,12 @@
   `Python::attach`, unchanged.
 
 ## 0.4.0-alpha.3
+
+- Python interception is synchronous in this release. `AcsInterceptor`
+  holds the GIL during evaluation; `ActivatedPolicy.evaluate()` releases it.
+  The GIL-release fix listed under Unreleased and the async-interceptor
+  proposal [#68](https://github.com/responsibleai/agent-control-spec/pull/68)
+  are not included in this release.
 
 - Python `__version__` is read from the installed distribution instead of being
   written into `__init__.py`. The literal was a seventh version surface, covered

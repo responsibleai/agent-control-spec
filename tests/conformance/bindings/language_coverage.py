@@ -96,6 +96,7 @@ NOT_A_CAPABILITY = {
     "normalize_policy_output": "internal to verdict normalization",
     "runtime_error_verdict": "internal to verdict normalization",
     "translate_advice": "internal to Cedar dispatch",
+    "most_restrictive_advice": "internal to Cedar dispatch",
     "InterceptionPointExt": "Rust ergonomics on a foreign enum",
     "canonical_json": "agent-hooks owns identity and canonicalization",
     # Constants, readable from a verdict or a spec document.
@@ -105,6 +106,11 @@ NOT_A_CAPABILITY = {
     "VERDICT_INVALID_REASON": "constant, appears in a verdict",
     "reserved_reason": "constants, appear in a verdict",
 }
+
+# Binding-only authoring decision: Python's parse_rego_ast is tooling, not an
+# engine/wire capability. It needs a pinned Regorus AST layout and is consumed
+# by the Python generator. Other bindings do not expose it; adding an engine
+# authoring API later would require a normal capability entry below.
 
 # A capability is reachable when each binding names it or the entry
 # point that carries it. Matching by name alone would miss the cases

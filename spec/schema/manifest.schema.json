@@ -270,7 +270,7 @@
           "required": [
             "type"
           ],
-          "description": "AGT D3: cedar is a built-in policy type. Exactly one of policy_set or policy_path is required.",
+          "description": "AGT D3: cedar is a built-in policy type. Exactly one of policy_set or policy_path is required. The Cedar request mapping is fixed by SPECIFICATION.md 12.4, so query is rejected.",
           "properties": {
             "type": {
               "const": "cedar"
@@ -291,9 +291,7 @@
               "type": "string",
               "minLength": 1
             },
-            "query": {
-              "type": "object"
-            }
+            "query": false
           },
           "oneOf": [
             { "required": [ "policy_set" ], "not": { "required": [ "policy_path" ] } },

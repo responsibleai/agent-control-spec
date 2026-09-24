@@ -596,11 +596,15 @@ pub fn policy_intervention_points(handle: &External<PolicyHandle>) -> Vec<String
 /// on that split so it does not relabel boundary failures as grammar
 /// failures.
 #[napi]
-pub fn validate_manifest(source: Utf16String) -> napi::Result<Option<String>> {
+pub fn validate_manifest(
+    source: Utf16String,
+    limits_json: Option<Utf16String>,
+) -> napi::Result<Option<String>> {
     let source = decode("source", &source)?;
-    let manifest = match Manifest::parse_yaml_str(&source) {
+    let manifest = match Manifest::parse_yaml_str_with_limits(&source, parse_limits(limits_json)?) {
         Ok(m) => m,
-        Err(e) => return Ok(Some(format!("{e}"))),
+        Err(error @ RuntimeError::ManifestInvalid(_)) => return Ok(Some(format!("{error}"))),
+        Err(other) => return Err(err(format!("{other}"))),
     };
     if !manifest.extends.is_empty() {
         // Validation checks references across the merged document, so
@@ -621,9 +625,12 @@ pub fn validate_manifest(source: Utf16String) -> napi::Result<Option<String>> {
 /// The entry point for a manifest that inherits. Reads from disk and may
 /// fetch URL `extends`, exactly as loading a runtime would.
 #[napi]
-pub fn validate_manifest_file(path: Utf16String) -> napi::Result<Option<String>> {
+pub fn validate_manifest_file(
+    path: Utf16String,
+    limits_json: Option<Utf16String>,
+) -> napi::Result<Option<String>> {
     let path = decode("path", &path)?;
-    match Manifest::from_path(&path) {
+    match Manifest::from_path_with_limits(&path, parse_limits(limits_json)?) {
         Ok(_) => Ok(None),
         // Only a grammar rejection is returned as a rejection.
         // Everything else, including a breached resource limit and any
@@ -660,9 +667,13 @@ pub fn supported_manifest_versions() -> Vec<String> {
 /// `validate_manifest_detailed` to judge whether the fragment is
 /// runnable.
 #[napi]
-pub fn parse_manifest(source: Utf16String) -> napi::Result<String> {
+pub fn parse_manifest(
+    source: Utf16String,
+    limits_json: Option<Utf16String>,
+) -> napi::Result<String> {
     let source = decode("source", &source)?;
-    let manifest = Manifest::parse_yaml_str(&source).map_err(|e| err(format!("{e}")))?;
+    let manifest = Manifest::parse_yaml_str_with_limits(&source, parse_limits(limits_json)?)
+        .map_err(|e| err(format!("{e}")))?;
     serde_json::to_string(&manifest).map_err(|e| err(format!("manifest serialization failed: {e}")))
 }
 
@@ -672,7 +683,10 @@ pub fn parse_manifest(source: Utf16String) -> napi::Result<String> {
 /// This is the overlay case: a base policy plus deltas an environment
 /// layers on it, resolved the same way the engine resolves `extends`.
 #[napi]
-pub fn merge_manifests(sources_json: Utf16String) -> napi::Result<String> {
+pub fn merge_manifests(
+    sources_json: Utf16String,
+    limits_json: Option<Utf16String>,
+) -> napi::Result<String> {
     let raw = decode("sources_json", &sources_json)?;
     let sources: Vec<String> = serde_json::from_str(&raw).map_err(|e| {
         err(format!(
@@ -683,7 +697,8 @@ pub fn merge_manifests(sources_json: Utf16String) -> napi::Result<String> {
         return Err(err("sources_json must name at least one source".to_string()));
     }
     let borrowed: Vec<&str> = sources.iter().map(String::as_str).collect();
-    let manifest = Manifest::from_yaml_chain(&borrowed).map_err(|e| err(format!("{e}")))?;
+    let manifest = Manifest::from_yaml_chain_with_limits(&borrowed, parse_limits(limits_json)?)
+        .map_err(|e| err(format!("{e}")))?;
     serde_json::to_string(&manifest).map_err(|e| err(format!("manifest serialization failed: {e}")))
 }
 
@@ -696,9 +711,12 @@ pub fn merge_manifests(sources_json: Utf16String) -> napi::Result<String> {
 /// answers yes/no with a single message and cannot be rendered
 /// per-field.
 #[napi]
-pub fn validate_manifest_detailed(source: Utf16String) -> napi::Result<String> {
+pub fn validate_manifest_detailed(
+    source: Utf16String,
+    limits_json: Option<Utf16String>,
+) -> napi::Result<String> {
     let source = decode("source", &source)?;
-    let findings = match Manifest::parse_yaml_str(&source) {
+    let findings = match Manifest::parse_yaml_str_with_limits(&source, parse_limits(limits_json)?) {
         Ok(manifest) => {
             if !manifest.extends.is_empty() {
                 // A fragment cannot be judged against itself: its
@@ -714,11 +732,13 @@ pub fn validate_manifest_detailed(source: Utf16String) -> napi::Result<String> {
             } else {
                 match manifest.validate() {
                     Ok(()) => Vec::new(),
-                    Err(e) => vec![wire::diagnostic_json(&e)],
+                    Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+                    Err(other) => return Err(err(format!("{other}"))),
                 }
             }
         }
-        Err(e) => vec![wire::diagnostic_json(&e)],
+        Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+        Err(other) => return Err(err(format!("{other}"))),
     };
     serde_json::to_string(&findings)
         .map_err(|e| err(format!("diagnostics serialization failed: {e}")))
@@ -762,7 +782,8 @@ pub fn validate_artifacts_detailed(
     // is owned by the core so every binding renders artifact findings
     // the same way.
     let findings = match Manifest::from_yaml_str(&manifest_yaml) {
-        Err(e) => vec![wire::diagnostic_json(&e)],
+        Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+        Err(other) => return Err(err(format!("{other}"))),
         Ok(manifest) => match manifest.validate() {
             Err(e) => vec![wire::diagnostic_json(&e)],
             Ok(()) => match ActivatedPolicy::activate_from_memory(&manifest_yaml, bundles) {

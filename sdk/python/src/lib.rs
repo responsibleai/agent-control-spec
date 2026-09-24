@@ -534,11 +534,12 @@ create_exception!(
 /// bundled dispatchers and, for Rego, a loadable policy bundle. Fails
 /// closed with the engine's own error text.
 #[pyfunction]
-fn validate_manifest(source: &str) -> PyResult<()> {
+#[pyo3(signature = (source, limits=None))]
+fn validate_manifest(source: &str, limits: Option<Py<PyAny>>) -> PyResult<()> {
     // A dedicated type, so the wrapper never has to infer whether a
     // ValueError came from the grammar or from argument conversion.
-    let manifest =
-        Manifest::parse_yaml_str(source).map_err(|e| ManifestInvalid::new_err(format!("{e}")))?;
+    let manifest = Manifest::parse_yaml_str_with_limits(source, resolve_limits(limits)?)
+        .map_err(manifest_error)?;
     if !manifest.extends.is_empty() {
         // `validate` checks references across the merged document, so
         // judging this fragment alone would reject it for something its
@@ -554,20 +555,30 @@ fn validate_manifest(source: &str) -> PyResult<()> {
         .map_err(|e| ManifestInvalid::new_err(format!("{e}")))
 }
 
+fn manifest_error(error: RuntimeError) -> PyErr {
+    match error {
+        error @ RuntimeError::ManifestInvalid(_) => ManifestInvalid::new_err(format!("{error}")),
+        other => PyValueError::new_err(format!("{other}")),
+    }
+}
+
 /// Validate a manifest file, resolving `extends` first.
 ///
 /// This is the entry point for a manifest that inherits, and it reads
 /// from disk and may fetch URL `extends`, exactly as loading a runtime
 /// would.
 #[pyfunction]
-fn validate_manifest_file(path: &str) -> PyResult<()> {
-    Manifest::from_path(path).map(|_| ()).map_err(|e| match e {
-        // Only a grammar rejection is a verdict on the document.
-        // Everything else, including a breached resource limit and any
-        // variant added later, is a boundary problem.
-        RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
-        other => PyValueError::new_err(format!("{other}")),
-    })
+#[pyo3(signature = (path, limits=None))]
+fn validate_manifest_file(path: &str, limits: Option<Py<PyAny>>) -> PyResult<()> {
+    Manifest::from_path_with_limits(path, resolve_limits(limits)?)
+        .map(|_| ())
+        .map_err(|e| match e {
+            // Only a grammar rejection is a verdict on the document.
+            // Everything else, including a breached resource limit and any
+            // variant added later, is a boundary problem.
+            RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
+            other => PyValueError::new_err(format!("{other}")),
+        })
 }
 
 /// The manifest grammar versions this engine accepts.
@@ -590,9 +601,10 @@ fn supported_manifest_versions() -> Vec<String> {
 /// `validate_manifest` does, so a caller does not have to distinguish
 /// grammar failures by exception class.
 #[pyfunction]
-fn parse_manifest(source: &str) -> PyResult<String> {
-    let manifest =
-        Manifest::parse_yaml_str(source).map_err(|e| ManifestInvalid::new_err(format!("{e}")))?;
+#[pyo3(signature = (source, limits=None))]
+fn parse_manifest(source: &str, limits: Option<Py<PyAny>>) -> PyResult<String> {
+    let manifest = Manifest::parse_yaml_str_with_limits(source, resolve_limits(limits)?)
+        .map_err(manifest_error)?;
     serde_json::to_string(&manifest)
         .map_err(|e| PyRuntimeError::new_err(format!("manifest serialization failed: {e}")))
 }
@@ -608,12 +620,11 @@ fn parse_manifest(source: &str) -> PyResult<String> {
 /// Empty chains and chains whose entries do not parse raise
 /// `ManifestInvalid`.
 #[pyfunction]
-fn merge_manifests(sources: Vec<String>) -> PyResult<String> {
+#[pyo3(signature = (sources, limits=None))]
+fn merge_manifests(sources: Vec<String>, limits: Option<Py<PyAny>>) -> PyResult<String> {
     let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
-    let manifest = Manifest::from_yaml_chain(&refs).map_err(|e| match e {
-        RuntimeError::ManifestInvalid(detail) => ManifestInvalid::new_err(detail),
-        other => PyValueError::new_err(format!("{other}")),
-    })?;
+    let manifest = Manifest::from_yaml_chain_with_limits(&refs, resolve_limits(limits)?)
+        .map_err(manifest_error)?;
     serde_json::to_string(&manifest)
         .map_err(|e| PyRuntimeError::new_err(format!("merged manifest serialization failed: {e}")))
 }
@@ -631,31 +642,35 @@ fn merge_manifests(sources: Vec<String>) -> PyResult<String> {
 /// A manifest that uses `extends` returns a single diagnostic pointing
 /// the caller at file-based validation, matching `validate_manifest`.
 #[pyfunction]
-fn validate_manifest_diagnostics(source: &str) -> PyResult<String> {
-    let findings: Vec<Value> = match Manifest::parse_yaml_str(source) {
-        Ok(manifest) => {
-            if !manifest.extends.is_empty() {
-                let msg = "manifest extends other manifests; validation needs the merged \
+#[pyo3(signature = (source, limits=None))]
+fn validate_manifest_diagnostics(source: &str, limits: Option<Py<PyAny>>) -> PyResult<String> {
+    let findings: Vec<Value> =
+        match Manifest::parse_yaml_str_with_limits(source, resolve_limits(limits)?) {
+            Ok(manifest) => {
+                if !manifest.extends.is_empty() {
+                    let msg = "manifest extends other manifests; validation needs the merged \
                            document. Use validate_manifest_file or merge_manifests, both of \
                            which resolve the chain.";
-                vec![wire::diagnostic_json(&RuntimeError::ManifestInvalid(
-                    msg.to_string(),
-                ))]
-            } else {
-                match manifest.validate() {
-                    Ok(()) => Vec::new(),
-                    Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
-                    Err(other) => {
-                        return Err(PyValueError::new_err(format!("{other}")));
+                    vec![wire::diagnostic_json(&RuntimeError::ManifestInvalid(
+                        msg.to_string(),
+                    ))]
+                } else {
+                    match manifest.validate() {
+                        Ok(()) => Vec::new(),
+                        Err(e @ RuntimeError::ManifestInvalid(_)) => {
+                            vec![wire::diagnostic_json(&e)]
+                        }
+                        Err(other) => {
+                            return Err(PyValueError::new_err(format!("{other}")));
+                        }
                     }
                 }
             }
-        }
-        Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
-        Err(other) => {
-            return Err(PyValueError::new_err(format!("{other}")));
-        }
-    };
+            Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+            Err(other) => {
+                return Err(PyValueError::new_err(format!("{other}")));
+            }
+        };
     serde_json::to_string(&findings)
         .map_err(|e| PyRuntimeError::new_err(format!("diagnostics serialization failed: {e}")))
 }
@@ -694,7 +709,8 @@ fn validate_artifacts_diagnostics(manifest_yaml: &str, bundles_json: &str) -> Py
     // failure. The diagnostic shape is owned by the core so every
     // binding renders artifact findings the same way.
     let findings = match Manifest::from_yaml_str(manifest_yaml) {
-        Err(e) => vec![wire::diagnostic_json(&e)],
+        Err(e @ RuntimeError::ManifestInvalid(_)) => vec![wire::diagnostic_json(&e)],
+        Err(other) => return Err(PyValueError::new_err(format!("{other}"))),
         Ok(manifest) => match manifest.validate() {
             Err(e) => vec![wire::diagnostic_json(&e)],
             Ok(()) => match ActivatedPolicy::activate_from_memory(manifest_yaml, bundles) {
@@ -1103,6 +1119,98 @@ fn default_limits(py: Python<'_>) -> PyResult<Py<PyDict>> {
     Ok(limits_defaults_map(py)?.unbind())
 }
 
+/// Bound parser backtracking and AST depth before entering Regorus. In 0.12,
+/// nested array/comprehension alternatives can reparse the same text many times,
+/// and long reference chains are not covered by its expression-depth guard.
+fn check_authoring_complexity(source: &str) -> PyResult<()> {
+    let mut quote = None;
+    let mut escaped = false;
+    let mut comment = false;
+    let mut word = false;
+    let mut depth = 0_u32;
+    let mut operations = 0_u32;
+    let mut work = 0_u32;
+    for byte in source.bytes() {
+        // Charge literal/comment bytes too: backtracking may rescan them.
+        work += 1 << depth;
+        if work > 262_144 {
+            return Err(PyValueError::new_err(
+                "Rego authoring source exceeds parsing complexity budget",
+            ));
+        }
+        if comment {
+            comment = byte != b'\n';
+            continue;
+        }
+        if let Some(delimiter) = quote {
+            if escaped {
+                escaped = false;
+            } else if delimiter == b'"' && byte == b'\\' {
+                escaped = true;
+            } else if byte == delimiter {
+                quote = None;
+            }
+            continue;
+        }
+        let word_byte = byte.is_ascii_alphanumeric() || byte == b'_' || byte >= 0x80;
+        if word_byte && !word {
+            // Include identifiers/keywords: repeated `in` can also construct
+            // a deep AST without adding parentheses or punctuation.
+            operations += 1;
+        }
+        word = word_byte;
+        match byte {
+            b'#' => comment = true,
+            b'"' | b'`' => quote = Some(byte),
+            b'[' | b'{' | b'(' => {
+                depth += 1;
+                operations += 1;
+                if depth > 12 {
+                    return Err(PyValueError::new_err(
+                        "Rego authoring nesting exceeds 12 levels",
+                    ));
+                }
+            }
+            b']' | b'}' | b')' => depth = depth.saturating_sub(1),
+            b'.' | b'+' | b'-' | b'*' | b'/' | b'%' | b'&' | b'|' | b'!' | b'<' | b'>' | b'='
+            | b':' => operations += 1,
+            _ => {}
+        }
+        if operations > 1024 {
+            return Err(PyValueError::new_err(
+                "Rego authoring source exceeds 1024 structural tokens",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parse one source string without loading files, compiling, or evaluating it.
+/// The serialized AST is Regorus-version-specific, not part of the ACS wire contract.
+#[pyfunction]
+fn parse_rego_ast(py: Python<'_>, source: &str) -> PyResult<String> {
+    if source.len() > 65_536 {
+        return Err(PyValueError::new_err(
+            "Rego authoring source exceeds 65536 bytes",
+        ));
+    }
+    check_authoring_complexity(source)?;
+    let source = source.to_owned();
+    py.detach(move || {
+        let mut engine = regorus::Engine::new();
+        engine
+            .add_policy("authoring.rego".into(), source)
+            .map_err(|err| PyValueError::new_err(format!("invalid Rego source: {err}")))?;
+        let ast = engine
+            .get_ast_as_json()
+            .map_err(|err| PyRuntimeError::new_err(format!("AST serialization failed: {err}")))?;
+        if ast.len() > 8 * 1024 * 1024 {
+            return Err(PyValueError::new_err("Rego authoring AST exceeds 8 MiB"));
+        }
+        Ok(ast)
+    })
+}
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RuntimeHandle>()?;
@@ -1138,5 +1246,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse_manifest, m)?)?;
     m.add_function(wrap_pyfunction!(merge_manifests, m)?)?;
     m.add_function(wrap_pyfunction!(supported_manifest_versions, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_rego_ast, m)?)?;
+    m.add("REGORUS_AST_VERSION", "0.12.0")?;
     Ok(())
 }

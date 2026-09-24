@@ -1,0 +1,37 @@
+{
+  "$schema": "../cases.schema.json",
+  "id": "spec-13-evidence-cap.case-02",
+  "spec_section": "13.3",
+  "title": "evidence with an unknown member fails closed",
+  "claimable": true,
+  "operation": "evaluate",
+  "sdk_support": {
+    "rust": "required",
+    "python": "required",
+    "node": "required",
+    "dotnet": "optional"
+  },
+  "manifest_yaml": "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  p:\n    type: custom\n    adapter: fixture\nintervention_points:\n  input:\n    policy:\n      id: p\n    policy_target: $snap.input\n",
+  "intervention_point": "input",
+  "snapshot": {
+    "input": {
+      "text": "hello"
+    }
+  },
+  "policy_response": {
+    "decision": "allow",
+    "evidence": {
+      "artefact": "sha256:abababababababababababababababababababababababababababababababab",
+      "verification_pointers": {
+        "ptr_000": "https://example.com/pointers/000"
+      },
+      "issuer": "https://example.com/issuer"
+    }
+  },
+  "expected": {
+    "decision": "deny",
+    "reason": "runtime_error:policy_output_invalid",
+    "transformed_policy_target": null,
+    "warnings": "absent"
+  }
+}

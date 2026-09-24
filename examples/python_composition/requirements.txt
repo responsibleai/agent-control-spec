@@ -1,0 +1,3 @@
+# Published-package baseline for the documentation tests.
+# Advance only after the new release is available on PyPI; see RELEASING.md.
+agent-control-spec==0.4.0a3
