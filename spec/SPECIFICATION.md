@@ -1,6 +1,6 @@
 # Agent Control Specification
 
-This document specifies version `0.4.0-alpha.1` of the Agent Control Specification (ACS). Its status is Draft.
+This document specifies version `0.5.0-alpha.1` of the Agent Control Specification (ACS). Its status is Draft. Legacy manifest contract `0.4.0-alpha.1` remains supported as described in section 2.1.
 
 The machine readable manifest contract is `schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository. That schema governs manifest syntax. This document governs runtime semantics, which are the evaluation order, the policy input shape, verdict handling, transform application, and fail closed behavior.
 
@@ -52,7 +52,7 @@ A manifest is a single YAML or JSON document. The schema rejects unknown top lev
 
 | Property | Required | Meaning |
 | --- | --- | --- |
-| `agent_control_specification_version` | yes | Non empty version string. |
+| `agent_control_specification_version` | yes | Supported manifest contract version, as defined in section 2.1. |
 | `metadata` | no | Free form value the runtime does not interpret. |
 | `extends` | no | Ordered array of parent manifest paths or HTTPS URLs, defined in section 2.2. |
 | `policies` | yes | Map of named policy definitions, defined in section 12. |
@@ -67,15 +67,27 @@ A manifest MUST be validated before any evaluation uses it. A manifest that fail
 
 ### 2.1 Version
 
-`agent_control_specification_version` MUST be a non empty string. This document describes the value `0.4.0-alpha.1`.
+`agent_control_specification_version` MUST be a non empty string. This document describes `0.5.0-alpha.1`, which opts into the `needs` dependency contract in section 10.1. When validating and comparing version strings, strip surrounding characters with the Unicode `White_Space` property: U+0009 through U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000 through U+200A, U+2028, U+2029, U+202F, U+205F, and U+3000. U+FEFF is not in this set. A runtime MUST reject an unsupported version with `runtime_error:manifest_invalid`; the manifest schema also rejects unsupported versions.
+
+Legacy `0.4.0-alpha.1` remains supported with its original semantics: `needs` is an arbitrary host-defined JSON extension passed to the dispatcher, annotators run in ascending lexicographic name order, each receives an empty `annotations` object, and `from` paths at or below `$pi.annotations` are forbidden. The runtime MUST NOT interpret legacy `needs` as dependencies. Bare `$pi` remains allowed and resolves to the preliminary policy input. Other semantics remain unchanged unless this document explicitly states otherwise.
+
+To migrate, first rename any host-specific `needs` setting in declarations or bindings and update the dispatcher that reads it. Then change the version on the root and every parent in the `extends` chain to `0.5.0-alpha.1` atomically, and declare dependencies on point bindings. Every document in the chain MUST share the same version. Adding dependency-shaped `needs` to a `0.4.0-alpha.1` manifest does not opt in: an old engine would treat it as extension data. The new version lets old engines reject the manifest rather than silently ignore its dependencies.
+
+Reserving `needs` is a breaking contract change permitted between minor versions during alpha under section 22. The manifest contract identifier is independent of SDK package versions.
 
 ### 2.2 extends
 
 `extends` is an ordered array of non empty parent references. A reference MAY be a string path, a string HTTPS URL, or an object with `url` and optional `integrity` or `sha256`. Existing string path entries remain valid. A file based loader resolves path entries relative to the including manifest and confines them to the directory tree rooted at the top level manifest. A file based loader resolves URL entries as HTTPS only, fetches them without ambient credentials, applies finite timeout, body size, and redirect limits, merges parents before children, and validates the merged manifest as a whole. Plain `http` and all non HTTPS URL schemes MUST fail closed. A manifest that folded in any fetched document, pinned or not, is URL sourced. A pin vouches for the fetched bytes, not for host secrets or host files. A fetched document MUST NOT name a host environment variable field (`api_key_env`, `aws_access_key_id_env`, `aws_secret_access_key_env`, `aws_session_token_env`), a host filesystem path field (`bundle`, `data`, `data_paths`, `policy_path`, `entities_path`, `schema_path`), a rego query that is not a plain rule path, or an `approval` section; a loader MUST fail closed with `runtime_error:manifest_invalid`. A fetched document MAY name a rego `bundle_url` or annotator `system_prompt_url` only when every URL hop from the root manifest to it carries a pin. A URL sourced manifest MUST NOT name a host environment variable field anywhere in the merged document. Annotation binding fields overlay the annotator declaration at dispatch, so in a URL sourced manifest a binding a fetched document supplies for an annotator it does not itself declare MUST carry only `from`, and a binding the host supplies for an annotator a fetched document declares MUST NOT carry an inline credential field (`api_key`, `headers`, `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`); a loader MUST fail closed with `runtime_error:manifest_invalid`. A declaration or binding that a host document and a fetched document both carry, identically, is the host's. URL entries with `integrity` MUST use `sha256-<base64>` over the fetched bytes. URL entries with `sha256` MUST use a 64 character hexadecimal SHA-256 digest over the fetched bytes. A mismatch MUST fail closed. `integrity` and `sha256` MUST NOT appear together.
 
+In `0.5.0-alpha.1`, `needs` is a binding field, so the existing `from`-only restriction also forbids it on fetched bindings for host-declared annotators. A binding for a fetched-declared annotator MUST NOT name a host-declared upstream in `needs`, regardless of who supplied the binding; violation MUST fail closed with `runtime_error:manifest_invalid`. These dependency rules do not reinterpret legacy host-defined `needs` values.
+
+All fetched documents belong to one trust class for dependency checks, whether pinned or unpinned and regardless of URL origin. Dependencies between their annotators are allowed. A pin verifies document bytes; it does not establish a separate dependency trust boundary.
+
 Merging is additive. A name defined in more than one manifest MUST be either identical in every manifest or non conflicting. Metadata object keys are merged additively, with nested object keys merged recursively when duplicate object values are non conflicting. For an intervention point, only its `annotations` may differ and are unioned. A conflicting duplicate definition MUST fail closed. Loading MUST also fail closed on a reference cycle, a missing file, a failed URL fetch, a URL body limit breach, or a version that differs between a parent and a child. A construction time load failure MAY surface by refusing to construct the runtime because no runtime exists yet to return an intervention verdict. A loader that parses an in memory string, including every FFI loader, cannot resolve `extends` against the file system or network. It may retain `extends` as data, but constructing an enforcing runtime from a manifest whose `extends` is non empty MUST fail closed, so such loaders MUST be given an already merged manifest.
 
 An AGT host MAY pre-resolve `extends` host side before it constructs the runtime. The host side resolution algorithm, including its cycle, path traversal, governance validation, and merge conflict failures, is defined in [`spec/agt/AGT-RESOLUTION-1.0.md`](agt/AGT-RESOLUTION-1.0.md) and surfaces the `runtime_error:resolution_path_traversal`, `runtime_error:resolution_cycle`, `runtime_error:resolution_invalid_governance`, and `runtime_error:resolution_merge_conflict` reasons defined in section 16. The runtime itself receives an already merged manifest as required above. A host that pre-resolves extends hands the runtime a manifest the runtime treats as host authored; the host bears the provenance duty for content it fetched.
+
+Repeated bindings for the same annotation at the same intervention point MUST be structurally identical. Adding, removing, or reordering `needs` entries is a merge conflict, as is adding an empty `needs` array to a binding that omitted it. The loader does not union dependency lists.
 
 ## 3. Paths
 
@@ -99,10 +111,12 @@ A required path that does not resolve MUST fail closed with `runtime_error:path_
 | --- | --- |
 | `policy_target` | `$snap`, `$`, `$.name` |
 | `tool_name_from` | `$snap`, `$`, `$.name` |
-| annotation `from` | `$pi` excluding `$pi.annotations`, `$target`, `$tool`, `$snap`, `$`, `$.name` |
+| annotation `from` | `$pi`, `$target`, `$tool`, `$snap`, `$`, `$.name`; reads at or below `$pi.annotations` follow the version rules below |
 | `transform` `path` | `$target` |
 
-A manifest path that uses a root outside its allowed set MUST fail closed with `runtime_error:manifest_invalid`. A `transform` path outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. An annotation `from` path that reads `$pi.annotations` MUST fail closed with `runtime_error:manifest_invalid`, because annotator outputs do not exist when annotator inputs are resolved.
+A manifest path that uses a root outside its allowed set MUST fail closed with `runtime_error:manifest_invalid`. A `transform` path outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`.
+
+In `0.5.0-alpha.1`, an annotation `from` MAY read `$pi.annotations.<name>` or a value beneath it only when the binding names that annotation in its direct `needs`. An undeclared annotation read or bare `$pi.annotations` MUST fail closed with `runtime_error:manifest_invalid`. Bare `$pi` is allowed and resolves to the staged policy input, including its dependency outputs. These are path validation rules, not access-control redaction. In `0.4.0-alpha.1`, any `from` at or below `$pi.annotations` remains forbidden.
 
 ## 4. Intervention points
 
@@ -139,7 +153,7 @@ For a request that carries an intervention point and a snapshot, the runtime MUS
 2. Resolve `policy_target` against the snapshot to obtain the policy target value.
 3. At a tool intervention point, resolve `tool_name_from` and project that tool from the catalog per section 9. At a non tool point the projected tool is `null`.
 4. Build the preliminary policy input with an empty annotations object.
-5. Collect annotations per section 10.
+5. Collect annotations per section 10: use dependency order for `0.5.0-alpha.1` and ascending lexicographic name order for `0.4.0-alpha.1`.
 6. Build the final policy input with annotator outputs placed under `annotations`.
 7. Resolve the bound policy, prepare a typed invocation, and call the policy dispatcher per section 12.
 8. Normalize the dispatcher output into a verdict per section 13.
@@ -149,7 +163,7 @@ Annotation collection completes before the policy dispatcher is called. Transfor
 
 ## 7. Policy input
 
-The runtime builds one canonical policy input object. The preliminary form is the argument to each annotator. The final form is the argument to the policy dispatcher. The object has exactly five members.
+The runtime builds one canonical policy input object. Every legacy `0.4.0-alpha.1` annotator receives the preliminary form. In `0.5.0-alpha.1`, each annotator receives a staged form whose `annotations` contains only its direct dependency outputs, or is empty when it has no dependencies, per section 10.1. The final form is the argument to the policy dispatcher. The object has exactly five members.
 
 ```json
 {
@@ -165,7 +179,7 @@ The runtime builds one canonical policy input object. The preliminary form is th
 }
 ```
 
-`intervention_point` is the name of the current intervention point. `policy_target.kind` is the configured `policy_target_kind` or `null`. `policy_target.path` is the configured `policy_target`. `policy_target.value` is the resolved policy target value. `snapshot` is the full raw snapshot. `annotations` is an empty object in the preliminary form and holds annotator outputs keyed by annotator name in the final form. `tool` is the projected tool object or `null`.
+`intervention_point` is the name of the current intervention point. `policy_target.kind` is the configured `policy_target_kind` or `null`. `policy_target.path` is the configured `policy_target`. `policy_target.value` is the resolved policy target value. `snapshot` is the full raw snapshot in every form. `annotations` is empty in the preliminary form, holds the full outputs of direct dependencies in the `0.5.0-alpha.1` staged form, and holds every annotator output keyed by annotator name in the final form. `tool` is the projected tool object or `null`.
 
 The policy input MUST contain exactly the members `intervention_point`, `policy_target`, `snapshot`, `annotations`, and `tool`. It MUST NOT contain a `request`, `resource`, or `tools` member.
 
@@ -183,13 +197,66 @@ Tool call snapshots MAY carry `tool_call.id` as a caller supplied invocation ide
 
 ## 10. Annotators
 
-A top level `annotators` entry is a declaration whose `type` is `classifier`, `llm`, or `endpoint` and which MAY carry other host defined fields. A declaration does no work on its own.
+A top level `annotators` entry is a declaration whose `type` is `classifier`, `llm`, or `endpoint` and which MAY carry other host defined fields. A declaration does no work on its own. In `0.5.0-alpha.1`, a top level declaration MUST NOT define `needs`; dependencies belong only to intervention point bindings.
 
-An intervention point opts into an annotator by adding a member to `annotations` whose key is the annotator name. The key MUST name a declared annotator, and the member MUST carry a non empty `from` path. The runtime resolves each `from` path against the preliminary policy input and snapshot, then calls the host annotator dispatcher, which owns the network request, the classifier or judge call, caching, retries, and timeouts.
+An intervention point opts into an annotator by adding a member to `annotations` whose key is the annotator name. The key MUST name a declared annotator, and the member MUST carry a non empty `from` path. In `0.5.0-alpha.1`, the binding MAY carry a `needs` array naming its dependencies. The runtime resolves each `from` path against that annotation's policy input and the snapshot, then calls the host annotator dispatcher, which owns the network request, the classifier or judge call, caching, retries, and timeouts.
 
-The runtime invokes the opted in annotators in ascending lexicographic order of annotator name. It places each output only under `annotations.<name>`. Annotator output MUST NOT overwrite or shadow `snapshot`, `policy_target`, `tool`, `intervention_point`, or any other root policy input member. An annotator output that is oversized, malformed, or contains a `reason` value with the reserved `runtime_error:` prefix MUST fail closed with `runtime_error:annotation_failed`. An annotator error MUST fail closed with `runtime_error:annotation_failed`. An annotator timeout MUST fail closed with `runtime_error:annotation_timeout`.
+### 10.1 Dependencies
+
+This section applies only to `0.5.0-alpha.1`. `needs`, when present, MUST be an array of non empty strings. Every name MUST be an annotation bound at the same intervention point, MUST NOT name the binding itself, and MUST NOT repeat. Invalid types, unknown names, self dependencies, duplicate entries, cycles, and `needs` on a top level annotator declaration MUST fail closed with `runtime_error:manifest_invalid` during manifest validation, before any dispatch. An omitted or empty `needs` means no dependencies.
+
+The runtime MUST use Kahn's topological ordering, choosing the lexicographically smallest ready annotation after every successful completion. An annotation is ready when all its dependencies have completed. The runtime MUST reconsider the ready set after each completion rather than dispatching a whole layer at once. Document order has no effect, and a dependency MAY appear later in the document. With no dependencies, this produces ascending lexicographic name order.
+
+Each annotator's staged `annotations` object MUST contain the full raw outputs of its direct dependencies, keyed by name. It MUST NOT include transitive dependencies or unrelated completed annotations unless the binding also names them directly. The full snapshot and the other policy input members remain available. `from` selects the invocation's input value; it does not redact the dependency outputs or the snapshot supplied to the dispatcher. A dispatcher receives policy input by value or as an immutable reference, so mutations MUST NOT change recorded outputs or another annotator's input.
+
+On a successful graph evaluation, the runtime MUST dispatch every bound annotator exactly once. Two consumers of the same dependency read the same recorded result. On failure, dispatch stops at the first error; no remaining annotator or policy runs.
+
+A `from` path that selects a present `null` value yields `null` and dispatches normally. A missing member fails closed with `runtime_error:path_missing`; an incompatible path segment retains `runtime_error:path_type_mismatch`. The runtime MUST NOT dispatch a consumer whose input path fails to resolve.
+
+This example uses local host stubs, with no network calls or real services. The host supplies an annotator dispatcher keyed by name: `source` returns `{"value": 1}`, `derived` adds one to its selected input and returns `{"value": 2}`, and `summary` returns `{"total": 3}` by summing both dependency values. A custom policy dispatcher for `local-check` returns `{"decision": "allow"}` when `annotations.summary.total` is `3`, and `{"decision": "deny"}` otherwise. These stubs do not use the bundled `llm` dispatcher.
+
+```yaml
+agent_control_specification_version: 0.5.0-alpha.1
+policies:
+  gate:
+    type: custom
+    adapter: local-check
+intervention_points:
+  input:
+    policy_target: $snap.input
+    policy:
+      id: gate
+    annotations:
+      summary:
+        needs: [source, derived]
+        from: $target
+      source:
+        from: $target
+      derived:
+        needs: [source]
+        from: $pi.annotations.source.value
+annotators:
+  source:
+    type: classifier
+  derived:
+    type: classifier
+  summary:
+    type: classifier
+```
+
+For snapshot `{"input": "hello"}`, dispatch order is `source`, `derived`, `summary`. Their staged `annotations` objects contain no entries, `source` only, and both `source` and `derived`, respectively. All three dispatches retain the full snapshot. The policy receives all three outputs and returns `allow`.
+
+### 10.2 Annotator output
+
+The runtime places each output only under `annotations.<name>`. Annotator output MUST NOT overwrite or shadow `snapshot`, `policy_target`, `tool`, `intervention_point`, or any other root policy input member. An annotator output that is oversized, malformed, or contains a `reason` value with the reserved `runtime_error:` prefix MUST fail closed with `runtime_error:annotation_failed`. An annotator error MUST fail closed with `runtime_error:annotation_failed`. An annotator timeout MUST fail closed with `runtime_error:annotation_timeout`.
+
+An annotator failure ends the evaluation with a `deny` verdict carrying the matching reserved reason. No remaining annotator runs, whether dependent or independent.
+
+### 10.3 Host dispatchers
 
 ACS defines no built in classifier or judge engine. Annotator execution is always host provided.
+
+For `0.5.0-alpha.1`, the runtime consumes the binding's `needs` list and MUST omit it from dispatcher invocation fields. Dispatchers receive staged policy input as defined in section 10.1. Under `0.4.0-alpha.1`, `needs` remains a host-defined invocation field and each dispatcher receives the preliminary policy input.
 
 An implementation MAY ship host side default annotator dispatchers. A default `llm` dispatcher MAY provide provider presets for OpenAI compatible chat completions, Azure OpenAI chat completions, Amazon Bedrock Converse, Gemini `generateContent`, and Ollama chat. These presets MUST preserve runtime determinism by keeping network input and output outside pure decision logic. Provider credentials MUST come from explicit manifest fields or named environment variables. For a URL sourced manifest a default dispatcher MUST NOT read any host environment variable, named or provider default, and MUST fail closed as an annotator error. Provider responses MUST be normalized to a JSON annotation before policy execution. A malformed provider response, provider error, missing credential, missing label field, or invalid model JSON MUST fail closed as an annotator error. The normalized shape SHOULD include `label` and `raw` members, and a host MAY preserve a configurable `label_field` for model JSON.
 
@@ -350,11 +417,17 @@ A `transform` whose `path` is rooted outside `$target` MUST fail closed with `ru
 
 In `enforce` mode the runtime applies the transform and the result is the transformed policy target. In `evaluate_only` mode the runtime validates the transform but applies none and returns no transformed policy target.
 
-`transform` is the only form of value rewriting a verdict can request. A host that needs multi step rewriting at one intervention point expresses it by chaining intervention points, for example an annotator at `pre_model_call` produces sanitized text under `annotations.<name>` and the bound policy reads from that annotation.
+`transform` is the only form of value rewriting a verdict can request. A host that needs multi step rewriting at one intervention point expresses it by chaining intervention points, for example an annotator at `pre_model_call` produces sanitized text under `annotations.<name>` and the bound policy reads from that annotation. With `0.5.0-alpha.1`, annotator `needs` supports multi step derivation within one evaluation before policy dispatch; it does not rewrite the policy target or snapshot.
 
 ## 15. Resource limits
 
 A runtime MUST enforce finite limits while parsing a manifest document, loading file based manifest extends, fetching HTTPS manifest extends, building policy input, serializing policy input, invoking annotators, normalizing policy output, and validating or applying a transform. A host MAY configure those limits. Policy output is measured as canonical JSON before verdict normalization. A transformed policy target produced by an applied transform MUST be reinserted into the request snapshot for snapshot limit validation before the runtime returns it to the host. A limit breach MUST fail closed with `runtime_error:resource_limit_exceeded`, except an individual annotator output limit breach MUST fail closed with `runtime_error:annotation_failed`.
+
+For `0.5.0-alpha.1`, the annotator count limit bounds the whole graph, including its dispatch count and longest dependency chain. The runtime MUST check the nesting depth of preliminary and staged policy input before dispatch, including dependency outputs nested under `annotations`. Policy input validation checks nesting depth, not aggregate byte length; serialization adds no aggregate byte-cap check. Snapshot limits, per-annotator output limits, and the annotator count limit bound the payload values carried into each dispatch.
+
+Size these limits together. With annotator count limit N, per-output byte cap O, and snapshot byte cap S, a consumer can receive up to `(N - 1) * O + 2 * S` bytes of dependency and snapshot-derived values. The snapshot may also appear under `policy_target.value`. Add projected-tool data, manifest-derived names and metadata, and JSON framing to estimate serialized input size. The final policy input can contain N outputs. These formulas describe derived payload bounds, not an aggregate byte-cap check.
+
+Annotators run sequentially on the calling thread. If the host enforces a per-dispatch timeout T, budget up to `N * T`, plus policy execution and engine processing time, for one evaluation. Without host-enforced timeouts there is no finite evaluation-time guarantee. An `annotation_timeout` error reports a timeout detected by the host; the runtime does not interrupt a synchronous dispatcher.
 
 ## 16. Reserved reasons
 
@@ -480,6 +553,10 @@ This profile evaluates `input` and `post_model_call`. Section 18 keeps `output` 
 
 A host MAY supply a telemetry sink. Events are content safe and stable. Known event kinds are `decision`, `annotator_dispatch`, `policy_evaluation`, `evaluation_timing`, `intervention_point.transformed`, `annotator_failed`, and `policy_failed`. The runtime emits `intervention_point.transformed` in addition to `decision` whenever the verdict is `transform`. An event carries stable metadata such as the intervention point, enforcement mode, decision, reason code, error class, policy id, annotator names, duration, and whether a transform was applied. When a verdict carries `evidence` the event MAY include the `evidence_artefact` and the key names of `verification_pointers` recorded as `evidence_verification_pointer_keys`, and it MUST NOT include the pointer URL values. A runtime MAY include the `input_identity` and `enforced_identity` from section 13 as correlation identifiers. The runtime MUST NOT emit policy target values, tool arguments or results, annotation values, model messages, secrets, or personal data.
 
+For `0.5.0-alpha.1`, an `annotator_dispatch` or `annotator_failed` event identifies the annotation being dispatched. When it has dependencies, the event SHOULD include `metadata.annotation_needs` as a JSON-encoded array string, for example `"[\"source\",\"derived\"]"`, not a comma-delimited list. This metadata contains dependency names only, never output payloads. Legacy host-defined `needs` values MUST NOT be emitted as dependency metadata.
+
+The default telemetry level emits no `annotator_dispatch` events. A successful evaluation's decision event lists configured annotators in name order, not execution order, and contains no dependency edges. Retain the manifest used for the evaluation to reconstruct its graph; enable external telemetry to observe individual dispatches. Failure events still identify the failing annotation and its declared dependencies. Telemetry does not record `from` paths or selected values.
+
 A host MAY derive an audit record from each evaluation. The action identities defined in section 13, the `input_identity` and `enforced_identity` `sha256:` digests of the canonical policy input, are the stable keys that tie an audit record to the exact intervention point, policy target, snapshot, annotations, and projected tool data the policy evaluated. An audit record SHOULD record the intervention point, the mode, the verdict, the reason, the error class for runtime errors, and the action identities when available. It MUST follow the same redaction rule as telemetry so that it carries no sensitive value.
 
 The telemetry and audit contract is transport neutral. ACS ships an OpenTelemetry binding in the `agent_control_specification_otel` integration crate that maps these events to OpenTelemetry counters and histograms, described in [`docs/observability.md`](../docs/observability.md). That binding is one supported integration and is not required for conformance. A host MAY route the same events to any sink it chooses.
@@ -502,7 +579,7 @@ ACS is fail closed by design. Any error during evaluation yields a `deny` verdic
 
 The runtime trusts the snapshot the host supplies. It does not authenticate the snapshot or verify that its contents reflect the real agent state. A host MUST assemble the snapshot from trusted sources and MUST treat snapshot assembly as part of its trusted computing base.
 
-Annotations are untrusted signal. An annotator observes potentially adversarial content such as a user prompt or a tool result. A policy MUST treat annotation values as data and MUST NOT let them widen authority. A failed annotator fails closed, so an annotator failure cannot silently allow an action.
+Annotations are untrusted signal. An annotator observes potentially adversarial content such as a user prompt or a tool result. A policy MUST treat annotation values as data and MUST NOT let them widen authority. A failed annotator fails closed, so an annotator failure cannot silently allow an action. A dispatcher MUST also treat dependency outputs as untrusted data. In `0.5.0-alpha.1`, `needs` controls ordering and which outputs populate staged `annotations`; it is not a sandbox. Dispatchers still receive the full snapshot and full outputs of named dependencies, and execute with host trust. Selecting a subfield with `from` does not restrict access to those values.
 
 A `transform` verdict is bounded to the policy target. The runtime applies a transform only within `$target` and rejects any `transform` path rooted outside it, so a policy cannot use a transform to reach the snapshot, the projected tool, or host state.
 

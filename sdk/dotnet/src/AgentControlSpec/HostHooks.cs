@@ -47,8 +47,18 @@ public sealed record ManifestDiagnostic(
 /// Classifies one annotation on the host's behalf.
 /// </summary>
 /// <param name="annotatorName">The annotator the manifest bound.</param>
-/// <param name="invocationJson">The binding's configured fields.</param>
-/// <param name="policyInputJson">The policy input built so far.</param>
+/// <param name="invocationJson">
+/// The invocation fields. The engine removes <c>needs</c> for manifest
+/// contract <c>0.5.0-alpha.1</c>; legacy <c>0.4.0-alpha.1</c> passes it
+/// through as an arbitrary host-defined JSON extension.
+/// </param>
+/// <param name="policyInputJson">
+/// With manifest contract <c>0.5.0-alpha.1</c>, <c>annotations</c> holds
+/// the full outputs of direct <c>needs</c> dependencies only, or is empty
+/// when there are none. The full snapshot remains available; <c>from</c>
+/// selects a value without redacting the dispatcher input. With legacy
+/// <c>0.4.0-alpha.1</c>, annotations is always empty and dispatch is lexical.
+/// </param>
 /// <returns>The annotation value as JSON.</returns>
 /// <remarks>
 /// Throwing fails the evaluation closed. An annotation that could not be

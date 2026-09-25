@@ -23,6 +23,7 @@ drift:
 * a fail-closed deny, which every binding must surface as a verdict
   rather than as an exception
 * a rejected manifest, which must fail rather than return
+* versioned dependencies and legacy host fields driving policy decisions
 
 Run it from the repository root. Every language builds from this
 checkout, so it answers for the code under review rather than for
@@ -42,6 +43,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 MANIFEST = Path(__file__).resolve().parent / "manifest.yaml"
 HOOKS_MANIFEST = Path(__file__).resolve().parent / "host-hooks-manifest.yaml"
+DEPENDENCIES_MANIFEST = Path(__file__).resolve().parent / "dependencies-manifest.yaml"
+DEPENDENCY_VERSION = "0.5.0-alpha.1"
+LEGACY_VERSION = "0.4.0-alpha.1"
 
 # "hi" plus one astral-plane scalar: 3 runes, 4 UTF-16 code units.
 TEXT = "hi\U0001f600"
@@ -81,6 +85,8 @@ BAD_BUNDLES = {"gate": {"modules": {"p.rego": "package acs\nthis is not rego ***
 EXPECTED = {
     # Manifest surface
     "supported_versions_nonempty": True,
+    "supports_dependency_version": True,
+    "supports_legacy_version": True,
     "validate_good": "ok",
     "validate_bad": "rejected",
     # Interceptor surface
@@ -142,6 +148,53 @@ EXPECTED = {
     "limits_default_decision": "allow",
     "limits_capped_decision": "deny",
     "limits_capped_reason": "runtime_error:resource_limit_exceeded",
+    "dependency_new_blocked": {
+        "calls": [
+            {
+                "name": "source", "from": "$target", "input": {"blocked": True},
+                "annotations": {}, "needs_present": False, "needs": None,
+            },
+            {
+                "name": "judge", "from": "$target", "input": {"blocked": True},
+                "annotations": {"source": {"blocked": True}},
+                "needs_present": False, "needs": None,
+            },
+        ],
+        "judge": {"blocked": True, "basis": "source_blocked"},
+        "decision": "deny",
+        "reason": "source_blocked",
+    },
+    "dependency_new_clear": {
+        "calls": [
+            {
+                "name": "source", "from": "$target", "input": {"blocked": False},
+                "annotations": {}, "needs_present": False, "needs": None,
+            },
+            {
+                "name": "judge", "from": "$target", "input": {"blocked": False},
+                "annotations": {"source": {"blocked": False}},
+                "needs_present": False, "needs": None,
+            },
+        ],
+        "judge": {"blocked": False, "basis": "clear"},
+        "decision": "allow",
+        "reason": "clear",
+    },
+    "dependency_legacy": {
+        "calls": [
+            {
+                "name": "judge", "from": "$target", "input": {"blocked": False},
+                "annotations": {}, "needs_present": True, "needs": ["source"],
+            },
+            {
+                "name": "source", "from": "$target", "input": {"blocked": False},
+                "annotations": {}, "needs_present": False, "needs": None,
+            },
+        ],
+        "judge": {"blocked": True, "basis": "legacy_needs"},
+        "decision": "deny",
+        "reason": "legacy_needs",
+    },
 }
 
 # Larger than the capped bound below, smaller than the default one.
@@ -208,10 +261,101 @@ fn hook(
     )
 }
 
+struct DependencyAnnotator {
+    calls: std::sync::Mutex<Vec<serde_json::Value>>,
+}
+
+impl agent_control_spec::AnnotatorDispatcher for DependencyAnnotator {
+    fn dispatch(
+        &self,
+        name: &str,
+        invocation: &agent_control_spec::AnnotatorInvocation,
+        input: &serde_json::Value,
+    ) -> Result<serde_json::Value, agent_control_spec::RuntimeError> {
+        let annotations = &input["annotations"];
+        let target = &input["policy_target"]["value"];
+        let needs = invocation.field("needs");
+        self.calls.lock().expect("calls").push(serde_json::json!({
+            "name": name,
+            "from": invocation.input_from(),
+            "input": target,
+            "annotations": annotations,
+            "needs_present": needs.is_some(),
+            "needs": needs,
+        }));
+        match name {
+            "source" => Ok(serde_json::json!({ "blocked": target["blocked"] })),
+            "judge" => {
+                let source_blocked = annotations.get("source")
+                    .map(|source| source["blocked"].as_bool().expect("source blocked"))
+                    .unwrap_or(false);
+                let basis = if needs.is_some() { "legacy_needs" }
+                    else if source_blocked { "source_blocked" } else { "clear" };
+                Ok(serde_json::json!({
+                    "blocked": needs.is_some() || source_blocked,
+                    "basis": basis,
+                }))
+            }
+            _ => Err(agent_control_spec::RuntimeError::AnnotationFailed(
+                format!("unexpected annotator: {name}"),
+            )),
+        }
+    }
+}
+
+struct DependencyPolicy {
+    judge: std::sync::Mutex<Option<serde_json::Value>>,
+}
+
+impl agent_control_spec::PolicyDispatcher for DependencyPolicy {
+    fn evaluate(
+        &self,
+        invocation: &agent_control_spec::PreparedPolicyInvocation,
+    ) -> Result<serde_json::Value, agent_control_spec::RuntimeError> {
+        let judge = &invocation.policy_input().expect("policy input")["annotations"]["judge"];
+        *self.judge.lock().expect("judge") = Some(judge.clone());
+        Ok(serde_json::json!({
+            "decision": if judge["blocked"].as_bool().expect("judge blocked") {
+                "deny"
+            } else {
+                "allow"
+            },
+            "reason": judge["basis"],
+        }))
+    }
+}
+
+fn dependency_case(path: &str, blocked: bool) -> serde_json::Value {
+    let annotator = Arc::new(DependencyAnnotator {
+        calls: std::sync::Mutex::new(Vec::new()),
+    });
+    let policy = Arc::new(DependencyPolicy {
+        judge: std::sync::Mutex::new(None),
+    });
+    let runtime = Runtime::new(
+        Manifest::from_path(path).expect("dependency manifest"),
+        annotator.clone(),
+        policy.clone(),
+    ).expect("dependency runtime");
+    let verdict = runtime.evaluate(&serde_json::json!({
+        "interception_point": "input", "input": { "blocked": blocked },
+    })).verdict;
+    let calls = annotator.calls.lock().expect("calls").clone();
+    let judge = policy.judge.lock().expect("judge").clone();
+    serde_json::json!({
+        "calls": calls,
+        "judge": judge,
+        "decision": format!("{:?}", verdict.decision).to_lowercase(),
+        "reason": verdict.reason,
+    })
+}
+
 fn main() {
     let manifest_path = std::env::args().nth(1).expect("manifest path");
     let text = std::env::args().nth(2).expect("text");
     let hooks_manifest = std::env::args().nth(3).expect("hooks manifest");
+    let dependencies_manifest = std::env::args().nth(4).expect("dependencies manifest");
+    let legacy_manifest = std::env::args().nth(5).expect("legacy manifest");
 
     let validate_good = match Manifest::from_path(&manifest_path) {
         Ok(_) => "ok",
@@ -355,9 +499,7 @@ fn main() {
             .is_err(),
     );
 
-    println!(
-        "{}",
-        serde_json::json!({
+    let mut output = serde_json::json!({
             "hook_benign_decision": b.0,
             "hook_harmful_decision": hh.0,
             "hook_harmful_reason": hh.1,
@@ -397,13 +539,37 @@ fn main() {
             "is_clean": completion.reason.is_clean(),
             "transformed": completion.transformed,
             "safe_offset_settled": session.safe_offset(StreamTrack::Response),
-        })
-    );
+        });
+    output["supports_dependency_version"] =
+        agent_control_spec::SUPPORTED_VERSIONS.contains(&DEPENDENCY_VERSION).into();
+    output["supports_legacy_version"] =
+        agent_control_spec::SUPPORTED_VERSIONS.contains(&LEGACY_VERSION).into();
+    output["dependency_new_blocked"] = dependency_case(&dependencies_manifest, true);
+    output["dependency_new_clear"] = dependency_case(&dependencies_manifest, false);
+    output["dependency_legacy"] = dependency_case(&legacy_manifest, false);
+    let mut supported_versions = agent_control_spec::SUPPORTED_VERSIONS.to_vec();
+    supported_versions.sort_unstable();
+    let source = std::fs::read_to_string(&dependencies_manifest).expect("dependency fixture");
+    let work = std::path::Path::new(&legacy_manifest).parent().expect("temporary workspace");
+    let mut version_cases = serde_json::Map::new();
+    for (index, version) in supported_versions.iter().enumerate() {
+        let path = work.join(format!("rust-{index}.yaml"));
+        std::fs::write(&path, source.replacen(DEPENDENCY_VERSION, version, 1))
+            .expect("versioned dependency fixture");
+        let path = path.to_str().expect("fixture path");
+        version_cases.insert((*version).to_string(), serde_json::json!({
+            "blocked": dependency_case(path, true),
+            "clear": dependency_case(path, false),
+        }));
+    }
+    output["supported_versions"] = serde_json::json!(supported_versions);
+    output["dependency_by_version"] = version_cases.into();
+    println!("{output}");
 }
 """
 
 
-def rust() -> dict:
+def rust(legacy_manifest: Path) -> dict:
     work = ROOT / "target" / "parity-rs"
     work.mkdir(parents=True, exist_ok=True)
     (work / "main.rs").write_text(
@@ -413,6 +579,8 @@ def rust() -> dict:
         .replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST))
         .replace("GOOD_BUNDLES", json.dumps(json.dumps(GOOD_BUNDLES)))
         .replace("BAD_BUNDLES", json.dumps(json.dumps(BAD_BUNDLES)))
+        .replace("DEPENDENCY_VERSION", json.dumps(DEPENDENCY_VERSION))
+        .replace("LEGACY_VERSION", json.dumps(LEGACY_VERSION))
         .replace(
             "BIG_CTX",
             json.dumps(json.dumps({"interception_point": "input", "input": BIG_INPUT})),
@@ -448,13 +616,16 @@ serde_json = "1"
             str(MANIFEST),
             TEXT,
             str(HOOKS_MANIFEST),
+            str(DEPENDENCIES_MANIFEST),
+            str(legacy_manifest),
         ]
     )
 
 
-def python_binding() -> dict:
+def python_binding(legacy_manifest: Path) -> dict:
     script = f"""
 import json
+from pathlib import Path
 from agent_control_spec import (
     AcsInterceptor, ActivatedPolicy, StreamSession,
     supported_manifest_versions, validate_manifest,
@@ -505,6 +676,50 @@ def _hook(dispatcher):
     v = i.intercept({{"interception_point": "input", "input": "hello"}})
     return (str(getattr(v.decision, "value", v.decision)).lower(), v.reason)
 
+def dependency_case(path, blocked):
+    calls = []
+    seen_judge = None
+
+    def annotate(name, invocation, policy_input):
+        annotations = policy_input["annotations"]
+        target = policy_input["policy_target"]["value"]
+        has_needs = "needs" in invocation
+        calls.append({{
+            "name": name, "from": invocation["from"], "input": target,
+            "annotations": annotations, "needs_present": has_needs,
+            "needs": invocation.get("needs"),
+        }})
+        if name == "source":
+            return {{"blocked": target["blocked"]}}
+        if name != "judge":
+            raise ValueError(f"unexpected annotator: {{name}}")
+        source_blocked = annotations["source"]["blocked"] if "source" in annotations else False
+        basis = "legacy_needs" if has_needs else ("source_blocked" if source_blocked else "clear")
+        return {{"blocked": has_needs or source_blocked, "basis": basis}}
+
+    def evaluate(invocation):
+        nonlocal seen_judge
+        seen_judge = invocation["input"]["annotations"]["judge"]
+        return {{
+            "decision": "deny" if seen_judge["blocked"] else "allow",
+            "reason": seen_judge["basis"],
+        }}
+
+    runtime = AcsInterceptor(path, annotator_dispatcher=annotate, policy_dispatcher=evaluate)
+    verdict = runtime.intercept({{"interception_point": "input", "input": {{"blocked": blocked}}}})
+    return {{"calls": calls, "judge": seen_judge, "decision": decision(verdict), "reason": verdict.reason}}
+
+_supported_versions = sorted(supported_manifest_versions())
+_dependency_source = Path({str(DEPENDENCIES_MANIFEST)!r}).read_text()
+_dependency_by_version = {{}}
+for _index, _version in enumerate(_supported_versions):
+    _path = Path({str(legacy_manifest.parent)!r}) / f"python-{{_index}}.yaml"
+    _path.write_text(_dependency_source.replace({DEPENDENCY_VERSION!r}, _version, 1))
+    _dependency_by_version[_version] = {{
+        "blocked": dependency_case(str(_path), True),
+        "clear": dependency_case(str(_path), False),
+    }}
+
 _benign = _Classifier(1)
 _b = _hook(_benign)
 _h = _hook(_Classifier(7))
@@ -549,7 +764,14 @@ print(json.dumps({{
     "residue_kind": _res_done["reason"]["kind"],
     "residue_reason": _res_done["reason"].get("reason"),
     "residue_clean": _res_done["is_clean"],
-    "supported_versions_nonempty": len(supported_manifest_versions()) > 0,
+    "supported_versions_nonempty": len(_supported_versions) > 0,
+    "supports_dependency_version": {DEPENDENCY_VERSION!r} in _supported_versions,
+    "supports_legacy_version": {LEGACY_VERSION!r} in _supported_versions,
+    "supported_versions": _supported_versions,
+    "dependency_by_version": _dependency_by_version,
+    "dependency_new_blocked": dependency_case({str(DEPENDENCIES_MANIFEST)!r}, True),
+    "dependency_new_clear": dependency_case({str(DEPENDENCIES_MANIFEST)!r}, False),
+    "dependency_legacy": dependency_case({str(legacy_manifest)!r}, False),
     "validate_good": check(open({str(MANIFEST)!r}).read()),
     "validate_bad": check({BAD_MANIFEST!r}),
     "interceptor_name": interceptor.name,
@@ -571,7 +793,7 @@ print(json.dumps({{
     return _run([sys.executable, "-c", script])
 
 
-def node() -> dict:
+def node(legacy_manifest: Path) -> dict:
     script = f"""
 const fs = require('fs');
 const acs = require('./dist/index.js');
@@ -602,6 +824,45 @@ function hook(d) {{
   const i = acs.AcsInterceptor.fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: d }});
   const v = i.intercept({{ interception_point: 'input', input: 'hello' }});
   return [String(v.decision).toLowerCase(), v.reason ?? null];
+}}
+function dependencyCase(path, blocked) {{
+  const calls = [];
+  let judge = null;
+  const annotatorDispatcher = (name, invocation, policyInput) => {{
+    const annotations = policyInput.annotations;
+    const target = policyInput.policy_target.value;
+    const hasNeeds = Object.prototype.hasOwnProperty.call(invocation, 'needs');
+    calls.push({{
+      name, from: invocation.from, input: target, annotations,
+      needs_present: hasNeeds, needs: hasNeeds ? invocation.needs : null,
+    }});
+    if (name === 'source') return {{ blocked: target.blocked }};
+    if (name !== 'judge') throw new Error(`unexpected annotator: ${{name}}`);
+    const sourceBlocked = Object.prototype.hasOwnProperty.call(annotations, 'source')
+      ? annotations.source.blocked : false;
+    return {{
+      blocked: hasNeeds || sourceBlocked,
+      basis: hasNeeds ? 'legacy_needs' : (sourceBlocked ? 'source_blocked' : 'clear'),
+    }};
+  }};
+  const policyDispatcher = (invocation) => {{
+    judge = invocation.input.annotations.judge;
+    return {{ decision: judge.blocked ? 'deny' : 'allow', reason: judge.basis }};
+  }};
+  const runtime = acs.AcsInterceptor.fromPath(path, {{ annotatorDispatcher, policyDispatcher }});
+  const verdict = runtime.intercept({{ interception_point: 'input', input: {{ blocked }} }});
+  return {{ calls, judge, decision: String(verdict.decision).toLowerCase(), reason: verdict.reason ?? null }};
+}}
+const supportedVersions = [...acs.supportedManifestVersions()].sort();
+const dependencySource = fs.readFileSync({json.dumps(str(DEPENDENCIES_MANIFEST))}, 'utf8');
+const dependencyByVersion = {{}};
+for (const [index, version] of supportedVersions.entries()) {{
+  const path = require('path').join({json.dumps(str(legacy_manifest.parent))}, `node-${{index}}.yaml`);
+  fs.writeFileSync(path, dependencySource.replace({json.dumps(DEPENDENCY_VERSION)}, () => version));
+  dependencyByVersion[version] = {{
+    blocked: dependencyCase(path, true),
+    clear: dependencyCase(path, false),
+  }};
 }}
 let hookCalls = 0;
 const b = hook(() => {{ hookCalls++; return {{ severity: 1 }}; }});
@@ -649,7 +910,14 @@ console.log(JSON.stringify({{
   residue_kind: resDone.reason.kind,
   residue_reason: resDone.reason.reason ?? null,
   residue_clean: resDone.isClean,
-  supported_versions_nonempty: acs.supportedManifestVersions().length > 0,
+  supported_versions_nonempty: supportedVersions.length > 0,
+  supports_dependency_version: supportedVersions.includes({json.dumps(DEPENDENCY_VERSION)}),
+  supports_legacy_version: supportedVersions.includes({json.dumps(LEGACY_VERSION)}),
+  supported_versions: supportedVersions,
+  dependency_by_version: dependencyByVersion,
+  dependency_new_blocked: dependencyCase({json.dumps(str(DEPENDENCIES_MANIFEST))}, true),
+  dependency_new_clear: dependencyCase({json.dumps(str(DEPENDENCIES_MANIFEST))}, false),
+  dependency_legacy: dependencyCase({json.dumps(str(legacy_manifest))}, false),
   validate_good: check(fs.readFileSync({json.dumps(str(MANIFEST))}, 'utf8')),
   validate_bad: check({json.dumps(BAD_MANIFEST)}),
   interceptor_name: interceptor.name,
@@ -709,6 +977,74 @@ static (string, string?) Hook(AnnotatorDispatcher d)
     return (v.Decision.ToString().ToLowerInvariant(), v.Reason);
 }
 
+static object DependencyCase(string path, bool blocked)
+{
+    var calls = new List<object>();
+    JsonElement? judge = null;
+    using var runtime = AcsHostInterceptor.FromPath(
+        path,
+        annotator: (name, invocationJson, policyInputJson) =>
+        {
+            using var invocation = JsonDocument.Parse(invocationJson);
+            using var input = JsonDocument.Parse(policyInputJson);
+            var annotations = input.RootElement.GetProperty("annotations");
+            var target = input.RootElement.GetProperty("policy_target").GetProperty("value");
+            var hasNeeds = invocation.RootElement.TryGetProperty("needs", out var needs);
+            calls.Add(new Dictionary<string, object?>
+            {
+                ["name"] = name,
+                ["from"] = invocation.RootElement.GetProperty("from").GetString(),
+                ["input"] = target.Clone(),
+                ["annotations"] = annotations.Clone(),
+                ["needs_present"] = hasNeeds,
+                ["needs"] = hasNeeds ? needs.Clone() : (object?)null,
+            });
+            if (name == "source")
+                return JsonSerializer.Serialize(new { blocked = target.GetProperty("blocked").GetBoolean() });
+            if (name != "judge")
+                throw new InvalidOperationException($"unexpected annotator: {name}");
+            var sourceBlocked = annotations.TryGetProperty("source", out var source)
+                && source.GetProperty("blocked").GetBoolean();
+            return JsonSerializer.Serialize(new
+            {
+                blocked = hasNeeds || sourceBlocked,
+                basis = hasNeeds ? "legacy_needs" : (sourceBlocked ? "source_blocked" : "clear"),
+            });
+        },
+        policy: invocationJson =>
+        {
+            using var invocation = JsonDocument.Parse(invocationJson);
+            var output = invocation.RootElement.GetProperty("input").GetProperty("annotations").GetProperty("judge");
+            judge = output.Clone();
+            return JsonSerializer.Serialize(new
+            {
+                decision = output.GetProperty("blocked").GetBoolean() ? "deny" : "allow",
+                reason = output.GetProperty("basis").GetString(),
+            });
+        });
+    var context = new AgentContext(JsonNode.Parse(JsonSerializer.Serialize(new
+    {
+        interception_point = "input", input = new { blocked },
+    }))!.AsObject());
+    var verdict = runtime.InterceptAsync(context).AsTask().Result;
+    return new { calls, judge, decision = verdict.Decision.ToString().ToLowerInvariant(), reason = verdict.Reason };
+}
+
+var supportedVersions = AcsManifest.SupportedVersions().OrderBy(v => v, StringComparer.Ordinal).ToList();
+var dependencySource = File.ReadAllText(DEPENDENCIES_MANIFEST);
+var dependencyByVersion = new Dictionary<string, object>();
+for (var index = 0; index < supportedVersions.Count; index++)
+{
+    var version = supportedVersions[index];
+    var path = Path.Combine(Path.GetDirectoryName(LEGACY_MANIFEST)!, $"dotnet-{index}.yaml");
+    File.WriteAllText(path, dependencySource.Replace(DEPENDENCY_VERSION, version));
+    dependencyByVersion[version] = new
+    {
+        blocked = DependencyCase(path, true),
+        clear = DependencyCase(path, false),
+    };
+}
+
 var hookCalls = 0;
 var b = Hook((_, _, _) => { hookCalls++; return SEV1; });
 var hh = Hook((_, _, _) => SEV7);
@@ -758,7 +1094,14 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
     ["residue_kind"] = residueDone.Reason.Kind,
     ["residue_reason"] = residueDone.Reason.Reason,
     ["residue_clean"] = residueDone.IsClean,
-    ["supported_versions_nonempty"] = AcsManifest.SupportedVersions().Count > 0,
+    ["supported_versions_nonempty"] = supportedVersions.Count > 0,
+    ["supports_dependency_version"] = supportedVersions.Contains(DEPENDENCY_VERSION),
+    ["supports_legacy_version"] = supportedVersions.Contains(LEGACY_VERSION),
+    ["supported_versions"] = supportedVersions,
+    ["dependency_by_version"] = dependencyByVersion,
+    ["dependency_new_blocked"] = DependencyCase(DEPENDENCIES_MANIFEST, true),
+    ["dependency_new_clear"] = DependencyCase(DEPENDENCIES_MANIFEST, false),
+    ["dependency_legacy"] = DependencyCase(LEGACY_MANIFEST, false),
     ["validate_good"] = Check(() => AcsManifest.Validate(File.ReadAllText(manifest))),
     ["validate_bad"] = Check(() => AcsManifest.Validate(BAD_JSON)),
     ["interceptor_name"] = interceptor.Name,
@@ -779,7 +1122,7 @@ Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object?>
 """
 
 
-def dotnet() -> dict:
+def dotnet(legacy_manifest: Path) -> dict:
     work = Path(tempfile.mkdtemp())
     try:
         app = work / "app"
@@ -802,6 +1145,10 @@ def dotnet() -> dict:
         program = (
             DOTNET_PROGRAM.replace("MANIFEST_PATH", json.dumps(str(MANIFEST)))
             .replace("HOOKS_MANIFEST", json.dumps(str(HOOKS_MANIFEST)))
+            .replace("DEPENDENCIES_MANIFEST", json.dumps(str(DEPENDENCIES_MANIFEST)))
+            .replace("LEGACY_MANIFEST", json.dumps(str(legacy_manifest)))
+            .replace("DEPENDENCY_VERSION", json.dumps(DEPENDENCY_VERSION))
+            .replace("LEGACY_VERSION", json.dumps(LEGACY_VERSION))
             .replace("SEV1", json.dumps(json.dumps({"severity": 1})))
             .replace("SEV7", json.dumps(json.dumps({"severity": 7})))
             .replace("REGO_MANIFEST", json.dumps(REGO_MANIFEST))
@@ -844,21 +1191,35 @@ def main() -> int:
 
     results: dict[str, dict] = {}
     failed = False
-    for name, run in languages.items():
-        try:
-            results[name] = run()
-        except subprocess.CalledProcessError as e:
-            print(f"{name}: FAILED TO RUN\n{e.stdout}\n{e.stderr}", file=sys.stderr)
-            failed = True
+    with tempfile.TemporaryDirectory(prefix="acs-parity-dependencies-") as work:
+        legacy_manifest = Path(work) / "legacy-manifest.yaml"
+        source = DEPENDENCIES_MANIFEST.read_text()
+        if source.count(DEPENDENCY_VERSION) != 1:
+            raise ValueError("dependency fixture must declare the new version exactly once")
+        legacy_manifest.write_text(source.replace(DEPENDENCY_VERSION, LEGACY_VERSION, 1))
+        for name, run in languages.items():
+            try:
+                results[name] = run(legacy_manifest)
+            except subprocess.CalledProcessError as e:
+                print(f"{name}: FAILED TO RUN\n{e.stdout}\n{e.stderr}", file=sys.stderr)
+                failed = True
 
     if failed:
         return 1
 
+    # Rust's registry defines parity for every exported version; the fixed
+    # goldens above independently pin the current legacy/chaining semantics.
+    expected = {
+        **EXPECTED,
+        "supported_versions": results["rust"]["supported_versions"],
+        "dependency_by_version": results["rust"]["dependency_by_version"],
+    }
     for name, got in results.items():
         mismatches = {
-            k: (EXPECTED[k], got.get(k)) for k in EXPECTED if got.get(k) != EXPECTED[k]
+            k: (expected[k], got.get(k)) for k in expected if got.get(k) != expected[k]
         }
         print(f"{name:8} {'ok' if not mismatches else 'MISMATCH'}")
+        print(f"         supported_versions: {got.get('supported_versions')!r}")
         for key, (want, actual) in sorted(mismatches.items()):
             print(f"         {key}: expected {want!r}, got {actual!r}", file=sys.stderr)
             failed = True
@@ -867,7 +1228,10 @@ def main() -> int:
         print("\nlanguages disagree about the same inputs", file=sys.stderr)
         return 1
 
-    print(f"\nall {len(results)} languages agree across {len(EXPECTED)} assertions")
+    print(
+        f"\nall {len(results)} languages agree across {len(expected)} assertions"
+        f" ({len(expected['dependency_by_version'])} supported versions, blocked and clear)"
+    )
     return 0
 
 

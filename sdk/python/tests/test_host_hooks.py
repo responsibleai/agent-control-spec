@@ -193,6 +193,182 @@ def test_host_annotator_dispatcher_can_be_a_plain_callable():
 
 
 # ---------------------------------------------------------------------
+# Annotator dependencies: one annotation consumes another's result
+# inside a single evaluation. The engine owns the ordering; these
+# assert the behaviour a Python host actually observes through the
+# binding, including what each dispatcher is shown.
+# ---------------------------------------------------------------------
+
+CHAINED_MANIFEST = """
+agent_control_specification_version: "0.5.0-alpha.1"
+metadata:
+  name: python-annotator-chaining
+policies:
+  gate:
+    type: rego
+    bundle: ./policy
+    query: data.gate.verdict
+annotators:
+  scan:
+    type: classifier
+  judge:
+    type: classifier
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy_target_kind: user_input
+    policy:
+      id: gate
+    annotations:
+      judge:
+        needs: [scan]
+        from: $pi.annotations.scan.spans
+      scan:
+        from: $target.content
+"""
+
+CHAINED_REGO_MODULE = """
+package gate
+
+default verdict := {"decision": "allow"}
+
+verdict := {
+  "decision": "deny",
+  "reason": "blocked_by_judge",
+} if {
+  input.annotations.judge.blocked == true
+}
+"""
+
+
+def _chained_bundles() -> dict:
+    return {"gate": {"modules": {"gate.rego": CHAINED_REGO_MODULE}}}
+
+
+def test_annotator_needs_lets_one_annotation_consume_another():
+    """`judge` declares `needs: [scan]`, so the engine runs `scan`
+    first and shows `judge` that result. The dependent annotation's
+    output is what drives the verdict, which is the whole point."""
+    calls: list[tuple[str, dict]] = []
+
+    def dispatcher(name, annotator, policy_input):
+        calls.append((name, policy_input["annotations"]))
+        if name == "scan":
+            return {"spans": [{"start": 0, "end": 4}]}
+        # `judge` only blocks when it can actually see scan's spans.
+        spans = policy_input["annotations"]["scan"]["spans"]
+        return {"blocked": len(spans) > 0}
+
+    policy = ActivatedPolicy.from_memory(
+        CHAINED_MANIFEST,
+        _chained_bundles(),
+        annotator_dispatcher=dispatcher,
+    )
+    verdict = policy.evaluate("input", _builder().input(content="leak"))
+
+    # Dependency order, not the order the manifest happened to list.
+    assert [name for name, _ in calls] == ["scan", "judge"]
+    # `scan` declares no dependency, so it is shown nothing.
+    assert calls[0][1] == {}
+    # `judge` is shown exactly what it declared.
+    assert calls[1][1] == {"scan": {"spans": [{"start": 0, "end": 4}]}}
+    assert verdict.decision.value == "deny"
+    assert verdict.reason == "blocked_by_judge"
+
+
+def test_annotator_dependency_failure_fails_closed_without_running_dependent():
+    """A dependency that raises must not leave the dependent running on
+    a missing input, and must not read as 'no annotation'."""
+    calls: list[str] = []
+
+    def dispatcher(name, annotator, policy_input):
+        calls.append(name)
+        if name == "scan":
+            raise RuntimeError("classifier unreachable")
+        return {"blocked": False}
+
+    policy = ActivatedPolicy.from_memory(
+        CHAINED_MANIFEST,
+        _chained_bundles(),
+        annotator_dispatcher=dispatcher,
+    )
+    verdict = policy.evaluate("input", _builder().input(content="leak"))
+
+    assert calls == ["scan"], "the dependent annotation must not be dispatched"
+    assert verdict.decision.value == "deny"
+    assert verdict.reason == "runtime_error:annotation_failed"
+
+
+def test_annotation_reading_an_undeclared_annotation_is_rejected():
+    """Reading `$pi.annotations.<name>` without naming it in `needs` is
+    a manifest error, caught before anything is dispatched."""
+    undeclared = CHAINED_MANIFEST.replace("        needs: [scan]\n", "")
+
+    with pytest.raises(ManifestInvalidError):
+        ActivatedPolicy.from_memory(
+            undeclared,
+            _chained_bundles(),
+            annotator_dispatcher=lambda name, annotator, policy_input: {},
+        )
+
+
+def test_annotation_dependency_cycle_is_rejected():
+    """A cycle must be refused at load rather than recursed into."""
+    cyclic = CHAINED_MANIFEST.replace(
+        "      scan:\n        from: $target.content\n",
+        "      scan:\n        needs: [judge]\n        from: $pi.annotations.judge.blocked\n",
+    )
+
+    with pytest.raises(ManifestInvalidError):
+        ActivatedPolicy.from_memory(
+            cyclic,
+            _chained_bundles(),
+            annotator_dispatcher=lambda name, annotator, policy_input: {},
+        )
+
+
+def test_mutable_callback_inputs_do_not_change_recorded_outputs_or_snapshot():
+    manifest = (
+        CHAINED_MANIFEST.replace(
+            "  scan:\n    type: classifier\n",
+            "  scan:\n    type: classifier\n  tamper:\n    type: classifier\n",
+        )
+        .replace(
+            "        needs: [scan]\n",
+            "        needs: [scan, tamper]\n",
+        )
+        .replace(
+            "      scan:\n        from: $target.content\n",
+            "      scan:\n        from: $target.content\n"
+            "      tamper:\n        needs: [scan]\n        from: $target.content\n",
+        )
+    )
+    output = {"spans": [{"start": 0, "end": 4}]}
+    calls = []
+
+    def dispatcher(name, invocation, policy_input):
+        calls.append(name)
+        if name == "scan":
+            return output
+        if name == "tamper":
+            output["spans"].clear()
+            policy_input["annotations"]["scan"]["spans"].clear()
+            policy_input["snapshot"]["input"]["content"] = "mutated"
+            policy_input["policy_target"]["value"]["content"] = "mutated"
+            return {"ok": True}
+        assert policy_input["snapshot"]["input"]["content"] == "hello"
+        assert policy_input["policy_target"]["value"]["content"] == "hello"
+        return {"blocked": len(policy_input["annotations"]["scan"]["spans"]) == 1}
+
+    policy = ActivatedPolicy.from_memory(
+        manifest, _chained_bundles(), annotator_dispatcher=dispatcher
+    )
+    verdict = policy.evaluate("input", _builder().input(content="hello"))
+    assert calls == ["scan", "tamper", "judge"]
+    assert verdict.reason == "blocked_by_judge"
+
+
+# ---------------------------------------------------------------------
 # Zero-config parity: with no arguments, the API is byte-for-byte the
 # same as today's zero-config path.
 # ---------------------------------------------------------------------

@@ -1,6 +1,6 @@
 use crate::{
     annotation::{AnnotatorDispatcher, AnnotatorInvocation},
-    constants::policy_input as pi_key,
+    constants::{annotation as annotation_key, policy_input as pi_key},
     manifest::Manifest,
     policy::{prepare_policy_invocation, PolicyConfig, PreparedPolicyInvocation},
     policy_input::build_policy_input,
@@ -12,6 +12,7 @@ use crate::{
 use agent_hooks::{InterceptionPoint, Verdict};
 use serde_json::Map;
 use std::{
+    collections::BTreeMap,
     panic::{catch_unwind, AssertUnwindSafe},
     sync::Arc,
     time::Instant,
@@ -40,11 +41,55 @@ pub trait PolicyDispatcher: Send + Sync {
 #[derive(Clone)]
 pub struct Runtime {
     manifest: Manifest,
+    annotation_plans: BTreeMap<InterceptionPoint, AnnotationPlan>,
     annotations: Arc<dyn AnnotatorDispatcher>,
     policy: Arc<dyn PolicyDispatcher>,
     telemetry: Arc<dyn TelemetrySink>,
     perf_telemetry: PerfTelemetry,
     limits: Limits,
+}
+
+#[derive(Clone)]
+struct AnnotationDependencies {
+    names: Vec<String>,
+    metadata: String,
+}
+
+#[derive(Clone)]
+struct AnnotationPlan {
+    order: Vec<String>,
+    dependencies: BTreeMap<String, AnnotationDependencies>,
+}
+
+impl AnnotationPlan {
+    fn prepare(
+        point: InterceptionPoint,
+        config: &crate::manifest::InterventionPointConfig,
+        manifest: &Manifest,
+    ) -> Result<Self, RuntimeError> {
+        let order = crate::manifest::annotation_dispatch_order(point, config, manifest)?;
+        let mut dependencies = BTreeMap::new();
+        for (name, annotation) in &config.annotations {
+            let names: Vec<String> = manifest
+                .annotation_dependencies(annotation)?
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            if names.is_empty() {
+                continue;
+            }
+            let metadata = serde_json::to_string(&names).map_err(|error| {
+                RuntimeError::ManifestInvalid(format!(
+                    "cannot serialize dependencies for annotation '{name}': {error}"
+                ))
+            })?;
+            dependencies.insert(name.clone(), AnnotationDependencies { names, metadata });
+        }
+        Ok(Self {
+            order,
+            dependencies,
+        })
+    }
 }
 
 impl Runtime {
@@ -140,8 +185,16 @@ impl Runtime {
                     .to_string(),
             ));
         }
+        let annotation_plans = manifest
+            .intervention_points
+            .iter()
+            .map(|(point, config)| {
+                AnnotationPlan::prepare(*point, config, &manifest).map(|plan| (*point, plan))
+            })
+            .collect::<Result<_, _>>()?;
         Ok(Self {
             manifest,
+            annotation_plans,
             annotations,
             policy,
             telemetry,
@@ -415,8 +468,18 @@ impl Runtime {
             )));
         }
 
+        let plan = self
+            .annotation_plans
+            .get(&intervention_point)
+            .ok_or_else(|| {
+                RuntimeError::ManifestInvalid(format!(
+                    "missing annotation plan for {intervention_point}"
+                ))
+            })?;
         let mut annotations_map = Map::new();
-        for annotator_name in point_config.annotations.keys() {
+        // Reuse one request-local copy; callbacks only borrow it immutably.
+        let mut staged_policy_input: Option<JsonValue> = None;
+        for annotator_name in &plan.order {
             let annotation_config = point_config
                 .annotations
                 .get(annotator_name)
@@ -438,6 +501,47 @@ impl Runtime {
                 annotation_config,
             );
 
+            // Each callback sees only its declared dependencies.
+            let dispatch_input = if let Some(dependencies) = plan.dependencies.get(annotator_name) {
+                let mut visible = Map::new();
+                for need in &dependencies.names {
+                    let result = annotations_map
+                        .get(need)
+                        .cloned()
+                        .ok_or_else(|| {
+                            RuntimeError::ManifestInvalid(format!(
+                                "annotator '{annotator_name}' needs '{need}', which has not run"
+                            ))
+                        })
+                        .inspect_err(|error| {
+                            self.emit_annotator_failed(intervention_point, annotator_name, error);
+                        })?;
+                    visible.insert(need.clone(), result);
+                }
+                let staged =
+                    staged_policy_input.get_or_insert_with(|| preliminary_policy_input.clone());
+                let object = staged
+                    .as_object_mut()
+                    .ok_or_else(|| {
+                        RuntimeError::ManifestInvalid(
+                            "preliminary policy input is not an object".to_string(),
+                        )
+                    })
+                    .inspect_err(|error| {
+                        self.emit_annotator_failed(intervention_point, annotator_name, error);
+                    })?;
+                let visible = JsonValue::Object(visible);
+                self.limits
+                    .validate_policy_annotations(&visible)
+                    .inspect_err(|error| {
+                        self.emit_annotator_failed(intervention_point, annotator_name, error);
+                    })?;
+                object.insert(pi_key::ANNOTATIONS.to_string(), visible);
+                &*staged
+            } else {
+                preliminary_policy_input
+            };
+
             if let Some(input_from) = annotator.input_from() {
                 let path = JsonPath::parse_with_snapshot_alias(input_from)
                     .map_err(|err| {
@@ -448,26 +552,21 @@ impl Runtime {
                     .inspect_err(|error| {
                         self.emit_annotator_failed(intervention_point, annotator_name, error);
                     })?;
-                let snapshot = preliminary_policy_input
-                    .get(pi_key::SNAPSHOT)
-                    .ok_or_else(|| {
-                        RuntimeError::ManifestInvalid(
-                            "preliminary policy input missing snapshot".to_string(),
-                        )
-                    })?;
-                path.resolve(&PathEnv::with_pi_and_snap(
-                    preliminary_policy_input,
-                    snapshot,
-                ))
-                .inspect_err(|error| {
-                    self.emit_annotator_failed(intervention_point, annotator_name, error);
+                let snapshot = dispatch_input.get(pi_key::SNAPSHOT).ok_or_else(|| {
+                    RuntimeError::ManifestInvalid(
+                        "preliminary policy input missing snapshot".to_string(),
+                    )
                 })?;
+                path.resolve(&PathEnv::with_pi_and_snap(dispatch_input, snapshot))
+                    .inspect_err(|error| {
+                        self.emit_annotator_failed(intervention_point, annotator_name, error);
+                    })?;
             }
 
             let dispatch_start = Instant::now();
             let output = catch_unwind(AssertUnwindSafe(|| {
                 self.annotations
-                    .dispatch(annotator_name, &annotator, preliminary_policy_input)
+                    .dispatch(annotator_name, &annotator, dispatch_input)
             }))
             .map_err(|payload| {
                 RuntimeError::AnnotationFailed(format!(
@@ -586,18 +685,34 @@ impl Runtime {
         }
     }
 
+    /// Cached names only; no result values enter dependency metadata.
+    fn annotation_needs(
+        &self,
+        intervention_point: InterceptionPoint,
+        annotator_name: &str,
+    ) -> Option<&str> {
+        self.annotation_plans
+            .get(&intervention_point)?
+            .dependencies
+            .get(annotator_name)
+            .map(|dependencies| dependencies.metadata.as_str())
+    }
+
     fn emit_annotator_failed(
         &self,
         intervention_point: InterceptionPoint,
         annotator_name: &str,
         error: &RuntimeError,
     ) {
-        self.emit_event(
+        let mut event =
             TelemetryEvent::new(TelemetryEventType::AnnotatorFailed, intervention_point)
                 .with_annotator(annotator_name)
                 .with_reason_code(error.reason())
-                .with_optional_error_class(telemetry_error_class(Some(error.reason())).as_deref()),
-        );
+                .with_optional_error_class(telemetry_error_class(Some(error.reason())).as_deref());
+        if let Some(needs) = self.annotation_needs(intervention_point, annotator_name) {
+            event = event.with_metadata(annotation_key::NEEDS, needs);
+        }
+        self.emit_event(event);
     }
 
     fn emit_policy_failed(
@@ -626,13 +741,16 @@ impl Runtime {
         if !self.perf_telemetry.emit_external_events() {
             return;
         }
-        self.emit_event(
+        let mut event =
             TelemetryEvent::new(TelemetryEventType::AnnotatorDispatch, intervention_point)
                 .with_annotator(annotator_name)
                 .with_optional_reason_code(safe_telemetry_reason_code(reason).as_deref())
                 .with_optional_error_class(telemetry_error_class(reason).as_deref())
-                .with_duration_ms(duration_ms),
-        );
+                .with_duration_ms(duration_ms);
+        if let Some(needs) = self.annotation_needs(intervention_point, annotator_name) {
+            event = event.with_metadata(annotation_key::NEEDS, needs);
+        }
+        self.emit_event(event);
     }
 
     fn emit_policy_external_event(
@@ -814,6 +932,148 @@ mod tests {
                 .push(invocation.policy_input().unwrap().clone());
             Ok(self.output.clone())
         }
+    }
+
+    #[test]
+    fn every_supported_contract_drives_the_declared_annotation_semantics() {
+        struct Recording(Mutex<Vec<(String, bool, JsonValue)>>);
+        impl AnnotatorDispatcher for Recording {
+            fn dispatch(
+                &self,
+                name: &str,
+                invocation: &AnnotatorInvocation,
+                input: &JsonValue,
+            ) -> Result<JsonValue, RuntimeError> {
+                self.0.lock().unwrap().push((
+                    name.into(),
+                    invocation.field("needs").is_some(),
+                    input["annotations"].clone(),
+                ));
+                Ok(json!({"value": 1}))
+            }
+        }
+        for version in crate::SUPPORTED_VERSIONS {
+            let contract = crate::constants::manifest_version::contract(version).unwrap();
+            let manifest = Manifest::from_json_str(
+                &json!({
+                    "agent_control_specification_version": version,
+                    "policies": {"p": {"type": "test"}},
+                    "annotators": {"alpha": {"type": "classifier"}, "zeta": {"type": "classifier"}},
+                    "intervention_points": {"input": {
+                        "policy_target": "$snap.input", "policy": {"id": "p"},
+                        "annotations": {
+                            "alpha": {"needs": ["zeta"], "from": "$target"},
+                            "zeta": {"from": "$target"}
+                        }
+                    }}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let recorder = Arc::new(Recording(Mutex::new(vec![])));
+            let runtime = Runtime::new(
+                manifest,
+                recorder.clone(),
+                Arc::new(StaticPolicy {
+                    output: json!({"decision":"allow"}),
+                    seen: Mutex::new(vec![]),
+                }),
+            )
+            .unwrap();
+            let result =
+                runtime.evaluate_point(InterceptionPoint::Input, json!({"input": "value"}));
+            assert_eq!(result.verdict.decision, Decision::Allow);
+            let calls = recorder.0.lock().unwrap();
+            if contract.annotation_chaining {
+                assert_eq!(calls[0].0, "zeta");
+                assert_eq!(
+                    calls[1],
+                    ("alpha".into(), false, json!({"zeta": {"value":1}}))
+                );
+            } else {
+                assert_eq!(calls[0], ("alpha".into(), true, json!({})));
+                assert_eq!(calls[1].0, "zeta");
+            }
+        }
+    }
+
+    #[test]
+    fn staging_reuses_one_snapshot_copy_without_exposing_stale_dependencies() {
+        struct Recording(Mutex<Vec<(String, usize, JsonValue, JsonValue)>>);
+        impl AnnotatorDispatcher for Recording {
+            fn dispatch(
+                &self,
+                name: &str,
+                _: &AnnotatorInvocation,
+                input: &JsonValue,
+            ) -> Result<JsonValue, RuntimeError> {
+                self.0.lock().unwrap().push((
+                    name.into(),
+                    std::ptr::from_ref(&input["snapshot"]) as usize,
+                    input["annotations"].clone(),
+                    input["snapshot"].clone(),
+                ));
+                Ok(json!({"request": input["snapshot"]["input"]}))
+            }
+        }
+        let manifest = Manifest::from_json_str(&json!({
+            "agent_control_specification_version": crate::constants::manifest_version::ANNOTATION_CHAINING,
+            "policies": {"p": {"type": "test"}},
+            "annotators": {
+                "alpha": {"type": "classifier"}, "beta": {"type": "classifier"},
+                "gamma": {"type": "classifier"}, "zeta": {"type": "classifier"}
+            },
+            "intervention_points": {"input": {
+                "policy_target": "$snap.input", "policy": {"id":"p"},
+                "annotations": {
+                    "alpha": {"from":"$target"},
+                    "beta": {"needs":["alpha"], "from":"$target"},
+                    "gamma": {"from":"$target"},
+                    "zeta": {"needs":["beta"], "from":"$target"}
+                }
+            }}
+        }).to_string()).unwrap();
+        let recorder = Arc::new(Recording(Mutex::new(vec![])));
+        let runtime = Runtime::new(
+            manifest,
+            recorder.clone(),
+            Arc::new(StaticPolicy {
+                output: json!({"decision":"allow"}),
+                seen: Mutex::new(vec![]),
+            }),
+        )
+        .unwrap();
+        for request in ["first", "second"] {
+            assert_eq!(
+                runtime
+                    .evaluate_point(InterceptionPoint::Input, json!({"input":request}))
+                    .verdict
+                    .decision,
+                Decision::Allow
+            );
+            let mut calls = recorder.0.lock().unwrap();
+            assert_eq!(
+                calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(),
+                ["alpha", "beta", "gamma", "zeta"]
+            );
+            assert_eq!(
+                calls[1].1, calls[3].1,
+                "dependent callbacks reuse the snapshot copy"
+            );
+            assert_eq!(
+                calls[2].2,
+                json!({}),
+                "an independent callback sees no prior outputs"
+            );
+            assert_eq!(calls[3].2, json!({"beta":{"request":request}}));
+            for call in calls.iter() {
+                assert_eq!(call.3, json!({"input":request}));
+            }
+            calls.clear();
+        }
+        let plan = &runtime.annotation_plans[&InterceptionPoint::Input];
+        assert_eq!(plan.order, ["alpha", "beta", "gamma", "zeta"]);
+        assert_eq!(plan.dependencies["beta"].metadata, "[\"alpha\"]");
     }
 
     fn runtime(policy_output: JsonValue) -> Runtime {

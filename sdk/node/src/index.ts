@@ -183,15 +183,24 @@ export interface TelemetryEvent {
  * A host annotator dispatcher.
  *
  * Called synchronously from inside `intercept`/`evaluate`; return a
- * value the manifest's `preliminary_policy_input` merge shape expects
- * (typically a JSON object per the annotator's contract). Throwing
- * fails the surrounding evaluation closed with a
- * `runtime_error:annotation_failed` deny.
+ * value the manifest's policy input merge shape expects (typically a
+ * JSON object per the annotator's contract). Throwing fails the
+ * surrounding evaluation closed with a `runtime_error:annotation_failed`
+ * deny.
+ *
+ * With manifest contract `0.5.0-alpha.1`, `policyInput.annotations`
+ * holds the full outputs of direct `needs` dependencies only, or is
+ * empty when there are none. The full snapshot remains available;
+ * `from` selects a value without redacting the dispatcher input.
+ * The engine removes `needs` from the invocation fields. With legacy
+ * `0.4.0-alpha.1`, annotations is always empty, dispatch is lexical,
+ * and `needs` remains an arbitrary host-defined JSON extension passed
+ * to the dispatcher.
  */
 export type AnnotatorDispatcher = (
   name: string,
   invocation: AnnotatorInvocation,
-  preliminaryPolicyInput: JsonValue,
+  policyInput: JsonValue,
 ) => JsonValue;
 
 /**

@@ -29,6 +29,8 @@ pub struct AnnotatorConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Per-point binding. `needs` stays in `fields` to preserve the public
+/// `{ from, fields }` shape and legacy host-defined values.
 pub struct AnnotationConfig {
     pub from: String,
     #[serde(default, flatten, skip_serializing_if = "BTreeMap::is_empty")]
@@ -89,17 +91,23 @@ impl AnnotatorInvocation {
         }
     }
 
-    /// `from_annotation` stamped with the provenance of the manifest the
-    /// two configs came from, as `Runtime` dispatches it.
+    /// Applies manifest provenance and version-specific engine fields.
+    /// Use this constructor when dispatching a manifest binding.
+    /// Dependency-aware contracts consume `needs` instead of forwarding it.
+    /// `from_annotation` retains the versionless, host-extension behavior.
     pub fn from_annotation_in(
         manifest: &Manifest,
         annotator: &AnnotatorConfig,
         annotation: &AnnotationConfig,
     ) -> Self {
-        Self {
+        let mut invocation = Self {
             url_sourced: manifest.url_sourced(),
             ..Self::from_annotation(annotator, annotation)
+        };
+        if manifest.annotation_chaining_enabled() {
+            invocation.fields.remove("needs");
         }
+        invocation
     }
 
     pub fn input_from(&self) -> Option<&str> {

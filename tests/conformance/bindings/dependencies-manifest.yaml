@@ -1,0 +1,21 @@
+agent_control_specification_version: "0.5.0-alpha.1"
+policies:
+  gate:
+    type: custom
+    adapter: dependency_gate
+annotators:
+  judge:
+    type: classifier
+  source:
+    type: classifier
+intervention_points:
+  input:
+    policy_target: "$snap.input"
+    annotations:
+      judge:
+        from: "$target"
+        needs: [source]
+      source:
+        from: "$target"
+    policy:
+      id: gate

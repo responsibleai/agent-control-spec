@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-"""Fail when the version surfaces disagree.
+"""Fail when SDK package version surfaces disagree.
+
+Manifest contract versions are separate. The engine's artifact tests compare
+every registered contract against the schema, specification, and changelog.
 
 Runtime packages release together. The generator shares their version metadata
 but is outside tag publication. All these manifests must agree:
@@ -117,7 +120,7 @@ def main() -> int:
         return 1
     normalized = {path: normalize(v) for path, v in versions.items()}
     if len(set(normalized.values())) == 1:
-        print(f"version surfaces agree: {next(iter(normalized.values()))}")
+        print(f"package version surfaces agree: {next(iter(normalized.values()))}")
         return 0
     print("::error::version surfaces disagree:")
     for path, raw in versions.items():

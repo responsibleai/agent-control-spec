@@ -4,15 +4,16 @@
 | --- | --- | --- | --- |
 | 1 Model and invariants | Partial | Stateless, deterministic, fail closed runtime behavior | `core/tests/fixture_cases.rs`, `tests/conformance/fail_closed_error_parity.json`, `core/tests/frozen_contract.rs` |
 | 2 Manifest | Partial | Required manifest blocks and validation | `core/tests/manifest_extends.rs`, `core/tests/fixtures/manifests/`, `tests/conformance/fail_closed_error_parity.json` |
+| 2.1 Version (dependencies) | Covered | `0.5.0-alpha.1` opt-in, original `0.4.0-alpha.1` extension semantics, unsupported-version rejection, and one version across an entire `extends` chain | `engine/tests/contract.rs`, `engine/tests/annotation_chaining.rs`, `engine/src/artifact_tests.rs`, `tests/conformance/bindings/cross_language_parity.py` |
 | 2.2 Extends | Partial | Ordered parent loading coverage retained for ACS compatibility while AGT hosts submit flat manifests | `core/tests/manifest_extends.rs`, `core/tests/fixtures/extends/`, `core/src/manifest.rs` unit tests |
-| 3 Paths | Covered | Missing paths, type mismatches, allowed roots, transform target confinement | `tests/conformance/fail_closed_error_parity.json` cases `path-missing`, `tool-name-from-non-string`, `manifest-invalid-policy-target-root`, `manifest-invalid-tool-name-root`, `manifest-invalid-annotation-reads-annotations`, `transform-target-forbidden` |
+| 3 Paths | Covered | Missing paths, type mismatches, transform target confinement, and version-gated annotation reads with null distinct from missing | `tests/conformance/fail_closed_error_parity.json` cases `path-missing`, `tool-name-from-non-string`, `transform-target-forbidden`; `engine/tests/annotation_chaining.rs` |
 | 4 Intervention points | Covered | Closed intervention point set and unconfigured point failure | `spec-08-intervention-points.case-01`, `spec-08-intervention-points.case-02`, `spec-08-intervention-points.case-03`, `spec-08-intervention-points.case-04`, `spec-08-intervention-points.case-05`, `spec-08-intervention-points.case-06`, `spec-08-intervention-points.case-07` |
 | 5 Modes | Covered | `enforce` applies transforms while `evaluate_only` validates transforms without mutation | `spec-05-evaluate-only.case-01`, `spec-16-effects.case-01`, `spec-16-effects.case-02` |
 | 6 Evaluation order | Covered | Policy target, tool projection, annotations, policy dispatch, normalization, transforms | `spec-10-annotators.case-01`, `spec-12-dispatcher.case-01`, `core/tests/fixture_cases.rs` |
 | 7 Policy input | Partial | Canonical five member policy input shape | `core/tests/fixtures/policy-inputs/`, `core/tests/frozen_contract.rs`, `core/tests/wire_schemas.rs` |
 | 8 Canonical serialization | Covered | Stable sorted object serialization for action identity | `spec-08-action-identity.case-08`, `core/tests/frozen_contract.rs`, `core/tests/security_conformance.rs` |
 | 9 Tools | Covered | Tool projection, unknown tool fail closed behavior, optional host supplied invocation ID | `spec-09-tool-projection.case-01`, `spec-09-tool-projection.case-02`, `tests/conformance/fail_closed_error_parity.json` |
-| 10 Annotators | Covered | Lexicographic dispatch, output isolation, annotator failures, timeouts | `spec-10-annotators.case-01`, `tests/conformance/fail_closed_error_parity.json` cases `annotation-failed`, `annotation-timeout` |
+| 10 Annotators | Covered | Legacy lexical dispatch and empty annotations; `0.5.0-alpha.1` Kahn ordering after every completion, exactly-once successful graph execution, direct dependency inputs, and first-error termination | `spec-10-annotators.case-01`, `spec-10-annotators.case-02`, `spec-10-annotators.case-03`, `spec-10-annotators.case-04`, `engine/tests/annotation_chaining.rs`, `tests/conformance/bindings/cross_language_parity.py`, `tests/conformance/fail_closed_error_parity.json` cases `annotation-failed`, `annotation-timeout` |
 | 11 Information flow control | Covered | Stateless label flow through source labels and tool metadata | `spec-18-ifc.case-01`, `spec-18-ifc.case-02` |
 | 12 Policies | Covered | Rego, Cedar, test, custom policy config and dispatcher boundary | `spec-12-dispatcher.case-01`, `tests/conformance/fail_closed_error_parity.json` cases `policy-invocation-failed`, `policy-output-not-object`, `policy-output-missing-decision` |
 | 12.4 Cedar policy | Partial | Bundled dispatcher builds the request context from the snapshot (envelope included) and the nested annotations record, translates floats to decimal, drops null record members, fails closed on a null set element and on values Cedar cannot hold, takes the deny reason from the first contributing `@id`, translates `@advice`, and rejects the `query` override. Rust only: the corpus case runs through the bundled dispatcher in the Rust runner, and the stock library binding tests are Rust integration tests. The library's own Cedar test corpus runs under the `cedar-lib` CI job with a pinned `cedar-policy-cli`. No binding runner exercises a cedar case yet | `spec-12-cedar-context.case-01`, `engine/tests/cedar_context.rs`, `engine/src/cedar.rs` unit tests, `engine/src/policy.rs` cedar manifest tests, `policy/cedar-lib/run_tests.sh` |
@@ -29,3 +30,16 @@
 | 21 Security considerations | Partial | Fail closed, snapshot trust, annotation distrust, approvals, telemetry redaction | `docs/security-model.md`, `tests/parity/telemetry_redaction_canonical.json`, approval and fail closed fixtures |
 | 22 Versioning and stability | Partial | Version pinning and breaking change policy | `core/tests/frozen_contract.rs`, `core/tests/wire_schemas.rs` |
 | 23 References | Informative | Reference list only | No executable coverage required |
+
+The chaining fixtures target `0.5.0-alpha.1`. Separate compatibility cases check
+that `0.4.0-alpha.1` passes arbitrary `needs` JSON to dispatchers without changing
+order or input. The shared binding runner exercises both contracts through Rust,
+Python, Node, and .NET callbacks, including their effects on policy verdicts.
+
+Dependency coverage must also distinguish ready-set ordering from layer batching,
+direct dependencies from transitive ones, and selected `from` values from the full
+dependency outputs and snapshot still visible to dispatchers. Other required
+checks are declaration-level `needs` rejection, fetched-declaration provenance
+restrictions, version-aware invocation stripping and legacy field forwarding,
+preliminary and staged input depth checks without an early aggregate byte cap,
+and JSON-encoded array strings in `metadata.annotation_needs` without payloads.

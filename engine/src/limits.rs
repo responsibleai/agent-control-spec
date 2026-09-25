@@ -73,6 +73,15 @@ impl Limits {
         self.validate_json_depth(policy_input, "policy input")
     }
 
+    /// Validate a replacement annotations member after the other policy-input
+    /// members have passed validation. The root object contributes one level.
+    pub(crate) fn validate_policy_annotations(
+        self,
+        annotations: &JsonValue,
+    ) -> Result<(), RuntimeError> {
+        validate_json_depth(annotations, 1, self.max_policy_input_depth, "policy input")
+    }
+
     pub fn validate_policy_output(self, policy_output: &JsonValue) -> Result<(), RuntimeError> {
         self.validate_json_depth(policy_output, "policy output")?;
         let bytes = canonical_json(policy_output).map_err(|err| {
@@ -172,4 +181,41 @@ fn reject_reserved_reason(value: &JsonValue) -> Result<(), String> {
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod dependency_depth_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn replacement_annotations_have_the_same_depth_result_as_the_full_input() {
+        for limit in 1..9 {
+            let limits = Limits {
+                max_policy_input_depth: limit,
+                ..Default::default()
+            };
+            let preliminary = json!({"snapshot":null, "annotations":{}});
+            if limits.validate_policy_input(&preliminary).is_err() {
+                continue;
+            }
+            for depth in 0..9 {
+                let mut output = json!(null);
+                for index in 0..depth {
+                    output = if index % 2 == 0 {
+                        json!([output])
+                    } else {
+                        json!({"value":output})
+                    };
+                }
+                let annotations = json!({"source":output});
+                let staged = json!({"snapshot":null,"annotations":annotations});
+                assert_eq!(
+                    limits.validate_policy_annotations(&annotations),
+                    limits.validate_policy_input(&staged),
+                    "limit={limit}, output depth={depth}",
+                );
+            }
+        }
+    }
 }

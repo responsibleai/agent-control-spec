@@ -959,6 +959,11 @@ impl Manifest {
                     "annotator names must not be empty".to_string(),
                 ));
             }
+            if self.annotation_chaining_enabled() && annotator.fields.contains_key("needs") {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotator '{annotator_name}' must declare needs on an intervention-point binding"
+                )));
+            }
             if annotator.annotator_type == crate::annotation::AnnotatorType::Llm {
                 crate::annotation::system_prompt_source(&annotator.fields)?;
             }
@@ -1087,6 +1092,41 @@ impl Manifest {
         Ok(())
     }
 
+    pub(crate) fn annotation_chaining_enabled(&self) -> bool {
+        manifest_version::contract(&self.agent_control_specification_version)
+            .is_some_and(|contract| contract.annotation_chaining)
+    }
+
+    /// Keep the original public config shape and legacy extension values.
+    /// Only the new manifest version interprets `needs` as dependencies.
+    pub(crate) fn annotation_dependencies<'a>(
+        &self,
+        annotation: &'a AnnotationConfig,
+    ) -> Result<Vec<&'a str>, RuntimeError> {
+        if !self.annotation_chaining_enabled() {
+            return Ok(Vec::new());
+        }
+        let Some(value) = annotation.fields.get("needs") else {
+            return Ok(Vec::new());
+        };
+        let values = value.as_array().ok_or_else(|| {
+            RuntimeError::ManifestInvalid("annotation needs must be an array of names".into())
+        })?;
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|name| !name.trim().is_empty())
+                    .ok_or_else(|| {
+                        RuntimeError::ManifestInvalid(
+                            "annotation needs entries must be non-empty names".into(),
+                        )
+                    })
+            })
+            .collect()
+    }
+
     /// A binding overlays the declaration it names at dispatch. When the
     /// two come from different sides of the host boundary, the overlay is
     /// how a fetched document reaches a host credential that is not in the
@@ -1119,6 +1159,23 @@ impl Manifest {
                      declared; binding fields overlay the declaration at dispatch, so in a {} a \
                      fetched binding for a host declared annotator may set only `from`; fetched \
                      documents: {}",
+                    crate::constants::provenance::MARKER,
+                    self.url_sources.join(", ")
+                )));
+            }
+        }
+        if declaration_fetched {
+            // A remote-selected endpoint must not receive host annotator results.
+            if let Some(need) = self
+                .annotation_dependencies(annotation)?
+                .iter()
+                .find(|need| !self.url_sourced_annotators.contains(**need))
+            {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotation '{name}' for intervention point {point} needs '{need}', which the \
+                     host declared, onto annotator '{name}', which a fetched document declared; \
+                     in a {} that document chose the endpoint that would receive '{need}' \
+                     results; fetched documents: {}",
                     crate::constants::provenance::MARKER,
                     self.url_sources.join(", ")
                 )));
@@ -1265,7 +1322,8 @@ fn validate_point_config(
                 intervention_point
             )));
         }
-        let invocation = crate::AnnotatorInvocation::from_annotation(
+        let invocation = crate::AnnotatorInvocation::from_annotation_in(
+            manifest,
             &manifest.annotators[annotation_name],
             annotation_config,
         );
@@ -1289,12 +1347,53 @@ fn validate_point_config(
                     "invalid annotation '{annotation_name}' from path for intervention point {}: {err}", intervention_point
                 ))
             })?;
-        if from_path.references_pi_annotations() {
-            return Err(RuntimeError::ManifestInvalid(format!(
-                "annotation '{annotation_name}' for intervention point {} must not reference existing policy-input annotations", intervention_point
-            )));
+        if !manifest.annotation_chaining_enabled() {
+            if from_path.references_pi_annotations() {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotation '{annotation_name}' must not read policy-input annotations in this manifest version"
+                )));
+            }
+            continue;
+        }
+        let mut seen_needs = BTreeSet::new();
+        for need in manifest.annotation_dependencies(annotation_config)? {
+            if need == annotation_name {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotation '{annotation_name}' for intervention point {intervention_point} must not depend on itself"
+                )));
+            }
+            if !seen_needs.insert(need) {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotation '{annotation_name}' for intervention point {intervention_point} lists '{need}' in needs more than once"
+                )));
+            }
+            // An annotator that this point does not opt into never runs
+            // here, so a dependency on it could never be satisfied.
+            if !config.annotations.contains_key(need) {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotation '{annotation_name}' for intervention point {intervention_point} needs '{need}', which the point does not opt into"
+                )));
+            }
+        }
+        match from_path.pi_annotation_reference() {
+            Some(reference) if !seen_needs.contains(reference) => {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotation '{annotation_name}' for intervention point {intervention_point} reads annotation '{reference}' without naming it in needs"
+                )));
+            }
+            Some(_) => {}
+            // `$pi.annotations` with no name reads the whole map, which
+            // would expose annotations this one never declared.
+            None if from_path.references_pi_annotations() => {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotation '{annotation_name}' for intervention point {intervention_point} must read a named annotation, not the whole annotations map"
+                )));
+            }
+            None => {}
         }
     }
+
+    annotation_dispatch_order(intervention_point, config, manifest)?;
 
     let policy = &config.policy;
     if policy.id.trim().is_empty() {
@@ -1312,6 +1411,60 @@ fn validate_point_config(
     validate_policy_binding(intervention_point, policy, policy_config)?;
 
     Ok(())
+}
+
+/// Iterative Kahn ordering with a lexicographic ready queue.
+/// Callers validate dependency names and duplicates before sorting.
+pub(crate) fn annotation_dispatch_order(
+    intervention_point: InterceptionPoint,
+    config: &InterventionPointConfig,
+    manifest: &Manifest,
+) -> Result<Vec<String>, RuntimeError> {
+    if !manifest.annotation_chaining_enabled() {
+        return Ok(config.annotations.keys().cloned().collect());
+    }
+    let mut remaining_needs: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut dependents: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut ready: BTreeSet<&str> = BTreeSet::new();
+
+    for (name, annotation) in &config.annotations {
+        let needs = manifest.annotation_dependencies(annotation)?;
+        remaining_needs.insert(name.as_str(), needs.len());
+        if needs.is_empty() {
+            ready.insert(name.as_str());
+        }
+        for need in needs {
+            dependents.entry(need).or_default().push(name);
+        }
+    }
+
+    let mut order = Vec::with_capacity(config.annotations.len());
+    while let Some(name) = ready.pop_first() {
+        order.push(name.to_string());
+        for dependent in dependents.get(name).into_iter().flatten() {
+            if let Some(count) = remaining_needs.get_mut(*dependent) {
+                *count -= 1;
+                if *count == 0 {
+                    ready.insert(dependent);
+                }
+            }
+        }
+    }
+
+    if order.len() != config.annotations.len() {
+        let mut cycle: Vec<&str> = remaining_needs
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .map(|(name, _)| *name)
+            .collect();
+        cycle.sort_unstable();
+        return Err(RuntimeError::ManifestInvalid(format!(
+            "intervention point {intervention_point} has unresolvable annotation needs (cycle or blocked by one) among: {}",
+            cycle.join(", ")
+        )));
+    }
+
+    Ok(order)
 }
 
 fn validate_approval_section(approval: &ApprovalSection) -> Result<(), RuntimeError> {
@@ -2434,7 +2587,8 @@ fn merge_manifest(
     incoming: Manifest,
     source: &ManifestSource,
 ) -> Result<(), RuntimeError> {
-    if existing.agent_control_specification_version != incoming.agent_control_specification_version
+    if existing.agent_control_specification_version.trim()
+        != incoming.agent_control_specification_version.trim()
     {
         return manifest_merge_conflict("agent_control_specification_version", source);
     }
@@ -4026,6 +4180,125 @@ intervention_points:
         assert_eq!(input.fields["system_prompt"], json!("be strict"));
         let output = &manifest.intervention_points[&InterceptionPoint::Output].annotations["judge"];
         assert!(output.fields.is_empty());
+    }
+
+    /// `needs` widens what an annotator is shown, so it is a binding
+    /// choice like `from` rather than a free field. A fetched binding for
+    /// a host declared annotator may set only `from`.
+    #[test]
+    fn remote_binding_cannot_add_needs_to_host_declared_annotator() {
+        let remote = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n"
+        );
+        let path = root_extending_url(
+            "url-remote-needs-on-host-annotator.yaml",
+            REMOTE,
+            &format!(
+                "{TEST_POLICY_INPUT_POINT}annotators:\n  judge:\n    type: llm\n    endpoint: https://judge.host.example/v1\n  scanner:\n    type: classifier\n"
+            ),
+        );
+
+        let error = load_with_fetcher(&path, fetcher_with(REMOTE, &remote), Limits::default())
+            .expect_err("a fetched binding may not set needs on a host declared annotator");
+
+        assert_url_sourced_refusal(&error, &["field 'needs'", "judge", "may set only `from`"]);
+    }
+
+    /// The fetched document chose this annotator's endpoint, so whatever
+    /// it is shown leaves for that endpoint. A host declared annotator's
+    /// result is not something reading the snapshot alone would reach.
+    #[test]
+    fn remote_declared_annotator_cannot_need_a_host_declared_one() {
+        let remote = format!(
+            "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n"
+        );
+        let path = root_extending_url(
+            "url-remote-needs-host-result.yaml",
+            REMOTE,
+            &format!("{TEST_POLICY_INPUT_POINT}annotators:\n  scanner:\n    type: classifier\n"),
+        );
+
+        fs::write(
+            &path,
+            fs::read_to_string(&path)
+                .unwrap()
+                .replace("0.4.0-alpha.1", "0.5.0-alpha.1"),
+        )
+        .unwrap();
+        let remote = remote.replace("0.4.0-alpha.1", "0.5.0-alpha.1");
+        let error = load_with_fetcher(&path, fetcher_with(REMOTE, &remote), Limits::default())
+            .expect_err("a fetched annotator may not consume a host declared annotator's result");
+
+        assert_url_sourced_refusal(
+            &error,
+            &["needs 'scanner'", "which the host declared", "judge"],
+        );
+    }
+
+    #[test]
+    fn host_binding_cannot_make_fetched_annotator_need_host_result() {
+        let remote = "agent_control_specification_version: 0.5.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\n";
+        let path = root_path(
+            "url-host-binding-needs-host-result.yaml",
+            &format!(
+                "agent_control_specification_version: 0.5.0-alpha.1\nextends:\n  - {REMOTE}\n{TEST_POLICY_INPUT_POINT}    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $pi.annotations.scanner.label\nannotators:\n  scanner:\n    type: classifier\n"
+            ),
+        );
+        let fetcher = fetcher_with(REMOTE, remote);
+
+        let error = load_with_fetcher(&path, fetcher.clone(), Limits::default())
+            .expect_err("a host binding cannot expose host results to a fetched annotator");
+
+        assert_eq!(fetcher.calls(REMOTE), 1);
+        assert_url_sourced_refusal(
+            &error,
+            &[
+                "needs 'scanner', which the host declared",
+                "annotator 'judge', which a fetched document declared",
+                "fetched documents: https://policy.example/base.yaml",
+            ],
+        );
+    }
+
+    /// Two fetched documents may chain each other, the same way they may
+    /// overlay each other. Nothing of the host's crosses the boundary.
+    #[test]
+    fn two_fetched_documents_may_chain_their_own_annotators() {
+        let scanner_url = "https://a.example/scanner.yaml";
+        let judge_url = "https://b.example/judge.yaml";
+        let scanner = "agent_control_specification_version: 0.5.0-alpha.1\nannotators:\n  scanner:\n    type: classifier\nintervention_points:\n  output:\n    annotations:\n      scanner:\n        from: $target.text\n";
+        let judge = "agent_control_specification_version: 0.5.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      judge:\n        needs: [scanner]\n        from: $pi.annotations.scanner.label\n";
+        let path = root_path(
+            "url-two-fetched-chain.yaml",
+            &format!(
+                "agent_control_specification_version: 0.5.0-alpha.1\nextends:\n  - url: {scanner_url}\n    integrity: {}\n  - {judge_url}\n{TEST_POLICY_INPUT_POINT}",
+                sri(scanner.as_bytes())
+            ),
+        );
+        let fetcher = MockFetcher::new(BTreeMap::from([
+            (scanner_url.to_string(), scanner.as_bytes().to_vec()),
+            (judge_url.to_string(), judge.as_bytes().to_vec()),
+        ]));
+        let manifest = load_with_fetcher(&path, fetcher.clone(), Limits::default())
+            .expect("fetched documents share one trust class, pinned or not");
+
+        let judge = &manifest.intervention_points[&InterceptionPoint::Output].annotations["judge"];
+        assert_eq!(
+            manifest.annotation_dependencies(judge).unwrap(),
+            vec!["scanner"]
+        );
+        assert_eq!(fetcher.calls(scanner_url), 1);
+        assert_eq!(fetcher.calls(judge_url), 1);
+        assert_eq!(
+            manifest.url_sources(),
+            [scanner_url.to_string(), judge_url.to_string()]
+        );
+        for name in ["scanner", "judge"] {
+            assert!(manifest.url_sourced_annotators.contains(name));
+            assert!(manifest
+                .url_sourced_annotations
+                .contains(&(InterceptionPoint::Output, name.to_string())));
+        }
     }
 
     /// Two fetched documents may overlay each other: one declares the
