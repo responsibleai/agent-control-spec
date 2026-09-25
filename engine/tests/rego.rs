@@ -934,7 +934,17 @@ fn rego_repeated_timeouts_do_not_grow_threads_without_bound() {
 }
 
 /// Loading the bundle must be inside the deadline, not before it.
+///
+/// Skipped on macOS. Hosted macOS runners spend 90 to 140 ms on the fixed
+/// cost outside the 20 ms deadline, seven times the deadline itself, so the
+/// ratio below measures the runner's file I/O rather than the engine and
+/// tripped twice in one hour on 2026-09-25 (#98). Linux and Windows still
+/// guard the regression.
 #[test]
+#[cfg_attr(
+    target_os = "macos",
+    ignore = "measures the runner on hosted macOS, see #98"
+)]
 fn rego_bundle_load_is_bounded_by_the_eval_timeout() {
     let dir = test_artifact_dir("rego-load-inside-deadline");
     for index in 0..6000 {

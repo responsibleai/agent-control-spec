@@ -964,7 +964,13 @@ def test_granted_waiter_delayed_past_deadline_never_starts_native_work(monkeypat
                     stalled = True
                     # Deliberately prevent the ready waiter and timeout callback
                     # from running until the recorded deadline has passed.
-                    time.sleep(max(0, deadlines[0] - loop.time()) + 0.01)
+                    # Sleep for the bulk of the wait, then spin until the
+                    # loop's own clock is past the deadline: on Windows a
+                    # sleep can return before the monotonic clock shows the
+                    # deadline as passed, and the adapter reads that clock (#98).
+                    time.sleep(max(0, deadlines[0] - loop.time()))
+                    while loop.time() <= deadlines[0]:
+                        pass
 
             monkeypatch.setattr(adapter, "_wake_waiters", wake_then_block_loop)
             first = asyncio.create_task(emitter.emit(builder().input(content="first")))
