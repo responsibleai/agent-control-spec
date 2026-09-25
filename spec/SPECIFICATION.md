@@ -453,6 +453,8 @@ A runtime failure yields a `deny` verdict whose `reason` is one of the identifie
 | `runtime_error:resolution_invalid_governance` | AGT host side resolution failed to validate a `governance.yaml` during merge. |
 | `runtime_error:resolution_merge_conflict` | AGT host side resolution found two non rule sections that could not be merged. |
 
+AGT host side resolution, not the core runtime, produces the four `runtime_error:resolution_*` reasons; `spec/reserved-reasons.json` lists them under producer `agt-resolution`.
+
 Approval binding, resolver failures, streaming assembly, and adapter mediation are host obligations under AGENT-HOOKS-0.1, whose section 11 reserves the corresponding `host_error:*` reasons. The legacy SDK-layer reasons below remain reserved for compatibility while the language SDKs are rebuilt on agent-hooks; new code MUST use the agent-hooks reasons for those host obligations.
 
 This draft deliberately makes one narrow exception: the three registered `runtime_error:acs_async_*` reasons identify admission failures returned by the ACS async interceptor itself. An interceptor cannot synthesize the emitter's reserved `host_error:*` reasons, and an unreserved label could be imitated by policy output. The exception covers only the listed capacity, admission-deadline and closed-state denials. It does not authorize new unregistered names, replace emitter timeout or exception handling, or move approval, resolver, streaming or general host failures into the ACS namespace.

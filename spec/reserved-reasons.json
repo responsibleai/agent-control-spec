@@ -54,17 +54,37 @@
     {
       "reason": "runtime_error:transform_invalid",
       "producer": "core-runtime",
-      "cause": "transform.path failed the transform grammar."
+      "cause": "A `transform` was malformed, its path did not resolve, or its value could not be set."
     },
     {
       "reason": "runtime_error:transform_target_forbidden",
       "producer": "core-runtime",
-      "cause": "transform.path is not rooted at $target."
+      "cause": "A `transform` path pointed outside `$target`."
     },
     {
       "reason": "runtime_error:resource_limit_exceeded",
       "producer": "core-runtime",
       "cause": "Evaluation or manifest loading exceeded a configured resource limit."
+    },
+    {
+      "reason": "runtime_error:resolution_path_traversal",
+      "producer": "agt-resolution",
+      "cause": "AGT host side resolution refused an action path that resolved outside the workspace root."
+    },
+    {
+      "reason": "runtime_error:resolution_cycle",
+      "producer": "agt-resolution",
+      "cause": "AGT host side resolution detected a cycle while merging an `extends` chain."
+    },
+    {
+      "reason": "runtime_error:resolution_invalid_governance",
+      "producer": "agt-resolution",
+      "cause": "AGT host side resolution failed to validate a `governance.yaml` during merge."
+    },
+    {
+      "reason": "runtime_error:resolution_merge_conflict",
+      "producer": "agt-resolution",
+      "cause": "AGT host side resolution found two non rule sections that could not be merged."
     },
     {
       "reason": "runtime_error:approval_resolver_failed",

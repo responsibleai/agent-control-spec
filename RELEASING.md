@@ -42,20 +42,18 @@ Section 16's exception is limited to these interceptor-produced denials.
 The emitter keeps its `host_error:*` obligations; the scope-allow label
 is not a reserved error.
 
-These additions are unreleased amendments to a Draft that still
-identifies itself as `0.4.0-alpha.1`. This change does not allocate a
-new grammar identifier or bump versions independently of the other SDKs.
-That is a deferral of version allocation,
-not an exemption from section 22: the next published specification
-containing these additive reserved reasons needs a minor-version
-increment, not a patch-only change. Allocate it and update the supported
-versions, schema/fixtures and compatibility cases in the contract-release
-change before publishing that specification.
+The three reasons ship in specification `0.5.0-alpha.1`. Section 22
+requires a minor bump for an added reserved reason; the annotator
+dependency change (#78) made that bump. Legacy manifest contract
+`0.4.0-alpha.1` stays supported (section 2.1). The test
+`reserved_reason_tables_match_inventory` in
+`engine/tests/security_conformance.rs` fails when the section 16 tables
+and `spec/reserved-reasons.json` disagree.
 
-Runtime package metadata and the manifest/specification identifier are
-separate version surfaces. The prepared `0.4.0-alpha.4` package metadata
-does not satisfy the specification's minor-version requirement or mean
-that either artifact was published.
+Runtime package metadata (`0.4.0-alpha.4`) and the specification
+identifier are separate version surfaces. Neither ships before the
+tag. Before tagging, confirm the supported versions, schema,
+fixtures and compatibility cases still match section 2.1.
 
 ## Generator compatibility
 

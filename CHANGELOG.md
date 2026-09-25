@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- `RELEASING.md` now says the `runtime_error:acs_async_*` reasons ship in
+  specification `0.5.0-alpha.1`. It had called that minor bump pending;
+  #78 made it.
+  `spec/reserved-reasons.json` now lists the four AGT host side resolution
+  reasons under producer `agt-resolution`, and its cause text for the two
+  transform reasons matches section 16. An engine test pins both section 16
+  tables to the inventory: same reason set, same producer, same cause text.
+  Closes #97.
+- Thanks to david-long1 for the Rust 1.89 minimum report (#85) and the
+  oversize evidence conformance vector (#89).
 - Replace archived `serde_yaml` and its transpiled libyaml dependency with
   `serde-saphyr` (caret `1.2`, locked to `1.2.0`) and `granit-parser` `1.2.1`.
   Building the engine requires Rust 1.89, now checked in CI. Regorus YAML
@@ -99,8 +109,7 @@
   off-loop. Cross-loop evaluation remains rejected.
   The three reserved admission reasons are an explicit, narrow draft
   contract exception to the host-error guidance, not a general namespace
-  change. Specification minor-version allocation remains a release gate
-  documented in `RELEASING.md`; no new grammar is allocated here.
+  change. They ship in specification `0.5.0-alpha.1`.
 - All Python `ActivatedPolicy` constructors now accept `telemetry_sink`,
   `perf_telemetry`, and `limits`, preserving these settings through
   async evaluation. Both file and in-memory activation apply host limits

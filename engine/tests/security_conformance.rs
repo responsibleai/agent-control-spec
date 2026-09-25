@@ -141,9 +141,12 @@ fn target_dir(name: &str) -> PathBuf {
         .join(name)
 }
 
-#[test]
-fn runtime_error_reason_table_matches_spec_section_15() {
-    let produced: BTreeSet<_> = [
+/// Every reserved reason the core runtime itself constructs. The four
+/// `runtime_error:resolution_*` variants exist on the enum for the AGT host
+/// side resolution layer and are never built by engine code, so they are not
+/// in this set.
+fn core_runtime_produced_reasons() -> BTreeSet<&'static str> {
+    [
         RuntimeError::ManifestInvalid(String::new()),
         RuntimeError::ManifestUnreadable(String::new()),
         RuntimeError::InterventionPointUnknown(String::new()),
@@ -160,26 +163,7 @@ fn runtime_error_reason_table_matches_spec_section_15() {
     ]
     .into_iter()
     .map(|error| error.reason())
-    .collect();
-
-    // This list is the complete reserved reason table from spec section 15.
-    let expected = BTreeSet::from([
-        "runtime_error:manifest_invalid",
-        "runtime_error:manifest_unreadable",
-        "runtime_error:intervention_point_unknown",
-        "runtime_error:path_missing",
-        "runtime_error:path_type_mismatch",
-        "runtime_error:tool_unknown",
-        "runtime_error:annotation_failed",
-        "runtime_error:annotation_timeout",
-        "runtime_error:policy_invocation_failed",
-        "runtime_error:policy_output_invalid",
-        "runtime_error:transform_invalid",
-        "runtime_error:transform_target_forbidden",
-        "runtime_error:resource_limit_exceeded",
-    ]);
-
-    assert_eq!(produced, expected);
+    .collect()
 }
 
 #[test]
@@ -194,24 +178,7 @@ fn reserved_reason_inventory_matches_producers() {
         .map(|entry| entry["reason"].as_str().unwrap())
         .collect();
 
-    let core_runtime_produced: BTreeSet<_> = [
-        RuntimeError::ManifestInvalid(String::new()),
-        RuntimeError::ManifestUnreadable(String::new()),
-        RuntimeError::InterventionPointUnknown(String::new()),
-        RuntimeError::PathMissing(String::new()),
-        RuntimeError::PathTypeMismatch(String::new()),
-        RuntimeError::ToolUnknown(String::new()),
-        RuntimeError::AnnotationFailed(String::new()),
-        RuntimeError::AnnotationTimeout(String::new()),
-        RuntimeError::PolicyInvocationFailed(String::new()),
-        RuntimeError::PolicyOutputInvalid(String::new()),
-        RuntimeError::TransformInvalid(String::new()),
-        RuntimeError::TransformTargetForbidden(String::new()),
-        RuntimeError::ResourceLimitExceeded(String::new()),
-    ]
-    .into_iter()
-    .map(|error| error.reason())
-    .collect();
+    let core_runtime_produced = core_runtime_produced_reasons();
 
     // The core-runtime subset of the inventory must equal exactly the reasons the
     // core runtime can produce. This prevents drift between the enum and the spec.
@@ -223,11 +190,7 @@ fn reserved_reason_inventory_matches_producers() {
         let producer = entry["producer"].as_str().unwrap();
         assert!(reason.starts_with("runtime_error:"), "{reason}");
         assert!(
-            producer == "core-runtime"
-                || producer == "sdk-approval"
-                || producer == "sdk-streaming"
-                || producer == "sdk-adapter"
-                || producer == "sdk-wire",
+            KNOWN_PRODUCERS.contains(&producer),
             "unknown producer {producer} for {reason}"
         );
     }
@@ -243,6 +206,96 @@ fn reserved_reason_inventory_matches_producers() {
             .unwrap_or_else(|| panic!("{reason} reason present"));
         assert_eq!(entry["producer"], producer);
         assert!(!core_runtime_produced.contains(reason));
+    }
+}
+
+/// The closed set of producer labels the inventory may use.
+const KNOWN_PRODUCERS: [&str; 6] = [
+    "core-runtime",
+    "agt-resolution",
+    "sdk-approval",
+    "sdk-streaming",
+    "sdk-adapter",
+    "sdk-wire",
+];
+
+/// Reads one section 16 Markdown table: the line equal to `header`, its
+/// separator, then every following row up to the blank line that ends the
+/// table. Cells are trimmed; callers strip backticks from reason and
+/// producer cells.
+fn spec_reason_table(spec: &str, header: &str) -> Vec<Vec<String>> {
+    let mut lines = spec.lines();
+    let header_count = spec.lines().filter(|line| *line == header).count();
+    assert_eq!(header_count, 1, "table header {header:?} must occur once");
+    lines.find(|line| *line == header).unwrap();
+    let separator = lines.next().unwrap();
+    assert!(separator.starts_with("| ---"), "{separator}");
+
+    let columns = header.trim_matches('|').split('|').count();
+    lines
+        .take_while(|line| line.starts_with('|'))
+        .map(|line| {
+            let cells: Vec<String> = line
+                .trim_matches('|')
+                .split('|')
+                .map(|cell| cell.trim().to_string())
+                .collect();
+            assert_eq!(cells.len(), columns, "{line}");
+            cells
+        })
+        .collect()
+}
+
+#[test]
+fn reserved_reason_tables_match_inventory() {
+    let spec = include_str!("../../spec/SPECIFICATION.md");
+    let inventory: Value =
+        serde_json::from_str(include_str!("../../spec/reserved-reasons.json")).unwrap();
+    let core_runtime_produced = core_runtime_produced_reasons();
+
+    // reason -> (producer, cause). The two-column table has no producer
+    // column: its rows are core-runtime reasons or the AGT resolution reasons.
+    let mut tables: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for row in spec_reason_table(spec, "| Reason | Cause |") {
+        let reason = row[0].trim_matches('`').to_string();
+        let producer = if core_runtime_produced.contains(reason.as_str()) {
+            "core-runtime"
+        } else {
+            "agt-resolution"
+        };
+        let previous = tables.insert(reason.clone(), (producer.to_string(), row[1].clone()));
+        assert!(previous.is_none(), "duplicate table row {reason}");
+    }
+    for row in spec_reason_table(spec, "| Reason | Producer | Cause |") {
+        let reason = row[0].trim_matches('`').to_string();
+        let producer = row[1].trim_matches('`').to_string();
+        let previous = tables.insert(reason.clone(), (producer, row[2].clone()));
+        assert!(previous.is_none(), "duplicate table row {reason}");
+    }
+
+    let mut listed: BTreeMap<String, (String, String)> = BTreeMap::new();
+    for entry in inventory["reasons"].as_array().unwrap() {
+        let reason = entry["reason"].as_str().unwrap().to_string();
+        let producer = entry["producer"].as_str().unwrap().to_string();
+        let cause = entry["cause"].as_str().unwrap().to_string();
+        let previous = listed.insert(reason.clone(), (producer, cause));
+        assert!(previous.is_none(), "duplicate inventory entry {reason}");
+    }
+
+    let table_reasons: BTreeSet<_> = tables.keys().collect();
+    let listed_reasons: BTreeSet<_> = listed.keys().collect();
+    let drift: Vec<_> = table_reasons
+        .symmetric_difference(&listed_reasons)
+        .collect();
+    assert!(
+        drift.is_empty(),
+        "reasons in only one of the section 16 tables and spec/reserved-reasons.json: {drift:?}"
+    );
+
+    for (reason, (table_producer, table_cause)) in &tables {
+        let (listed_producer, listed_cause) = &listed[reason];
+        assert_eq!(listed_producer, table_producer, "producer for {reason}");
+        assert_eq!(listed_cause, table_cause, "cause text for {reason}");
     }
 }
 
