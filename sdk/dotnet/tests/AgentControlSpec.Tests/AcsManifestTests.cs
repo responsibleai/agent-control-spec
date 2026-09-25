@@ -59,7 +59,7 @@ public sealed class AcsManifestTests
             foreach (var source in new[]
             {
                 Valid + "\n# " + new string('x', 1_048_576),
-                "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: " + new string('[', 65) + "0" + new string(']', 65),
+                "agent_control_specification_version: 0.4.0-alpha.1\nmetadata:\n  v: " + new string('[', 65) + "0" + new string(']', 65),
             })
             {
                 var error = Assert.Throws<AgentControlSpecNativeException>(() => operation(source));

@@ -239,6 +239,13 @@
   holding the lock across it stopped every thread in the process for the sum of
   those round trips. A Python host dispatcher re-acquires through
   `Python::attach`, unchanged.
+- `metadata` must be an object, as the schema has always required. A string,
+  number, boolean or sequence now fails closed with
+  `runtime_error:manifest_invalid` in every binding. YAML `metadata: null`
+  still reads as an empty object and merges as absent across `extends`, so a
+  chain whose parent sets it to null and whose child carries an object now
+  merges where it previously failed closed; JSON null is rejected. Rust
+  `Manifest.metadata` is now `serde_json::Map<String, Value>`. Closes #93.
 
 ## 0.4.0-alpha.3
 

@@ -59,7 +59,7 @@ def test_diagnostics_do_not_relabel_resource_failures_as_findings():
     for operation in [validate_artifacts, validate_manifest_detailed]:
         for source in [
             VALID + "\n# " + "x" * 1_048_576,
-            "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: "
+            "agent_control_specification_version: 0.4.0-alpha.1\nmetadata:\n  v: "
             + "[" * 65
             + "0"
             + "]" * 65,
