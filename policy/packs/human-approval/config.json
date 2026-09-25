@@ -1,0 +1,10 @@
+{
+  "pack": {
+    "tools": {
+      "search": {"mode": "allow"},
+      "read_document": {"mode": "allow"},
+      "send_email": {"mode": "review"},
+      "delete_record": {"mode": "review"}
+    }
+  }
+}

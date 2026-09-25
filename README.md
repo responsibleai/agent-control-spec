@@ -37,6 +37,7 @@ those are host obligations defined by agent-hooks.
 | [`generator/`](generator/README.md) | Optional `acs-policy-gen` authoring tool. Produces draft manifests and Rego from prose, with parser checks and ACS validation |
 | `spec/` | The ACS specification (policy plane) and schemas |
 | `policy/` | Cedar and Rego policy libraries |
+| `policy/packs/` | Configurable policy packs, host contracts, offline examples and native runtime tests |
 | `fixtures/` | Evaluation fixtures |
 | `docs/EXTRACTION.md` | Provenance map from the previous tree |
 
@@ -51,3 +52,13 @@ Python: [SDK quickstart](sdk/python/README.md) and
 
 `0.4.0-alpha.4`, an alpha of the re-based runtime. Depends on
 `agent-hooks-sdk 0.1.0-alpha.5`.
+
+## Policy packs
+
+The [policy library](policy/packs/README.md) groups reusable rules around
+authorization, egress/routing, disclosure, budgets, approval and classifier
+decisions. Its adoption recipes exercise actual SQLite operations, HTTP
+dispatch and provider wire contracts. The [coverage matrix](policy/packs/COVERAGE.md)
+separates those workflows from specialist integration templates and remaining
+host obligations. Existing examples and stock Rego/Cedar packages retain their
+paths and semantics.
