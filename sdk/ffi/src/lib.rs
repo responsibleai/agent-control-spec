@@ -2365,7 +2365,7 @@ intervention_points:
     fn diagnostic_entry_points_do_not_report_resource_failures_as_findings() {
         let oversized = format!("{}\n# {}", valid_manifest_source(), "x".repeat(1_048_576));
         let excessive_depth = format!(
-            "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: {}0{}",
+            "agent_control_specification_version: 0.4.0-alpha.1\nmetadata:\n  v: {}0{}",
             "[".repeat(65),
             "]".repeat(65)
         );

@@ -22,6 +22,12 @@
    "manifest_yaml": "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  p:\n    type: test\n"
   },
   {
+   "id": "manifest-invalid-metadata-not-object",
+   "operation": "build",
+   "expected_reason": "runtime_error:manifest_invalid",
+   "manifest_yaml": "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: not-an-object\npolicies:\n  p:\n    type: test\nintervention_points:\n  input:\n    policy_target: $snap.input\n    policy:\n      id: p\n"
+  },
+  {
    "id": "manifest-invalid-unresolved-extends",
    "operation": "build",
    "expected_reason": "runtime_error:manifest_invalid",

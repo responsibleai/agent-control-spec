@@ -51,7 +51,7 @@ test("diagnostics throw resource failures instead of returning findings", () => 
   for (const operation of [validateManifestDetailed, validateArtifacts]) {
     for (const source of [
       valid + "\n# " + "x".repeat(1_048_576),
-      "agent_control_specification_version: 0.4.0-alpha.1\nmetadata: " + "[".repeat(65) + "0" + "]".repeat(65),
+      "agent_control_specification_version: 0.4.0-alpha.1\nmetadata:\n  v: " + "[".repeat(65) + "0" + "]".repeat(65),
     ]) {
       assert.throws(() => operation(source), (error) => {
         assert.ok(!(error instanceof ManifestInvalidError));

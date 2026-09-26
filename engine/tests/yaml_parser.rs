@@ -256,7 +256,10 @@ fn budgets_are_configurable_and_independent_from_policy_depth() {
             "{error}"
         );
     }
-    let source = format!("{MANIFEST}metadata: [{}]", vec!["x"; 100_001].join(","));
+    let source = format!(
+        "{MANIFEST}metadata:\n  v: [{}]",
+        vec!["x"; 100_001].join(",")
+    );
     assert!(matches!(
         Manifest::parse_yaml_str(&source),
         Err(RuntimeError::ResourceLimitExceeded(_))
@@ -289,9 +292,9 @@ fn comments_do_not_consume_the_event_budget() {
 fn default_depth_boundary_is_64_for_flow_and_block_collections() {
     for depth in [64, 65] {
         let flow = format!(
-            "{MANIFEST}metadata: {}0{}",
-            "[".repeat(depth - 1),
-            "]".repeat(depth - 1)
+            "{MANIFEST}metadata:\n  v: {}0{}",
+            "[".repeat(depth - 2),
+            "]".repeat(depth - 2)
         );
         let mut block = format!("{MANIFEST}metadata:\n");
         for level in 1..depth {
@@ -395,9 +398,8 @@ fn reserved_directives_and_some_tab_separators_are_ignored() {
         format!("{MANIFEST}metadata:\n  values:\n    -\t1\n"),
     ] {
         let parsed = Manifest::parse_yaml_str(&source).unwrap();
-        assert!(
-            parsed.metadata == json!({"value": 1}) || parsed.metadata == json!({"values": [1]})
-        );
+        let metadata = serde_json::Value::Object(parsed.metadata);
+        assert!(metadata == json!({"value": 1}) || metadata == json!({"values": [1]}));
     }
     assert!(Manifest::parse_yaml_str(&format!("{MANIFEST}metadata:\n\tvalue: 1")).is_err());
 }
@@ -511,7 +513,7 @@ fn tagged_blocks_preserve_metadata_and_sibling_fields() {
         let source = format!("{MANIFEST}metadata:\n  value: {block}\n  required: true\n");
         let manifest = Manifest::from_yaml_str(&source).unwrap();
         assert_eq!(
-            manifest.metadata,
+            serde_json::Value::Object(manifest.metadata),
             json!({"value": expected, "required": true}),
             "{block}"
         );
@@ -628,4 +630,43 @@ fn yaml_resources_are_bounded_for_single_and_chain_parsing() {
             Err(RuntimeError::ResourceLimitExceeded(_))
         ));
     }
+}
+
+#[test]
+fn metadata_must_be_an_object() {
+    for scalar in ["\"text\"", "3", "[1, 2]", "true"] {
+        let error = Manifest::from_yaml_str(&format!("{MANIFEST}metadata: {scalar}")).unwrap_err();
+        assert_eq!(
+            error.reason(),
+            "runtime_error:manifest_invalid",
+            "yaml {scalar}"
+        );
+    }
+
+    let base = Manifest::from_yaml_str(MANIFEST).unwrap();
+    let mut document: serde_json::Value =
+        serde_json::from_str(&serde_json::to_string(&base).unwrap()).unwrap();
+    for value in [
+        json!("text"),
+        json!(3),
+        json!([1, 2]),
+        json!(null),
+        json!(true),
+    ] {
+        document["metadata"] = value.clone();
+        let error = Manifest::from_json_str(&document.to_string()).unwrap_err();
+        assert_eq!(
+            error.reason(),
+            "runtime_error:manifest_invalid",
+            "json {value}"
+        );
+    }
+
+    let parsed = Manifest::from_yaml_str(&format!("{MANIFEST}metadata:\n  name: ok")).unwrap();
+    assert_eq!(parsed.metadata["name"], json!("ok"));
+
+    // An explicit null reads as absent in YAML for every optional field, so it
+    // still yields the default rather than an error. JSON has no such rule.
+    let defaulted = Manifest::from_yaml_str(&format!("{MANIFEST}metadata: null")).unwrap();
+    assert!(defaulted.metadata.is_empty());
 }

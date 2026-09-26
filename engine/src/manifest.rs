@@ -26,8 +26,8 @@ pub const SUPPORTED_VERSIONS: &[&str] = &manifest_version::SUPPORTED;
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub agent_control_specification_version: String,
-    #[serde(default = "empty_object")]
-    pub metadata: JsonValue,
+    #[serde(default)]
+    pub metadata: Map<String, JsonValue>,
     #[serde(default)]
     pub extends: Vec<ManifestExtends>,
     #[serde(default)]
@@ -1523,10 +1523,6 @@ fn validate_approval_section(approval: &ApprovalSection) -> Result<(), RuntimeEr
     Ok(())
 }
 
-fn empty_object() -> JsonValue {
-    JsonValue::Object(Map::new())
-}
-
 fn is_empty_policy_binding(policy: &PolicyBinding) -> bool {
     policy.id.is_empty() && policy.query.is_none() && policy.adapter_config.is_empty()
 }
@@ -2691,26 +2687,25 @@ fn merge_approval(
 
 fn merge_metadata(
     existing: &mut Manifest,
-    incoming_metadata: JsonValue,
+    incoming_metadata: Map<String, JsonValue>,
     source: &ManifestSource,
 ) -> Result<(), RuntimeError> {
-    let empty = empty_object();
-    if incoming_metadata == empty {
+    if incoming_metadata.is_empty() {
         return Ok(());
     }
-    if existing.metadata == empty {
+    if existing.metadata.is_empty() {
         existing.metadata = incoming_metadata;
         return Ok(());
     }
     if existing.metadata == incoming_metadata {
         return Ok(());
     }
-    match (&mut existing.metadata, incoming_metadata) {
-        (JsonValue::Object(existing), JsonValue::Object(incoming)) => {
-            merge_metadata_object(existing, incoming, "metadata", source)
-        }
-        _ => manifest_merge_conflict("metadata", source),
-    }
+    merge_metadata_object(
+        &mut existing.metadata,
+        incoming_metadata,
+        "metadata",
+        source,
+    )
 }
 
 fn merge_metadata_object(

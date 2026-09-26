@@ -53,7 +53,7 @@ A manifest is a single YAML or JSON document. The schema rejects unknown top lev
 | Property | Required | Meaning |
 | --- | --- | --- |
 | `agent_control_specification_version` | yes | Supported manifest contract version, as defined in section 2.1. |
-| `metadata` | no | Free form value the runtime does not interpret. |
+| `metadata` | no | Object of free form keys the runtime does not interpret. Merged key by key across `extends`, per section 2.2. |
 | `extends` | no | Ordered array of parent manifest paths or HTTPS URLs, defined in section 2.2. |
 | `policies` | yes | Map of named policy definitions, defined in section 12. |
 | `intervention_points` | yes | Map of intervention point configurations, defined in section 4. |
