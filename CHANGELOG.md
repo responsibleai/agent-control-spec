@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-alpha.4
 
 - `RELEASING.md` now says the `runtime_error:acs_async_*` reasons ship in
   specification `0.5.0-alpha.1`. It had called that minor bump pending;
