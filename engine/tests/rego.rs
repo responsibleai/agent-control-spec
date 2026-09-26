@@ -446,19 +446,29 @@ fn rego_dispatcher_honours_the_deadline_inside_an_uninterruptible_builtin() {
     const QUERY: &str = "x := numbers.range(1, 4000000)";
 
     // The control: the same builtin with a deadline it cannot hit, which
-    // is what this machine costs to run it.
-    let unbounded_started = Instant::now();
-    RegorusPolicyDispatcher::with_runner(
+    // is what this machine costs to run it. Best of three, because this
+    // suite runs its tests in parallel and a control inflated by a busy
+    // neighbour makes the deadline below generous enough for the bounded
+    // run to finish inside it, which reads as a missed timeout (#101).
+    // Scheduling can inflate a sample; it cannot deflate one.
+    let control = RegorusPolicyDispatcher::with_runner(
         RegorusRegoRunner::new().with_eval_timeout(Duration::from_secs(60)),
-    )
-    .evaluate(&rego_invocation(
-        QUERY,
-        None,
-        BTreeMap::new(),
-        json!({"policy_target": {"value": {}}}),
-    ))
-    .expect("the control must complete, or it is not measuring the builtin");
-    let uninterrupted = unbounded_started.elapsed();
+    );
+    let uninterrupted = (0..3)
+        .map(|_| {
+            let started = Instant::now();
+            control
+                .evaluate(&rego_invocation(
+                    QUERY,
+                    None,
+                    BTreeMap::new(),
+                    json!({"policy_target": {"value": {}}}),
+                ))
+                .expect("the control must complete, or it is not measuring the builtin");
+            started.elapsed()
+        })
+        .min()
+        .expect("three samples");
 
     // An eighth of that, so the builtin is still running when the
     // deadline expires however fast the machine is. Floored, because a
@@ -622,17 +632,25 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
     let dispatcher = RegorusPolicyDispatcher::with_runner(runner.clone());
 
     // What the heavy query costs on this machine, measured rather than
-    // assumed, so the deadline below overruns however fast it is.
-    let control_started = Instant::now();
-    dispatcher
-        .evaluate(&rego_invocation(
-            HEAVY,
-            None,
-            BTreeMap::new(),
-            json!({"policy_target": {"value": {}}}),
-        ))
-        .expect("the control must complete, or it is not measuring the query");
-    let uninterrupted = control_started.elapsed();
+    // assumed, so the deadline below overruns however fast it is. Best of
+    // three for the same reason as the builtin deadline test above: a
+    // control inflated by a busy neighbour hands the heavy run a deadline
+    // it can meet, and a met deadline reads as a missed timeout (#101).
+    let uninterrupted = (0..3)
+        .map(|_| {
+            let started = Instant::now();
+            dispatcher
+                .evaluate(&rego_invocation(
+                    HEAVY,
+                    None,
+                    BTreeMap::new(),
+                    json!({"policy_target": {"value": {}}}),
+                ))
+                .expect("the control must complete, or it is not measuring the query");
+            started.elapsed()
+        })
+        .min()
+        .expect("three samples");
 
     let heavy = RegorusPolicyDispatcher::with_runner(
         runner
