@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.0-beta.1
+
+- Promote the runtime SDKs and generator metadata from
+  `0.4.0-alpha.4` to `0.4.0-beta.1`.
+- Keep the package version independent from manifest contract
+  identifiers. Existing `0.4.0-alpha.1` and `0.5.0-alpha.1`
+  manifests remain supported with unchanged semantics.
+- Retain the published Agent Hooks `0.1.0-alpha.5` dependency until
+  `0.1.0-beta.1` is available in every registry. The coordinated
+  dependency bump is required before this beta is merged or tagged.
+
 ## 0.4.0-alpha.4
 
 - `RELEASING.md` now says the `runtime_error:acs_async_*` reasons ship in
