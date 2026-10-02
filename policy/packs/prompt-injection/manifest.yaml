@@ -1,0 +1,19 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: prompt-injection
+policies:
+  gate:
+    type: rego
+    bundle: ./policy.rego
+    data_paths: [./config.json, ../common.rego]
+    query: data.acs.packs.prompt_injection.verdict
+annotators:
+  prompt_injection:
+    type: classifier
+intervention_points:
+  input: &gate
+    policy_target: $.target
+    policy: {id: gate}
+    annotations:
+      prompt_injection: {from: $target}
+  post_tool_call: *gate

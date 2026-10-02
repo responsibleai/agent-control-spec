@@ -1,0 +1,16 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: pii
+policies:
+  gate:
+    type: rego
+    bundle: ./policy.rego
+    data_paths: [./config.json, ../common.rego, ../../lib/patterns.rego, ../../lib/redact.rego]
+    query: data.acs.packs.pii.verdict
+intervention_points:
+  input: &gate
+    policy_target: $.target
+    policy: {id: gate}
+  post_model_call: *gate
+  post_tool_call: *gate
+  output: *gate
