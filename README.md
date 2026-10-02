@@ -49,5 +49,5 @@ parsing budgets and parser dependency details.
 Python: [SDK quickstart](sdk/python/README.md) and
 [composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
 
-`0.4.0-alpha.4`, an alpha of the re-based runtime. Depends on
+`0.4.0-beta.1`, the first beta of the re-based runtime. Depends on
 `agent-hooks-sdk 0.1.0-alpha.5`.
