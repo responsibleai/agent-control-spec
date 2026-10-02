@@ -1,11 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.4.0-beta.1
 
-- Depend on agent-hooks `0.1.0-beta.2` in the Rust engine, the Python, Node
-  and .NET SDKs and the generator. The vendored conformance corpus moves to
-  the 73-vector release corpus; the reference host passes 46, fails none and
-  skips 27 as capability-gated (22 host declaration, 4 incremental output,
+- Promote the runtime SDKs and generator metadata from
+  `0.4.0-alpha.4` to `0.4.0-beta.1`.
+- Keep the package version independent from manifest contract
+  identifiers. Existing `0.4.0-alpha.1` and `0.5.0-alpha.1`
+  manifests remain supported with unchanged semantics.
+- The Rust engine, the Python, Node and .NET SDKs and the generator
+  depend on agent-hooks `0.1.0-beta.2`.
+- The vendored conformance corpus moves to the 73-vector `v0.1.0-beta.2`
+  kit; the reference host passes 46, fails none and skips 27 as
+  capability-gated (22 host declaration, 4 incremental output,
   1 big-integer JSON). The harness fills runner-owned `RunRecord` fields from
   the default, so new kit fields no longer break the build.
   `EVIDENCE_MAX_BYTES` re-exports the SDK constant instead of restating it.

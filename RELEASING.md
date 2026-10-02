@@ -73,7 +73,7 @@ dependency change (#78) made that bump. Legacy manifest contract
 `engine/tests/security_conformance.rs` fails when the section 16 tables
 and `spec/reserved-reasons.json` disagree.
 
-Runtime package metadata (`0.4.0-alpha.4`) and the specification
+Runtime package metadata (`0.4.0-beta.1`) and the specification
 identifier are separate version surfaces. Neither ships before the
 tag. Before tagging, confirm the supported versions, schema,
 fixtures and compatibility cases still match section 2.1.

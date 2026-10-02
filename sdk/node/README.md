@@ -12,7 +12,7 @@ npm install @responsibleai/agent-control-spec@alpha
 ```
 
 Keep the `@alpha` tag (or pin an exact published version such as
-`@0.4.0-alpha.4`) while the package is pre-release: npm's `latest` tag
+`@0.4.0-beta.1`) while the package is pre-release: npm's `latest` tag
 can lag the newest pre-release, so a plain `npm install` may fetch an
 older build. Check what the tags resolve to with
 `npm view @responsibleai/agent-control-spec dist-tags`. The package
