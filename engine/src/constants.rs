@@ -30,6 +30,7 @@ pub(crate) mod manifest_version {
     pub(crate) struct Contract {
         pub name: &'static str,
         pub annotation_chaining: bool,
+        pub on_demand_annotations: bool,
     }
 
     pub(crate) const ANNOTATION_CHAINING: &str = "0.5.0-alpha.1";
@@ -37,10 +38,17 @@ pub(crate) mod manifest_version {
         Contract {
             name: "0.4.0-alpha.1",
             annotation_chaining: false,
+            on_demand_annotations: false,
         },
         Contract {
             name: ANNOTATION_CHAINING,
             annotation_chaining: true,
+            on_demand_annotations: false,
+        },
+        Contract {
+            name: "0.6.0-alpha.1",
+            annotation_chaining: true,
+            on_demand_annotations: true,
         },
     ];
     pub(crate) const SUPPORTED: [&str; CONTRACTS.len()] = {

@@ -964,6 +964,11 @@ impl Manifest {
                     "annotator '{annotator_name}' must declare needs on an intervention-point binding"
                 )));
             }
+            if self.on_demand_annotations_enabled() && annotator.fields.contains_key("execution") {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "annotator '{annotator_name}' must declare execution on an intervention-point binding"
+                )));
+            }
             if annotator.annotator_type == crate::annotation::AnnotatorType::Llm {
                 crate::annotation::system_prompt_source(&annotator.fields)?;
             }
@@ -1095,6 +1100,39 @@ impl Manifest {
     pub(crate) fn annotation_chaining_enabled(&self) -> bool {
         manifest_version::contract(&self.agent_control_specification_version)
             .is_some_and(|contract| contract.annotation_chaining)
+    }
+
+    pub fn on_demand_annotations_enabled(&self) -> bool {
+        manifest_version::contract(&self.agent_control_specification_version)
+            .is_some_and(|contract| contract.on_demand_annotations)
+    }
+
+    pub fn annotation_is_on_demand(
+        &self,
+        annotation: &AnnotationConfig,
+    ) -> Result<bool, RuntimeError> {
+        if !self.on_demand_annotations_enabled() {
+            return Ok(false);
+        }
+        match annotation.fields.get("execution") {
+            None => Ok(false),
+            Some(JsonValue::String(mode)) if mode == "eager" => Ok(false),
+            Some(JsonValue::String(mode)) if mode == "on_demand" => Ok(true),
+            Some(_) => Err(RuntimeError::ManifestInvalid(
+                "annotation execution must be 'eager' or 'on_demand'".into(),
+            )),
+        }
+    }
+
+    pub fn point_has_on_demand_annotations(
+        &self,
+        config: &InterventionPointConfig,
+    ) -> Result<bool, RuntimeError> {
+        let mut found = false;
+        for annotation in config.annotations.values() {
+            found |= self.annotation_is_on_demand(annotation)?;
+        }
+        Ok(found)
     }
 
     /// Keep the original public config shape and legacy extension values.
@@ -1316,6 +1354,7 @@ fn validate_point_config(
     }
 
     for (annotation_name, annotation_config) in &config.annotations {
+        let on_demand = manifest.annotation_is_on_demand(annotation_config)?;
         if !manifest.annotators.contains_key(annotation_name) {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "intervention point {} references unknown annotator '{annotation_name}'",
@@ -1374,6 +1413,11 @@ fn validate_point_config(
                     "annotation '{annotation_name}' for intervention point {intervention_point} needs '{need}', which the point does not opt into"
                 )));
             }
+            if !on_demand && manifest.annotation_is_on_demand(&config.annotations[need])? {
+                return Err(RuntimeError::ManifestInvalid(format!(
+                    "eager annotation '{annotation_name}' must not depend on on-demand annotation '{need}'"
+                )));
+            }
         }
         match from_path.pi_annotation_reference() {
             Some(reference) if !seen_needs.contains(reference) => {
@@ -1409,6 +1453,13 @@ fn validate_point_config(
         ))
     })?;
     validate_policy_binding(intervention_point, policy, policy_config)?;
+    if manifest.point_has_on_demand_annotations(config)?
+        && !matches!(policy_config, PolicyConfig::Rego(_))
+    {
+        return Err(RuntimeError::ManifestInvalid(
+            "on-demand annotations require a Rego policy".into(),
+        ));
+    }
 
     Ok(())
 }

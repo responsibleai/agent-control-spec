@@ -19,6 +19,49 @@ public sealed class HostHooksTests : IDisposable
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("acs-hooks").FullName;
 
+    [Fact]
+    public async Task OnDemandAnnotationsSkipMemoizeAndFailClosed()
+    {
+        var manifest = WriteFixture();
+        File.WriteAllText(manifest, File.ReadAllText(manifest)
+            .Replace("0.4.0-alpha.1", "0.6.0-alpha.1")
+            .Replace("from: \"$target\"", "from: \"$target\"\n        execution: on_demand"));
+        File.WriteAllText(Path.Combine(_dir, "bundle", "policy.rego"), """
+            package acs
+            first := acs.annotate("content_safety", input.policy_target.value != "skip")
+            second := acs.annotate("content_safety", input.policy_target.value != "skip")
+            default decision := {"decision":"deny"}
+            decision := {"decision":"allow"} if {
+                first == second
+                first.status == "not_required"
+            }
+            decision := {"decision":"allow"} if {
+                first == second
+                first.value.text == input.policy_target.value
+            }
+            """);
+        var calls = new List<string>();
+        var callerThread = Environment.CurrentManagedThreadId;
+        using var policy = AcsHostInterceptor.FromPath(manifest, annotator: (name, invocation, input) =>
+        {
+            Assert.Equal(callerThread, Environment.CurrentManagedThreadId);
+            Assert.Equal("content_safety", name);
+            Assert.Null(JsonNode.Parse(invocation)!["execution"]);
+            var text = JsonNode.Parse(input)!["policy_target"]!["value"]!.GetValue<string>();
+            calls.Add(text);
+            if (text == "fail") throw new InvalidOperationException("provider failed");
+            return new JsonObject { ["text"] = text }.ToJsonString();
+        });
+        Assert.Empty(calls);
+        foreach (var text in new[] { "skip", "one", "two" })
+            Assert.Equal(Decision.Allow, (await policy.InterceptAsync(Input(text))).Decision);
+        Assert.Equal(new[] { "one", "two" }, calls);
+        var failed = await policy.InterceptAsync(Input("fail"));
+        Assert.Equal(Decision.Deny, failed.Decision);
+        Assert.Equal("runtime_error:policy_invocation_failed", failed.Reason);
+        Assert.Equal(new[] { "one", "two", "fail" }, calls);
+    }
+
     private string WriteFixture()
     {
         var bundle = Path.Combine(_dir, "bundle");

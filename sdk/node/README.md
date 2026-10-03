@@ -24,7 +24,8 @@ A host that pins a policy version and serves traffic against it wants
 the expensive work done once, at a moment of its choosing.
 `ActivatedPolicy.activate` reads the manifest, loads every Rego module
 and data document, and compiles the entrypoint each intervention point
-queries; every later `evaluate` costs no I/O and no compile.
+queries. Eager policies normally avoid repeated policy-source loading and
+compilation.
 
 Compiling is bounded by the eval timeout. A policy too slow to compile in
 that window activates anyway, not necessarily fully readied, and pays compilation
@@ -44,6 +45,17 @@ policy edit on disk needs a new activation: the host decides when a
 version changes. Evaluation stays fail-closed, including for a point the
 version does not bind; only boundary problems (an unknown point name, a
 non-object context) throw.
+
+### On-demand annotators
+
+Source builds support `execution: on_demand` under manifest contract
+`0.6.0-alpha.1`. Rego calls `acs.annotate(name, required)` and the existing
+`annotatorDispatcher` callback supplies the provider. Activation loads templates
+without evaluating callable queries, which compile during evaluation.
+Callbacks remain synchronous on the JavaScript thread. A late result is denied,
+but the engine cannot interrupt a blocked callback. See the
+[on-demand guide](https://github.com/responsibleai/agent-control-spec/blob/main/docs/on-demand-annotators.md) for the guard, deadline,
+and dependency rules.
 
 ### Activating from memory
 

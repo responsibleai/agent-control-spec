@@ -93,6 +93,52 @@ def _bundles() -> dict:
     return {"gate": {"modules": {"gate.rego": REGO_MODULE}}}
 
 
+def test_on_demand_calls_skip_memoize_and_fail_closed():
+    manifest = ANNOTATOR_MANIFEST.replace("0.4.0-alpha.1", "0.6.0-alpha.1").replace(
+        "from: $target.content", "from: $target.content\n        execution: on_demand"
+    )
+    module = """
+package gate
+first := acs.annotate("classify", input.policy_target.value.content != "skip")
+second := acs.annotate("classify", input.policy_target.value.content != "skip")
+default verdict := {"decision":"deny"}
+verdict := {"decision":"allow"} if {
+    first == second
+    first.status == "not_required"
+}
+verdict := {"decision":"allow"} if {
+    first == second
+    first.value.content == input.policy_target.value.content
+}
+"""
+    calls = []
+
+    def annotate(name, invocation, policy_input):
+        assert name == "classify"
+        assert "execution" not in invocation
+        assert policy_input["annotations"] == {}
+        content = policy_input["policy_target"]["value"]["content"]
+        calls.append(content)
+        if content == "fail":
+            raise RuntimeError("provider failed")
+        return {"content": content}
+
+    policy = ActivatedPolicy.from_memory(
+        manifest,
+        {"gate": {"modules": {"gate.rego": module}}},
+        annotator_dispatcher=annotate,
+    )
+    assert calls == []
+    for content in ["skip", "one", "two"]:
+        result = policy.evaluate("input", _builder().input(content=content))
+        assert result.decision.value == "allow", result
+    assert calls == ["one", "two"]
+    result = policy.evaluate("input", _builder().input(content="fail"))
+    assert result.decision.value == "deny"
+    assert result.reason == "runtime_error:policy_invocation_failed"
+    assert calls == ["one", "two", "fail"]
+
+
 class RecordingAnnotator:
     """Host dispatcher whose ``dispatch`` records every call and returns
     a fixed annotation. Deliberately object-with-method-shaped, matching

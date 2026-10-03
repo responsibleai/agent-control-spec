@@ -312,6 +312,25 @@ export interface HostHooks {
 // here means the native dispatcher signatures stay simple `String →
 // String` and every host callback sees objects, not text.
 
+function serializeSynchronousResult(result: unknown): string {
+  if (
+    result !== null &&
+    typeof result === "object" &&
+    "then" in result &&
+    typeof result.then === "function"
+  ) {
+    // Observe a later rejection after reporting the unsupported async result.
+    // It cannot change the failed evaluation or become an unhandled rejection.
+    void Promise.resolve(result).catch(() => {});
+    throw new TypeError("ACS dispatcher callbacks must return synchronous JSON values, not Promises");
+  }
+  const encoded = JSON.stringify(result ?? null);
+  if (encoded === undefined) {
+    throw new TypeError("ACS dispatcher callback did not return a JSON value");
+  }
+  return encoded;
+}
+
 function wrapAnnotatorDispatcher(
   dispatcher: AnnotatorDispatcher,
 ): (name: string, invocationJson: string, policyInputJson: string) => string {
@@ -324,7 +343,7 @@ function wrapAnnotatorDispatcher(
     const invocation = JSON.parse(invocationJson) as AnnotatorInvocation;
     const policyInput = JSON.parse(policyInputJson) as JsonValue;
     const result = dispatcher(name, invocation, policyInput);
-    return JSON.stringify(result ?? null);
+    return serializeSynchronousResult(result);
   };
 }
 
@@ -334,7 +353,7 @@ function wrapPolicyDispatcher(
   return (invocationJson) => {
     const invocation = JSON.parse(invocationJson) as PolicyInvocation;
     const result = dispatcher(invocation);
-    return JSON.stringify(result ?? null);
+    return serializeSynchronousResult(result);
   };
 }
 
@@ -476,7 +495,9 @@ function hasActivationHooks(options: ActivatedPolicyOptions): boolean {
  * is the other split: {@link ActivatedPolicy.activate} pays for reading
  * the manifest, loading every Rego module and data document, and
  * compiling the entrypoint each intervention point queries; every later
- * {@link ActivatedPolicy.evaluate} costs no I/O and no compile.
+ * {@link ActivatedPolicy.evaluate} normally avoids source loading and compilation.
+ * On-demand policies load templates at activation without evaluating the query.
+ * Their request-bound query compiles during evaluation.
    *
    * Compiling is bounded by the eval timeout: a policy too slow to
    * compile in that window activates anyway, not necessarily fully readied, and

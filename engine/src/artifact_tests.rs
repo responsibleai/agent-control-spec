@@ -821,7 +821,7 @@ fn artifact_schema_admits_annotation_needs() {
     );
     assert!(spec.lines().take(4).any(|line| line.contains(&format!(
         "version `{}`",
-        crate::constants::manifest_version::ANNOTATION_CHAINING
+        crate::SUPPORTED_VERSIONS.last().unwrap()
     ))));
     for version in crate::SUPPORTED_VERSIONS {
         let contract = crate::constants::manifest_version::contract(version).unwrap();

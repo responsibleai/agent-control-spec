@@ -62,6 +62,41 @@ impl BindingPolicyDispatcher {
 }
 
 impl PolicyDispatcher for BindingPolicyDispatcher {
+    fn supports_on_demand_annotations(&self) -> bool {
+        cfg!(feature = "rego")
+    }
+
+    fn warm_with_annotations(
+        &self,
+        invocation: &PreparedPolicyInvocation,
+    ) -> Result<(), RuntimeError> {
+        #[cfg(feature = "rego")]
+        return self.rego.warm_with_annotations(invocation);
+        #[cfg(not(feature = "rego"))]
+        {
+            let _ = invocation;
+            Err(RuntimeError::PolicyInvocationFailed(
+                "on-demand annotations require the rego feature".into(),
+            ))
+        }
+    }
+
+    fn evaluate_with_annotations(
+        &self,
+        invocation: &PreparedPolicyInvocation,
+        annotations: crate::OnDemandAnnotations,
+    ) -> Result<JsonValue, RuntimeError> {
+        #[cfg(feature = "rego")]
+        return self.rego.evaluate_with_annotations(invocation, annotations);
+        #[cfg(not(feature = "rego"))]
+        {
+            let _ = (invocation, annotations);
+            Err(RuntimeError::PolicyInvocationFailed(
+                "on-demand annotations require the rego feature".into(),
+            ))
+        }
+    }
+
     /// Forwards warm-up to the bundled evaluator for this invocation's
     /// engine type, so that a policy activated over a binding is
     /// compiled at activation rather than on the first decision. Without

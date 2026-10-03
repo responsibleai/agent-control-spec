@@ -966,6 +966,12 @@ struct HostAnnotatorDispatcher {
 }
 
 impl AnnotatorDispatcher for HostAnnotatorDispatcher {
+    // C/managed callback roots are owned by the caller and must not be
+    // invoked by a worker that can outlive the enclosing FFI call.
+    fn requires_caller_thread(&self) -> bool {
+        true
+    }
+
     fn dispatch(
         &self,
         annotator_name: &str,
@@ -1035,6 +1041,10 @@ struct HostTelemetrySink {
 }
 
 impl TelemetrySink for HostTelemetrySink {
+    fn requires_caller_thread(&self) -> bool {
+        true
+    }
+
     fn emit(&self, event: TelemetryEvent) {
         // A sink cannot fail an evaluation, so a problem here drops the
         // event rather than denying the action it describes.

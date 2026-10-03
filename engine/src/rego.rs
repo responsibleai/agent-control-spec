@@ -94,7 +94,7 @@
 use crate::{
     policy::{is_rule_path, rego_adapter_data_paths, InMemoryRegoBundle},
     runtime::PolicyDispatcher,
-    JsonValue, PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
+    JsonValue, OnDemandAnnotations, PreparedPolicyInvocation, RegoPolicyInvocation, RuntimeError,
 };
 use std::{
     collections::BTreeMap,
@@ -582,6 +582,7 @@ impl RegorusRegoRunner {
                     Err(err) if !may_retry_after(attempted.elapsed(), timeout) => {
                         return Err(eval_error(&err))
                     }
+
                     Err(_) => {}
                 }
             }
@@ -600,6 +601,114 @@ impl RegorusRegoRunner {
                 "Rego eval exceeded timeout of {} ms",
                 timeout.as_millis()
             ))),
+            DeadlineOutcome::Unavailable(error) => Err(error),
+        }
+    }
+
+    fn warm_with_annotations(&self, invocation: &RegoPolicyInvocation) -> Result<(), RuntimeError> {
+        Self::reject_remote_bundle(invocation)?;
+        let key = self.cache_key(invocation)?;
+        let loader = self.clone();
+        let work = move || loader.prepared_engine(key).map(|_| JsonValue::Null);
+        if !self.hard_deadline {
+            return work().map(|_| ());
+        }
+        match self.warm_workers.run_with_deadline(self.eval_timeout, work) {
+            DeadlineOutcome::Completed(outcome) => outcome.map(|_| ()),
+            DeadlineOutcome::TimedOut => Ok(()),
+            DeadlineOutcome::Unavailable(error) => Err(error),
+        }
+    }
+
+    fn evaluate_with_annotations(
+        &self,
+        invocation: &RegoPolicyInvocation,
+        annotations: OnDemandAnnotations,
+    ) -> Result<JsonValue, RuntimeError> {
+        Self::reject_remote_bundle(invocation)?;
+        annotations.set_timeout(self.eval_timeout)?;
+        let caller_thread = annotations.requires_caller_thread();
+        let key = self.cache_key(invocation)?;
+        let query = invocation.query.clone();
+        let input = invocation.canonical_input.clone();
+        let loader = self.clone();
+        let timeout = self.eval_timeout;
+        let started = Instant::now();
+        let evaluate = move || {
+            // Only the template is cached. The request-bound clone is never
+            // stored back, including on the activation path.
+            let mut engine = (*loader.prepared_engine(key)?).clone();
+            engine.set_strict_builtin_errors(true);
+            for (name, nargs) in [
+                ("time.now_ns", 0),
+                ("rand.intn", 2),
+                ("uuid.rfc4122", 1),
+                ("opa.runtime", 0),
+            ] {
+                engine
+                    .add_extension(
+                        name.to_string(),
+                        nargs,
+                        Box::new(move |_| {
+                            Err(std::io::Error::other(format!(
+                                "{name} is unavailable in an on-demand annotation policy"
+                            ))
+                            .into())
+                        }),
+                    )
+                    .map_err(|error| eval_error(&error))?;
+            }
+            engine
+                .add_extension(
+                    "acs.annotate".into(),
+                    2,
+                    Box::new(move |args: Vec<regorus::Value>| {
+                        let result = match args.as_slice() {
+                            [regorus::Value::String(name), regorus::Value::Bool(required)] => {
+                                annotations.annotate(name.as_ref(), *required)
+                            }
+                            _ => Err(annotations.fail(
+                                "acs.annotate requires a bound annotation name and a boolean guard",
+                            )),
+                        };
+                        let value =
+                            result.map_err(|error| std::io::Error::other(error.to_string()))?;
+                        regorus::Value::from_json_str(&value.to_string())
+                    }),
+                )
+                .map_err(|error| eval_error(&error))?;
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(RuntimeError::PolicyInvocationFailed(
+                    "Rego eval deadline expired".into(),
+                ));
+            }
+            engine.set_execution_timer_config(regorus::utils::limits::ExecutionTimerConfig {
+                limit: remaining,
+                check_interval: NonZeroU32::new(TIMER_CHECK_INTERVAL).unwrap_or(NonZeroU32::MIN),
+            });
+            engine
+                .set_input_json(&input)
+                .map_err(|error| eval_error(&error))?;
+            // Avoid retrying an effectful query through eval_rule fallback.
+            let results = engine
+                .eval_query(query, false)
+                .map_err(|error| eval_error(&error))?;
+            if started.elapsed() >= timeout {
+                return Err(RuntimeError::PolicyInvocationFailed(
+                    "Rego eval deadline expired".into(),
+                ));
+            }
+            single_expression_value(&results)
+        };
+        if caller_thread || !self.hard_deadline {
+            return evaluate();
+        }
+        match self.workers.run_with_deadline(timeout, evaluate) {
+            DeadlineOutcome::Completed(outcome) => outcome,
+            DeadlineOutcome::TimedOut => Err(RuntimeError::PolicyInvocationFailed(
+                "Rego eval exceeded its on-demand deadline".into(),
+            )),
             DeadlineOutcome::Unavailable(error) => Err(error),
         }
     }
@@ -692,6 +801,39 @@ impl RegorusPolicyDispatcher {
 }
 
 impl PolicyDispatcher for RegorusPolicyDispatcher {
+    fn supports_on_demand_annotations(&self) -> bool {
+        true
+    }
+
+    fn warm_with_annotations(
+        &self,
+        invocation: &PreparedPolicyInvocation,
+    ) -> Result<(), RuntimeError> {
+        match invocation {
+            PreparedPolicyInvocation::Rego(invocation) => {
+                self.runner.warm_with_annotations(invocation)
+            }
+            _ => Err(RuntimeError::PolicyInvocationFailed(
+                "on-demand annotations require Rego".into(),
+            )),
+        }
+    }
+
+    fn evaluate_with_annotations(
+        &self,
+        invocation: &PreparedPolicyInvocation,
+        annotations: OnDemandAnnotations,
+    ) -> Result<JsonValue, RuntimeError> {
+        match invocation {
+            PreparedPolicyInvocation::Rego(invocation) => self
+                .runner
+                .evaluate_with_annotations(invocation, annotations),
+            _ => Err(RuntimeError::PolicyInvocationFailed(
+                "on-demand annotations require Rego".into(),
+            )),
+        }
+    }
+
     fn warm(&self, invocation: &PreparedPolicyInvocation) -> Result<(), RuntimeError> {
         match invocation {
             PreparedPolicyInvocation::Rego(invocation) => self.runner.warm(invocation),

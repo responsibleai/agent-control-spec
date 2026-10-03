@@ -279,6 +279,9 @@ class ActivatedPolicy:
     compile in that window activates anyway, not necessarily fully readied, and
     pays compilation on its first evaluation instead.
 
+    On-demand policies load templates without evaluating the query at
+    activation. Their request-bound query compiles during evaluation.
+
     Activate once per policy version and keep the instance. A policy edit
     on disk needs a new activation, which is the point: the host controls
     when a version changes. The handle is immutable and evaluation
