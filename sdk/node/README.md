@@ -54,7 +54,7 @@ Source builds support `execution: on_demand` under manifest contract
 without evaluating callable queries, which compile during evaluation.
 Callbacks remain synchronous on the JavaScript thread. A late result is denied,
 but the engine cannot interrupt a blocked callback. See the
-[on-demand guide](../../docs/on-demand-annotators.md) for the guard, deadline,
+[on-demand guide](https://github.com/responsibleai/agent-control-spec/blob/main/docs/on-demand-annotators.md) for the guard, deadline,
 and dependency rules.
 
 ### Activating from memory
