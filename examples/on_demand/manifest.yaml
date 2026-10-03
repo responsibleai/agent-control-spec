@@ -1,0 +1,22 @@
+agent_control_specification_version: 0.6.0-alpha.1
+policies:
+  refunds:
+    type: rego
+    bundle: ./policy
+    query: data.refund.verdict
+annotators:
+  eligibility:
+    type: endpoint
+intervention_points:
+  pre_tool_call:
+    policy_target: $snap.tool_call.args
+    tool_name_from: $snap.tool_call.name
+    policy:
+      id: refunds
+    annotations:
+      eligibility:
+        from: $target
+        execution: on_demand
+tools:
+  issue_refund:
+    description: Issue a refund for an order

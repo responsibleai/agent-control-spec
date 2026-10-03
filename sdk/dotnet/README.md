@@ -36,6 +36,15 @@ AcsManifest.ValidateFile("manifest.yaml");
 `AcsManifest.SupportedVersions()` reports the grammar versions this
 engine accepts. Read it rather than hardcoding the set.
 
+## On-demand annotators
+
+Source builds support `execution: on_demand` under manifest contract
+`0.6.0-alpha.1`. Rego calls `acs.annotate(name, required)`, using the existing
+`HostHooks` annotation delegate for provider execution. The query compiles
+during evaluation, and activation does not call providers. Read the
+[on-demand guide](../../docs/on-demand-annotators.md) before configuring
+guard logic, operation deadlines, or dependencies.
+
 ## Activating a policy version
 
 `AcsInterceptor` readies a policy lazily, on the first emission. A host

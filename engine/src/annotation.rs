@@ -107,6 +107,9 @@ impl AnnotatorInvocation {
         if manifest.annotation_chaining_enabled() {
             invocation.fields.remove("needs");
         }
+        if manifest.on_demand_annotations_enabled() {
+            invocation.fields.remove("execution");
+        }
         invocation
     }
 
@@ -123,6 +126,11 @@ impl AnnotatorInvocation {
 }
 
 pub trait AnnotatorDispatcher: Send + Sync {
+    /// Thread-affine callbacks must run on the thread entering the runtime.
+    fn requires_caller_thread(&self) -> bool {
+        false
+    }
+
     fn dispatch(
         &self,
         annotator_name: &str,

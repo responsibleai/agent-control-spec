@@ -52,5 +52,6 @@ Python: [SDK quickstart](sdk/python/README.md) and
 `0.4.0-alpha.4`, an alpha of the re-based runtime. Depends on
 `agent-hooks-sdk 0.1.0-alpha.5`.
 
-Design discussion: [on-demand annotators](docs/proposals/on-demand-annotators.md)
-proposes calling registered annotators from Rego. It is not supported syntax.
+Source builds also support [on-demand annotators](docs/on-demand-annotators.md)
+under manifest contract `0.6.0-alpha.1`: call registered providers from Rego only
+when needed. This contract is not in the published alpha.4 packages.

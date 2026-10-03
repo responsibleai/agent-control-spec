@@ -49,7 +49,7 @@
       "if": {
         "properties": {
           "agent_control_specification_version": {
-            "pattern": "^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*0\\.5\\.0-alpha\\.1[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$"
+            "pattern": "^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*0\\.[56]\\.0-alpha\\.1[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$"
           }
         }
       },
@@ -80,13 +80,42 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "agent_control_specification_version": {
+            "pattern": "^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*0\\.6\\.0-alpha\\.1[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "annotators": {
+            "additionalProperties": { "not": { "required": ["execution"] } }
+          },
+          "intervention_points": {
+            "additionalProperties": {
+              "properties": {
+                "annotations": {
+                  "additionalProperties": {
+                    "properties": {
+                      "execution": { "enum": ["eager", "on_demand"] }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "properties": {
     "agent_control_specification_version": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*(0\\.4\\.0-alpha\\.1|0\\.5\\.0-alpha\\.1)[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$"
+      "pattern": "^[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*0\\.[456]\\.0-alpha\\.1[\u0009-\u000d\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]*$"
     },
     "metadata": {
       "type": "object",

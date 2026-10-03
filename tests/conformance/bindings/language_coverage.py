@@ -40,6 +40,8 @@ NOT_A_CAPABILITY = {
     "InterceptionPoint": "crosses as JSON",
     "EvaluationRequest": "crosses as JSON",
     "EvaluationResult": "crosses as JSON",
+    "AnnotationResolution": "reported through annotation_resolution telemetry in every binding",
+    "OnDemandAnnotations": "request-local Rego capability selected by manifest execution mode; only Rust custom dispatchers receive the native handle",
     "AnnotatorInvocation": "crosses as JSON to a host dispatcher",
     "PreparedPolicyInvocation": "crosses as JSON to a host dispatcher",
     "RegoPolicyInvocation": "variant of PreparedPolicyInvocation",

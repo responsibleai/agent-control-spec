@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- Manifest contract `0.6.0-alpha.1` adds `execution: on_demand` on annotation
+  bindings. Rego calls `acs.annotate(name, required)` to resolve a registered
+  provider only when needed. False guards do no provider or dependency work.
+  Repeated true calls share a validated result within one evaluation.
+- Callable policies use request-local resolution, fatal provider failures, and
+  immutable policy input. Activation loads templates without executing callable
+  queries. The request-bound clone is not stored back in the policy cache.
+- Python, Node, and .NET can use their existing host annotation callbacks.
+  Node, FFI, and .NET host callbacks remain on the calling thread. A blocking callback
+  cannot be preempted, but a result returned after the deadline is rejected.
+- `annotation_resolution` telemetry reports status and call counts without
+  provider values. Existing `0.4.0-alpha.1` and `0.5.0-alpha.1` manifests retain
+  their behavior, including opaque host-defined `execution` fields.
+
 ## 0.4.0-alpha.4
 
 - `RELEASING.md` now says the `runtime_error:acs_async_*` reasons ship in
