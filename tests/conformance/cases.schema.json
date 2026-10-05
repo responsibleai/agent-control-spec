@@ -37,8 +37,7 @@
   "operation": {
    "enum": [
     "build",
-    "evaluate",
-    "approval_action_mismatch"
+    "evaluate"
    ]
   },
   "sdk_support": {

@@ -5,6 +5,21 @@ engine as an [agent-hooks](https://github.com/responsibleai/agent-hooks)
 interceptor. A host registers `AcsInterceptor` with its agent-hooks
 emitter; every failure path is fail-closed (`runtime_error:*` deny).
 
+## Install
+
+```bash
+npm install @responsibleai/agent-control-spec@alpha
+```
+
+Keep the `@alpha` tag (or pin an exact published version such as
+`@0.4.0-alpha.4`) while the package is pre-release: npm's `latest` tag
+can lag the newest pre-release, so a plain `npm install` may fetch an
+older build. Check what the tags resolve to with
+`npm view @responsibleai/agent-control-spec dist-tags`. The package
+pulls in `@responsibleai/agent-hooks` as a dependency.
+
+## Usage
+
 ```ts
 import { AcsInterceptor } from "@responsibleai/agent-control-spec";
 import { AgentContextBuilder, InterceptionEmitter } from "@responsibleai/agent-hooks";
