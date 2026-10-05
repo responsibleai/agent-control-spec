@@ -85,7 +85,7 @@ All fetched documents belong to one trust class for dependency checks, whether p
 
 Merging is additive. A name defined in more than one manifest MUST be either identical in every manifest or non conflicting. Metadata object keys are merged additively, with nested object keys merged recursively when duplicate object values are non conflicting. For an intervention point, only its `annotations` may differ and are unioned. A conflicting duplicate definition MUST fail closed. Loading MUST also fail closed on a reference cycle, a missing file, a failed URL fetch, a URL body limit breach, or a version that differs between a parent and a child. A construction time load failure MAY surface by refusing to construct the runtime because no runtime exists yet to return an intervention verdict. A loader that parses an in memory string, including every FFI loader, cannot resolve `extends` against the file system or network. It may retain `extends` as data, but constructing an enforcing runtime from a manifest whose `extends` is non empty MUST fail closed, so such loaders MUST be given an already merged manifest.
 
-An AGT host MAY pre-resolve `extends` host side before it constructs the runtime. The host side resolution algorithm, including its cycle, path traversal, governance validation, and merge conflict failures, is defined in [`spec/agt/AGT-RESOLUTION-1.0.md`](agt/AGT-RESOLUTION-1.0.md) and surfaces the `runtime_error:resolution_path_traversal`, `runtime_error:resolution_cycle`, `runtime_error:resolution_invalid_governance`, and `runtime_error:resolution_merge_conflict` reasons defined in section 16. The runtime itself receives an already merged manifest as required above. A host that pre-resolves extends hands the runtime a manifest the runtime treats as host authored; the host bears the provenance duty for content it fetched.
+An AGT host MAY pre-resolve `extends` host side before it constructs the runtime. The host side resolution algorithm, including its cycle, path traversal, governance validation, and merge conflict failures, is the AGT host's own contract, outside this document; it surfaces the `runtime_error:resolution_path_traversal`, `runtime_error:resolution_cycle`, `runtime_error:resolution_invalid_governance`, and `runtime_error:resolution_merge_conflict` reasons defined in section 16. The runtime itself receives an already merged manifest as required above. A host that pre-resolves extends hands the runtime a manifest the runtime treats as host authored; the host bears the provenance duty for content it fetched.
 
 Repeated bindings for the same annotation at the same intervention point MUST be structurally identical. Adding, removing, or reordering `needs` entries is a merge conflict, as is adding an empty `needs` array to a binding that omitted it. The loader does not union dependency lists.
 
@@ -477,17 +477,17 @@ An intentional scope bypass is an `allow`, not a runtime error. The Python adapt
 
 ## 17. Host obligations
 
-The runtime returns a verdict and, for a `transform` verdict in enforce mode, an optional transformed policy target. The host enforces them. In `enforce` mode the host MUST NOT carry out the action of a `deny` verdict, MUST route an `escalate` verdict to an approval path and MUST NOT carry out the action until that path resolves, and MUST use the transformed policy target in place of the original policy target when one is present. In `evaluate_only` mode the host MAY carry out the original action and SHOULD record the verdict. A host that ignores a `deny` or an unresolved `escalate` is not conformant.
+The runtime returns a verdict and, for a `transform` verdict in enforce mode, an optional transformed policy target. The host enforces them. In `enforce` mode the host MUST NOT carry out the action of a `deny` verdict, MUST route an `escalate` verdict (a `deny` carrying an `approval` block, section 13) to an approval path and MUST NOT carry out the action until that path resolves, and MUST use the transformed policy target in place of the original policy target when one is present. In `evaluate_only` mode the host MAY carry out the original action and SHOULD record the verdict. A host that ignores a `deny` or an unresolved `escalate` is not conformant.
 
 ### 17.1 Approval path
 
-The approval path is a host concern and is not part of the policy input contract. An SDK MAY expose it as an approval resolver. The resolver is a host supplied callback that the SDK consults only for an `escalate` verdict in `enforce` mode. The resolver payload MUST include the `enforced_identity` returned by evaluation. The approval outcome MUST carry the approved `enforced_identity` for an allow or suspend result. The SDK MUST rederive the `enforced_identity` from the current policy input before proceeding and MUST fail closed with `runtime_error:approval_action_mismatch` when it differs from the approved identity. An SDK that consults a manifest declared resolver but finds none matching the manifest `approval.default_resolver` MUST fail closed with `runtime_error:approval_resolver_missing`. The path resolves to one of three outcomes.
+The approval path is a host concern and is not part of the policy input contract. It is the approval seam of AGENT-HOOKS-0.1 section 9. The runtime returns an `escalate` intent as a `deny` carrying an `approval` block (section 13), which is the AGENT-HOOKS-0.1 liftable deny. The host consults its registered approval resolver only for such a verdict in `enforce` mode, binds the request to the context identity, validates the resolution in the order section 9 gives, and reports failures with the `host_error:` reasons that AGENT-HOOKS-0.1 section 11 reserves. The `approval` manifest section (section 24) is the host's resolver configuration for that seam and does not add a second approval mechanism. The runtime defines no approval reasons. Section 16 reserves `runtime_error:approval_resolver_failed` for compatibility; no SDK in this repository produces it. New code uses the agent-hooks `host_error:` reasons named below. The path resolves to one of three outcomes.
 
-1. Allow. The host carries out the action. An `escalate` verdict does not return or apply a transformed policy target.
+1. Allow. The resolver returned a permit verdict. It substitutes for the liftable deny per AGENT-HOOKS-0.1 section 7.6; the host carries out the action and applies a transform the permit carries per AGENT-HOOKS-0.1 section 6. The `escalate` verdict itself carries no transformed policy target.
 2. Deny. The host MUST NOT carry out the action.
-3. Suspend. The host stops the current run and hands the decision to an out of band process. Suspension is terminal for the run. Resumption is the host's responsibility and is not a runtime operation.
+3. Suspend. A host local outcome that AGENT-HOOKS-0.1 section 9 does not define. For the current action it is a deny: the host MUST NOT carry out the action. The host stops the current run and hands the decision to an out of band process. Suspension is terminal for the run. Resumption is the host's responsibility and is not a runtime operation.
 
-When no approval path is configured, or when the path fails or returns an unrecognized outcome, the host MUST fail closed and treat the `escalate` verdict as a `deny`. A `deny` verdict MUST NOT consult the approval path.
+A host with no registered resolver enforces the liftable deny as a plain deny. That is conformant behavior, not an error. When the resolver raises, times out, or returns a resolution that fails validation, the host MUST fail closed with the reason that AGENT-HOOKS-0.1 section 9 names for that failure, in the order section 9 gives: `host_error:approval_identity_mismatch` when the echoed `context_identity` differs from the request's; `host_error:approval_resolver_failed` when the resolver raises or times out, when `outcome` is not one of `approve`, `reject`, or `unresolved`, or when `verdict` is present for `unresolved` or absent for the other two; `host_error:verdict_invalid` when the carried verdict fails AGENT-HOOKS-0.1 section 5 validation or disagrees with its outcome (an `approve` that carries a deny, a `reject` that carries a permit); and `host_error:approval_unresolved` when a well formed resolution carries `outcome: unresolved`. A `deny` without an `approval` block MUST NOT consult the approval path.
 
 An `escalate` verdict at a post action intervention point, such as `post_model_call` or `post_tool_call`, is reached only after the action has already executed. A host that suspends at such a point and later resumes MUST deliver the result that was already produced and MUST NOT execute the action a second time.
 
@@ -561,7 +561,7 @@ The default telemetry level emits no `annotator_dispatch` events. A successful e
 
 A host MAY derive an audit record from each evaluation. The action identities defined in section 13, the `input_identity` and `enforced_identity` `sha256:` digests of the canonical policy input, are the stable keys that tie an audit record to the exact intervention point, policy target, snapshot, annotations, and projected tool data the policy evaluated. An audit record SHOULD record the intervention point, the mode, the verdict, the reason, the error class for runtime errors, and the action identities when available. It MUST follow the same redaction rule as telemetry so that it carries no sensitive value.
 
-The telemetry and audit contract is transport neutral. ACS ships an OpenTelemetry binding in the `agent_control_specification_otel` integration crate that maps these events to OpenTelemetry counters and histograms, described in [`docs/observability.md`](../docs/observability.md). That binding is one supported integration and is not required for conformance. A host MAY route the same events to any sink it chooses.
+The telemetry and audit contract is transport neutral. The engine exposes a `TelemetrySink` interface that receives these events; a host implements it to route them to the sink it chooses, such as an OpenTelemetry exporter. No particular sink is required for conformance.
 
 ## 20. Conformance
 
@@ -585,7 +585,7 @@ Annotations are untrusted signal. An annotator observes potentially adversarial 
 
 A `transform` verdict is bounded to the policy target. The runtime applies a transform only within `$target` and rejects any `transform` path rooted outside it, so a policy cannot use a transform to reach the snapshot, the projected tool, or host state.
 
-Approvals bind to `enforced_identity`. An `escalate` verdict is approved against the `enforced_identity` of the action that will execute, and the SDK rederives that identity before proceeding and fails closed on a mismatch. This prevents an approval granted for one action from authorizing a different action and closes a time of check to time of use gap.
+Approvals bind to identity. The host's approval seam computes a `context_identity` over the context shown to the approver and rejects a resolution that does not echo it, with `host_error:approval_identity_mismatch` (AGENT-HOOKS-0.1 section 9). When the host's identity provider is content-derived (AGENT-HOOKS-0.1 section 10.1), this prevents an approval obtained for one content from being replayed against another. A host that declares a `null` provider binds approvals by request and response correlation only, and the echo rule then protects nothing beyond that correlation.
 
 Telemetry MUST NOT carry sensitive values. The runtime emits low cardinality metadata only and never the values enumerated in section 19.
 
@@ -593,7 +593,7 @@ Resource limits bound the work of a single evaluation. A host SHOULD configure t
 
 Dispatchers run with host trust. A policy or annotator dispatcher executes host supplied code and reaches the network and other systems. The host is responsible for the security of that code and of the endpoints it contacts.
 
-The repository threat model in [`docs/security-model.md`](../docs/security-model.md) records the assets, the adversaries, and the mitigations in full.
+This section is the threat model for the runtime. The host side trust boundary, including the approval resolver and the identity provider, is set out in AGENT-HOOKS-0.1 section 1.4.
 
 ## 22. Versioning and stability
 
@@ -615,15 +615,17 @@ The current version carries the `-alpha` pre release tag and the status Draft. W
 
 **[OPA]** Open Policy Agent and the Rego policy language, `https://www.openpolicyagent.org/`.
 
+**[AGENT-HOOKS]** Agent Hooks control contract, AGENT-HOOKS-0.1, `spec/AGENT-HOOKS-0.1.md` in the `responsibleai/agent-hooks` repository. It defines the verdict, the host obligations, the approval seam, and the `host_error:*` reasons this document relies on.
+
 ### 23.2 Informative references
 
-**[THREAT-MODEL]** Agent Control Specification threat and security model, [`docs/security-model.md`](../docs/security-model.md).
+**[EXTRACTION]** Extraction map from the previous tree and the re-basing of ACS on the Agent Hooks contract, [`docs/EXTRACTION.md`](../docs/EXTRACTION.md).
 
-**[IMPL-DESIGN]** Agent Control Specification stateless implementation design, [`docs/stateless-runtime.md`](../docs/stateless-runtime.md).
+**[COMPOSITION]** Composing ACS controls through Agent Hooks, [`docs/ACS-AND-AGENT-HOOKS.md`](../docs/ACS-AND-AGENT-HOOKS.md).
 
 ## 24. Approval manifest section
 
-A manifest MAY carry a top level `approval` object that declares how a host resolves an `escalate` verdict. The section is optional. A manifest without it has no declared resolvers and a host falls back to its own approval configuration as described in section 17.1.
+A manifest MAY carry a top level `approval` object that declares how a host resolves an `escalate` verdict. It is the host's resolver configuration for the approval seam of AGENT-HOOKS-0.1 section 9: it names the resolver the host registers and bounds the wait. It does not define a second approval mechanism. The section is optional. A manifest without it has no declared resolvers and a host falls back to its own approval configuration as described in section 17.1.
 
 | Field | Required | Type | Meaning |
 | --- | --- | --- | --- |
@@ -634,7 +636,9 @@ A manifest MAY carry a top level `approval` object that declares how a host reso
 | `fatigue_window_seconds` | no | integer | Window across which the fatigue counter accumulates. |
 | `resolvers` | no | object | Map of resolver name to an opaque resolver descriptor that carries a discriminating `type` field. |
 
-The runtime validates the shape of `approval`. It MUST fail closed with `runtime_error:manifest_invalid` when `approval` is present and is not an object, when `default_resolver` or `on_timeout` is present and is not a string, when `timeout_seconds`, `fatigue_threshold`, or `fatigue_window_seconds` is present and is not a non negative integer, or when `resolvers` is present and is not an object. The runtime treats each resolver descriptor as opaque beyond its `type` discriminator and does not interpret the rest of its contents. Resolution of a resolver name to a concrete approval mechanism is a host concern defined in section 17.1. When an `escalate` verdict is returned and no resolver matches the `default_resolver`, the SDK enforcement layer MUST fail closed with `runtime_error:approval_resolver_missing`.
+The runtime validates the shape of `approval`. It MUST fail closed with `runtime_error:manifest_invalid` when `approval` is present and is not an object, when `default_resolver` or `on_timeout` is present and is not a string, when `default_resolver` is present and empty, when `timeout_seconds`, `fatigue_threshold`, or `fatigue_window_seconds` is present and is not a positive integer, when `resolvers` is present and is not an object, or when a resolver entry has an empty name or an empty or missing `type`. It MUST also fail closed with `runtime_error:manifest_invalid` when `default_resolver` is present, `resolvers` is non empty, and no entry under `resolvers` has that name. The schema at [`spec/schema/approval.schema.json`](schema/approval.schema.json) is the normative shape. The runtime treats each resolver descriptor as opaque beyond its `type` discriminator and does not interpret the rest of its contents. Resolution of a resolver name to a concrete approval mechanism is a host concern defined in section 17.1. A host that registers no resolver for the named mechanism enforces a liftable deny as a plain deny, as AGENT-HOOKS-0.1 section 9 requires; no reserved reason marks that case.
+
+The timeout and fatigue fields configure the host's resolver. AGENT-HOOKS-0.1 does not define them. `timeout_seconds` bounds the wait, and `on_timeout` names the resolution the resolver returns when that bound elapses. AGENT-HOOKS-0.1 section 9 requires a resolver that times out to yield `deny` with `host_error:approval_resolver_failed`. `on_timeout: deny` and `on_timeout: suspend` agree with that rule, since both deny the current action. `on_timeout: allow` departs from it: it turns a timeout into a permit. A host that selects `allow` takes that risk, and this document does not call that configuration section 9 conformant. The resolver failure reasons are those of AGENT-HOOKS-0.1 section 9, listed in section 17.1. A resolver that returns `unresolved` fails the consultation closed with `host_error:approval_unresolved`. A resolver that raises, times out, returns an `outcome` outside the three values, or returns a `verdict` whose presence does not match its `outcome` fails it closed with `host_error:approval_resolver_failed`. A carried verdict that fails AGENT-HOOKS-0.1 section 5 validation or disagrees with its outcome fails it closed with `host_error:verdict_invalid`.
 
 The `approval` schema is published at [`spec/schema/approval.schema.json`](schema/approval.schema.json).
 
