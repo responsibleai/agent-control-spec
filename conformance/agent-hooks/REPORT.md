@@ -22,4 +22,4 @@ Corpus: vendored per `PROVENANCE.md`.
 | unspecified | 15 | 0 |
 | verdict/warnings | 1 | 0 |
 
-Total: 46 passed, 0 failed, 1 skipped (capability-gated) of 47.
+Total: 46 passed, 0 failed, 5 skipped (capability-gated) of 51.

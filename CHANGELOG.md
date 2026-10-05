@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- The specification names only reasons and documents that exist. Sections 17.1
+  and 24 route the approval path through the AGENT-HOOKS-0.1 section 9 seam and
+  its `host_error:*` reasons instead of two reasons no inventory or code
+  defined; section 19 names the `TelemetrySink` interface instead of a crate
+  that does not exist; dead links to four documents point at the files that
+  cover them. `tests/conformance/coverage.md` cites real test files and a test
+  now fails when a cited case id or path is missing.
+- The specification says once who applies a `transform` verdict. The runtime
+  validates the transform body and returns it unapplied in both modes; the host
+  applies it per AGENT-HOOKS-0.1 section 6. No sentence still describes a
+  transformed policy target the runtime does not return.
+
 ## 0.4.0-beta.1
 
 - Promote the runtime SDKs and generator metadata from
@@ -7,9 +21,8 @@
 - Keep the package version independent from manifest contract
   identifiers. Existing `0.4.0-alpha.1` and `0.5.0-alpha.1`
   manifests remain supported with unchanged semantics.
-- Retain the published Agent Hooks `0.1.0-alpha.5` dependency until
-  `0.1.0-beta.1` is available in every registry. The coordinated
-  dependency bump is required before this beta is merged or tagged.
+- Depend on the coordinated Agent Hooks `0.1.0-beta.1` release across
+  the Rust, Python, Node, .NET, and generator packages.
 
 ## 0.4.0-alpha.4
 

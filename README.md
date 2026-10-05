@@ -49,5 +49,10 @@ parsing budgets and parser dependency details.
 Python: [SDK quickstart](sdk/python/README.md) and
 [composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
 
-`0.4.0-beta.1`, the first beta of the re-based runtime. Depends on
-`agent-hooks-sdk 0.1.0-alpha.5`.
+Node: `npm install @responsibleai/agent-control-spec@alpha`, see the
+[Node wrapper](sdk/node/README.md). Keep the `@alpha` tag while the
+package is pre-release: npm's `latest` tag can lag the newest
+pre-release, so a plain `npm install` may fetch an older build.
+
+Current version: `0.4.0-beta.1`, the first beta of the re-based
+runtime. It depends on Agent Hooks `0.1.0-beta.1`.

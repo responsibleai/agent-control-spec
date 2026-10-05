@@ -214,12 +214,55 @@ fn coverage_claims_reference_existing_cases() {
     }
     assert!(sections >= 23, "expected expanded section coverage");
     let missing = case_ids
-        .into_iter()
-        .filter(|case| !coverage.contains(case))
+        .iter()
+        .filter(|case| !coverage.contains(case.as_str()))
         .collect::<Vec<_>>();
     assert!(
         missing.is_empty(),
         "every case must be mapped in coverage.md: {missing:?}"
+    );
+
+    // The reverse direction: every case id and every repository path that
+    // coverage.md cites in backticks must resolve.
+    let repo_root = conformance_dir()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let path_prefixes = [
+        "engine/",
+        "tests/",
+        "spec/",
+        "docs/",
+        "policy/",
+        "conformance/",
+        "sdk/",
+        "scripts/",
+        "examples/",
+        "fixtures/",
+        "generator/",
+    ];
+    let mut dangling = Vec::new();
+    for anchor in coverage.split('`').skip(1).step_by(2) {
+        let is_case_id = anchor.starts_with("spec-") && anchor.contains(".case-");
+        if is_case_id {
+            if !case_ids.contains(anchor) {
+                dangling.push(anchor.to_string());
+            }
+            continue;
+        }
+        if path_prefixes
+            .iter()
+            .any(|prefix| anchor.starts_with(prefix))
+            && !repo_root.join(anchor).exists()
+        {
+            dangling.push(anchor.to_string());
+        }
+    }
+    assert!(
+        dangling.is_empty(),
+        "coverage.md cites anchors that do not exist: {dangling:?}"
     );
 }
 

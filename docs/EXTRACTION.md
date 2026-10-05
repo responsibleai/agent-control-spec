@@ -24,14 +24,16 @@ policies and returns agent-hooks verdicts.
 | `core/src/verdict.rs` | `engine/src/policy_output.rs` | Rewritten. The five-decision enum is gone; policy outputs normalize to agent-hooks `Verdict` values natively (`warn` intent → `allow` + `warnings[]`, `escalate` intent → `deny` + `approval{}`). Evidence uses the agent-hooks type and size bound. |
 | `core/src/intervention_point.rs` | — | Superseded by `agent_hooks::InterceptionPoint` / `EnforcementMode`. |
 | `core/src/effects.rs` | — | Removed (already sunset in the source; `transform` is the only value-changing decision). |
-| `core/src/ffi.rs` | — (pending) | C ABI to be reintroduced with the Node/.NET SDK ports. |
+| `core/src/ffi.rs` | `sdk/ffi` | C ABI over the engine, built as the workspace crate `agent-control-spec-ffi` (cdylib and rlib, `publish = false`, not on crates.io). The .NET binding loads it. |
 | `spec/SPECIFICATION.md` | `spec/SPECIFICATION.md` | Interception-layer sections replaced by references to AGENT-HOOKS-0.1; policy-plane sections retained. |
 | `spec/schema/` | `spec/schema/` | Manifest/advice schemas kept; wire verdict schema superseded by the agent-hooks verdict schema. |
 | `policy/` | `policy/` | Cedar/Rego policy libraries. |
 | `tests/fixtures` | `fixtures/` | Evaluation fixtures. |
 | `sdk/python` | `sdk/python` | PyO3 binding; re-exports agent-hooks types and wraps the engine as an `agent_hooks` interceptor. |
-| `sdk/node`, `sdk/dotnet`, `sdk/rust` | — (pending) | To be reintroduced on the same pattern. Rust consumers use the `engine` crate directly. |
-| `core/tests/` | `engine/tests/` | Ported; assertions updated to the native verdict shapes (advisory → `allow`+`warnings`, escalation → `deny`+`approval`). Not ported: `ffi_*.rs` (ABI removed), `frozen_contract.rs` (pinned the superseded wire), `parity_canonical.rs` (identity parity is owned by the agent-hooks golden vectors). |
+| `sdk/node` | `sdk/node` | napi binding (`@responsibleai/agent-control-spec`); wraps the engine as an agent-hooks interceptor. |
+| `sdk/dotnet` | `sdk/dotnet` | `ResponsibleAI.AgentControlSpec`; wraps the engine as an agent-hooks interceptor (`AcsInterceptor : IInterceptor`) over the `sdk/ffi` C ABI. |
+| `sdk/rust` | — | Not reintroduced. Rust consumers use the `engine` crate directly. |
+| `core/tests/` | `engine/tests/` | Ported; assertions updated to the native verdict shapes (advisory → `allow`+`warnings`, escalation → `deny`+`approval`). Not ported: `ffi_*.rs` (the C ABI was rebuilt in `sdk/ffi`, which carries its own unit tests in `sdk/ffi/src/lib.rs`), `frozen_contract.rs` (pinned the superseded wire), `parity_canonical.rs` (identity parity is owned by the agent-hooks golden vectors). |
 | `tests/conformance/` | `tests/conformance/` | Executable corpus ported, minus the approval-seam and evaluate-only cases (host obligations under AGENT-HOOKS-0.1 §8–§9, covered by that contract's kit). |
 | `examples/` | `examples/` | Imported for the end-to-end suites; `basic_host.rs` still speaks the superseded API and is pending a rewrite as an emitter-based host. |
 | — | `conformance/agent-hooks/` | New: vendored AGENT-HOOKS-0.1 vector corpus, provenance, and the per-part conformance report produced by `engine/tests/agent_hooks_conformance.rs`. |

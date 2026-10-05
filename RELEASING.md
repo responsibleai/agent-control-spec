@@ -34,6 +34,29 @@ the tag's publication set. The tag workflow does not publish the generator.
    All legs are idempotent: already-published versions are skipped, so
    a re-run after a partial failure is safe.
 
+5. Pre-release only: move the npm `latest` dist-tag. Skip this step
+   for a stable release, which the workflow publishes under `latest`
+   itself. The workflow publishes pre-release versions under the
+   `alpha` tag and leaves `latest` alone, so `latest` can lag and a
+   plain `npm install` may fetch an older build. The workflow does not
+   move `latest` for a pre-release today (npm trusted publishing can
+   run `npm dist-tag` once "Allow npm dist-tag" is enabled on each
+   publisher; wiring that in is still to do). Until then, when the
+   version you just published should be the default install, move the
+   tag by hand on the loader and every platform package. Run this from
+   an interactive npm login with 2FA, not a stored automation token:
+
+   ```bash
+   V=<version>
+   for p in agent-control-spec agent-control-spec-linux-x64-gnu \
+            agent-control-spec-darwin-x64 agent-control-spec-darwin-arm64 \
+            agent-control-spec-win32-x64-msvc; do
+     npm dist-tag add "@responsibleai/$p@$V" latest
+   done
+   ```
+
+   Check with `npm view @responsibleai/agent-control-spec dist-tags`.
+
 ## Async adapter contract changes
 
 PR #68 deliberately adds the three `runtime_error:acs_async_*`
@@ -73,7 +96,8 @@ separate dependency updates from moving Python and the other bindings apart.
 The parser remains Python-only authoring tooling; the binding-coverage script
 records that decision separately from the runtime's cross-language contract.
 
-Registry credentials: OIDC trusted publishing everywhere; the one-time
+Registry credentials: OIDC trusted publishing everywhere; the only
+by-hand action is the pre-release dist-tag move in step 5. The one-time
 first-publish bootstraps for crates.io and npm are described in the
 `release.yml` header. Publish jobs run in the `release` environment.
 

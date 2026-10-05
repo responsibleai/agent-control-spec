@@ -263,6 +263,7 @@ impl Harness for AcsReferenceHost {
                 .iter()
                 .map(|record| serde_json::to_value(record).expect("record serializes"))
                 .collect(),
+            postures: Default::default(),
         }
     }
 

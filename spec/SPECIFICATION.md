@@ -2,23 +2,23 @@
 
 This document specifies version `0.5.0-alpha.1` of the Agent Control Specification (ACS). Its status is Draft. Legacy manifest contract `0.4.0-alpha.1` remains supported as described in section 2.1.
 
-The machine readable manifest contract is `schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository. That schema governs manifest syntax. This document governs runtime semantics, which are the evaluation order, the policy input shape, verdict handling, transform application, and fail closed behavior.
+The machine readable manifest contract is `schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository. That schema governs manifest syntax. This document governs runtime semantics, which are the evaluation order, the policy input shape, verdict handling, transform validation, and fail closed behavior.
 
 The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, NOT RECOMMENDED, MAY, and OPTIONAL in this document are to be interpreted as described in BCP 14 [RFC 2119] [RFC 8174] when, and only when, they appear in all capitals, as shown here. The references are listed in section 23.
 
 ## 1. Model
 
-ACS evaluates one intervention point of one agent at a time. The host assembles a complete JSON snapshot for that intervention point and calls the runtime. The runtime selects the value under evaluation, attaches host supplied annotations, calls a host supplied policy dispatcher, normalizes the result into a verdict, and validates any transform the verdict carries. In enforce mode a `transform` verdict produces a transformed policy target.
+ACS evaluates one intervention point of one agent at a time. The host assembles a complete JSON snapshot for that intervention point and calls the runtime. The runtime selects the value under evaluation, attaches host supplied annotations, calls a host supplied policy dispatcher, normalizes the result into a verdict, and validates any transform the verdict carries. The runtime does not apply the transform; the host does, per AGENT-HOOKS-0.1 section 6.
 
-The runtime computes verdicts and produces a transformed policy target. Acting on a verdict, by allowing, transforming, escalating, or refusing the action under control, happens at the host integration boundary defined in section 17. The ACS SDKs implement that boundary in their adapters, so a host that wraps an action in an adapter gets enforcement without writing it by hand.
+The runtime computes verdicts. Acting on a verdict, by allowing, transforming, escalating, or refusing the action under control, happens at the host integration boundary defined in section 17. The ACS SDKs implement that boundary in their adapters, so a host that wraps an action in an adapter gets enforcement without writing it by hand.
 
 ### 1.1 Invariants
 
 The runtime is stateless. It MUST NOT retain mutable state that influences a verdict from one evaluation to the next. State scoped to a single call and passed through the call stack is permitted. Process level and module level registries that influence a verdict are not.
 
-The runtime is deterministic. Two evaluations with the same manifest, snapshot, mode, and dispatcher results MUST produce the same verdict and the same transformed policy target.
+The runtime is deterministic. Two evaluations with the same manifest, snapshot, mode, and dispatcher results MUST produce the same verdict.
 
-The runtime fails closed. Any error during evaluation MUST yield a `deny` verdict whose reason is one of the reserved identifiers in section 16. The runtime MUST NOT apply a transform on any path that ends in a runtime error.
+The runtime fails closed. Any error during evaluation MUST yield a `deny` verdict whose reason is one of the reserved identifiers in section 16. The runtime MUST NOT return a `transform` verdict on any path that ends in a runtime error.
 
 Intervention point evaluation performs no input or output of its own. Network requests during evaluation, classifier and judge execution, policy engine execution, model calls, tool calls, stream assembly, and parallel dispatch belong to the host. File based manifest loading may perform bounded HTTPS fetches for URL `extends` during construction. The runtime and host exchange typed values through synchronous dispatcher interfaces.
 
@@ -28,7 +28,7 @@ This section defines the terms this document uses with a specific meaning. Every
 
 **Host.** The application that embeds ACS. The host assembles snapshots, calls the runtime, supplies dispatchers, and acts on verdicts. The ACS SDK adapters run inside the host and perform that integration on its behalf.
 
-**Runtime.** The stateless, deterministic engine defined by this document. The runtime computes a verdict and an optional transformed policy target and performs no input or output of its own.
+**Runtime.** The stateless, deterministic engine defined by this document. The runtime computes a verdict and performs no input or output of its own.
 
 **Snapshot.** The complete JSON document the host assembles for one intervention point. It is the only input the runtime reads about the agent and its environment.
 
@@ -85,7 +85,7 @@ All fetched documents belong to one trust class for dependency checks, whether p
 
 Merging is additive. A name defined in more than one manifest MUST be either identical in every manifest or non conflicting. Metadata object keys are merged additively, with nested object keys merged recursively when duplicate object values are non conflicting. For an intervention point, only its `annotations` may differ and are unioned. A conflicting duplicate definition MUST fail closed. Loading MUST also fail closed on a reference cycle, a missing file, a failed URL fetch, a URL body limit breach, or a version that differs between a parent and a child. A construction time load failure MAY surface by refusing to construct the runtime because no runtime exists yet to return an intervention verdict. A loader that parses an in memory string, including every FFI loader, cannot resolve `extends` against the file system or network. It may retain `extends` as data, but constructing an enforcing runtime from a manifest whose `extends` is non empty MUST fail closed, so such loaders MUST be given an already merged manifest.
 
-An AGT host MAY pre-resolve `extends` host side before it constructs the runtime. The host side resolution algorithm, including its cycle, path traversal, governance validation, and merge conflict failures, is defined in [`spec/agt/AGT-RESOLUTION-1.0.md`](agt/AGT-RESOLUTION-1.0.md) and surfaces the `runtime_error:resolution_path_traversal`, `runtime_error:resolution_cycle`, `runtime_error:resolution_invalid_governance`, and `runtime_error:resolution_merge_conflict` reasons defined in section 16. The runtime itself receives an already merged manifest as required above. A host that pre-resolves extends hands the runtime a manifest the runtime treats as host authored; the host bears the provenance duty for content it fetched.
+An AGT host MAY pre-resolve `extends` host side before it constructs the runtime. The host side resolution algorithm, including its cycle, path traversal, governance validation, and merge conflict failures, is the AGT host's own contract, outside this document; it surfaces the `runtime_error:resolution_path_traversal`, `runtime_error:resolution_cycle`, `runtime_error:resolution_invalid_governance`, and `runtime_error:resolution_merge_conflict` reasons defined in section 16. The runtime itself receives an already merged manifest as required above. A host that pre-resolves extends hands the runtime a manifest the runtime treats as host authored; the host bears the provenance duty for content it fetched.
 
 Repeated bindings for the same annotation at the same intervention point MUST be structurally identical. Adding, removing, or reordering `needs` entries is a merge conflict, as is adding an empty `needs` array to a binding that omitted it. The loader does not union dependency lists.
 
@@ -157,7 +157,7 @@ For a request that carries an intervention point and a snapshot, the runtime MUS
 6. Build the final policy input with annotator outputs placed under `annotations`.
 7. Resolve the bound policy, prepare a typed invocation, and call the policy dispatcher per section 12.
 8. Normalize the dispatcher output into a verdict per section 13.
-9. Validate the transform per section 14. When the decision is `transform` and the mode is `enforce`, apply it to the policy target and return the transformed policy target.
+9. Validate the transform per section 14 and return the verdict. The runtime returns the `transform` body unapplied in both modes; the host applies it per AGENT-HOOKS-0.1 section 6.
 
 Annotation collection completes before the policy dispatcher is called. Transform handling runs after the verdict is normalized.
 
@@ -346,7 +346,7 @@ Cedar's authorization result maps to a verdict. Cedar reports the policies that 
 }
 ```
 
-The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that is not JSON or does not match the schema MUST fail closed with `runtime_error:policy_output_invalid`. Both objects in the schema are closed, so a member outside them is a mismatch, and so is a `transform` advice without a `transform` body; each fails closed the same way. A `transform` advice whose `path` is outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. The section 14 rules apply to the `transform` body after translation: a `path` that does not parse or resolve, or a `value` that cannot be set, fails closed with `runtime_error:transform_invalid`.
+The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that is not JSON or does not match the schema MUST fail closed with `runtime_error:policy_output_invalid`. Both objects in the schema are closed, so a member outside them is a mismatch, and so is a `transform` advice without a `transform` body; each fails closed the same way. A `transform` advice whose `path` is outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. The section 14 rules apply to the `transform` body after translation: a `path` under `$target` that does not parse fails closed with `runtime_error:transform_invalid`.
 
 The runtime offers an optional bundled `cedar` dispatcher that links the Cedar Rust crate when the `cedar` build feature is enabled. A host MAY supply its own dispatcher instead. A dispatcher error MUST fail closed with `runtime_error:policy_invocation_failed`.
 
@@ -404,24 +404,24 @@ The runtime MUST mark the loss by appending one entry to `warnings[]` with `reas
 
 ## 14. Transform
 
-A `transform` verdict carries a single replacement that the runtime applies to the policy target and to nothing else. The `transform` body has two members.
+A `transform` verdict carries a single replacement that the host applies to the policy target and to nothing else. The `transform` body has two members.
 
 | Field | Required | Type | Constraint |
 | --- | --- | --- | --- |
 | `path` | yes | string | MUST be rooted at `$target`. |
 | `value` | yes | any | New JSON value to set at `path`. |
 
-The runtime resolves `path` against the current policy target and replaces the value at that location with `value`. The transformation is confined to the policy target. The runtime MUST NOT change the snapshot, the annotations, the projected tool, or any host state.
+The host resolves `path` against the current policy target and replaces the value at that location with `value`, per AGENT-HOOKS-0.1 section 5.2. The transformation is confined to the policy target. The runtime MUST NOT change the policy target, the snapshot, the annotations, the projected tool, or any host state.
 
-A `transform` whose `path` is rooted outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. A `transform` whose `path` cannot be parsed, whose `path` does not resolve against the policy target, whose `value` cannot be set because of a path type mismatch, or whose `value` member is missing MUST fail closed with `runtime_error:transform_invalid`.
+The runtime validates the `transform` body with the same path parser the host applies with. A `transform` whose `path` is rooted outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. A `transform` whose `path` is under `$target` but cannot be parsed MUST fail closed with `runtime_error:transform_invalid`. A `transform` whose `path` or `value` member is missing MUST fail closed with `runtime_error:policy_output_invalid`. A `path` that does not resolve against the policy target, or a `value` that cannot be set because of a path type mismatch, is found when the host applies the transform and fails closed there with `host_error:transform_invalid` per AGENT-HOOKS-0.1 section 5.2.
 
-In `enforce` mode the runtime applies the transform and the result is the transformed policy target. In `evaluate_only` mode the runtime validates the transform but applies none and returns no transformed policy target.
+The runtime validates the transform in both modes and returns the `transform` verdict with its body unapplied. It produces no transformed policy target. In `enforce` mode the host applies the transform to the policy target and carries out the action with the transformed value (AGENT-HOOKS-0.1 section 6). In `evaluate_only` mode the host validates the transform but applies none (AGENT-HOOKS-0.1 section 8).
 
 `transform` is the only form of value rewriting a verdict can request. A host that needs multi step rewriting at one intervention point expresses it by chaining intervention points, for example an annotator at `pre_model_call` produces sanitized text under `annotations.<name>` and the bound policy reads from that annotation. With `0.5.0-alpha.1`, annotator `needs` supports multi step derivation within one evaluation before policy dispatch; it does not rewrite the policy target or snapshot.
 
 ## 15. Resource limits
 
-A runtime MUST enforce finite limits while parsing a manifest document, loading file based manifest extends, fetching HTTPS manifest extends, building policy input, serializing policy input, invoking annotators, normalizing policy output, and validating or applying a transform. A host MAY configure those limits. Policy output is measured as canonical JSON before verdict normalization. A transformed policy target produced by an applied transform MUST be reinserted into the request snapshot for snapshot limit validation before the runtime returns it to the host. A limit breach MUST fail closed with `runtime_error:resource_limit_exceeded`, except an individual annotator output limit breach MUST fail closed with `runtime_error:annotation_failed`.
+A runtime MUST enforce finite limits while parsing a manifest document, loading file based manifest extends, fetching HTTPS manifest extends, building policy input, serializing policy input, invoking annotators, normalizing policy output, and validating a transform. A host MAY configure those limits. Policy output is measured as canonical JSON before verdict normalization. A limit breach MUST fail closed with `runtime_error:resource_limit_exceeded`, except an individual annotator output limit breach MUST fail closed with `runtime_error:annotation_failed`.
 
 For `0.5.0-alpha.1`, the annotator count limit bounds the whole graph, including its dispatch count and longest dependency chain. The runtime MUST check the nesting depth of preliminary and staged policy input before dispatch, including dependency outputs nested under `annotations`. Policy input validation checks nesting depth, not aggregate byte length; serialization adds no aggregate byte-cap check. Snapshot limits, per-annotator output limits, and the annotator count limit bound the payload values carried into each dispatch.
 
@@ -477,17 +477,17 @@ An intentional scope bypass is an `allow`, not a runtime error. The Python adapt
 
 ## 17. Host obligations
 
-The runtime returns a verdict and, for a `transform` verdict in enforce mode, an optional transformed policy target. The host enforces them. In `enforce` mode the host MUST NOT carry out the action of a `deny` verdict, MUST route an `escalate` verdict to an approval path and MUST NOT carry out the action until that path resolves, and MUST use the transformed policy target in place of the original policy target when one is present. In `evaluate_only` mode the host MAY carry out the original action and SHOULD record the verdict. A host that ignores a `deny` or an unresolved `escalate` is not conformant.
+The runtime returns a verdict. The host enforces it. In `enforce` mode the host MUST NOT carry out the action of a `deny` verdict, MUST route an `escalate` verdict (a `deny` carrying an `approval` block, section 13) to an approval path and MUST NOT carry out the action until that path resolves, and MUST apply a `transform` verdict to the policy target per AGENT-HOOKS-0.1 section 6 and carry out the action with the transformed value. In `evaluate_only` mode the host MAY carry out the original action and SHOULD record the verdict. A host that ignores a `deny` or an unresolved `escalate` is not conformant.
 
 ### 17.1 Approval path
 
-The approval path is a host concern and is not part of the policy input contract. An SDK MAY expose it as an approval resolver. The resolver is a host supplied callback that the SDK consults only for an `escalate` verdict in `enforce` mode. The resolver payload MUST include the `enforced_identity` returned by evaluation. The approval outcome MUST carry the approved `enforced_identity` for an allow or suspend result. The SDK MUST rederive the `enforced_identity` from the current policy input before proceeding and MUST fail closed with `runtime_error:approval_action_mismatch` when it differs from the approved identity. An SDK that consults a manifest declared resolver but finds none matching the manifest `approval.default_resolver` MUST fail closed with `runtime_error:approval_resolver_missing`. The path resolves to one of three outcomes.
+The approval path is a host concern and is not part of the policy input contract. It is the approval seam of AGENT-HOOKS-0.1 section 9. The runtime returns an `escalate` intent as a `deny` carrying an `approval` block (section 13), which is the AGENT-HOOKS-0.1 liftable deny. The host consults its registered approval resolver only for such a verdict in `enforce` mode, binds the request to the context identity, validates the resolution in the order section 9 gives, and reports failures with the `host_error:` reasons that AGENT-HOOKS-0.1 section 11 reserves. The `approval` manifest section (section 24) is the host's resolver configuration for that seam and does not add a second approval mechanism. The runtime defines no approval reasons. Section 16 reserves `runtime_error:approval_resolver_failed` for compatibility; no SDK in this repository produces it. New code uses the agent-hooks `host_error:` reasons named below. The path resolves to one of three outcomes.
 
-1. Allow. The host carries out the action. An `escalate` verdict does not return or apply a transformed policy target.
+1. Allow. The resolver returned a permit verdict. It substitutes for the liftable deny per AGENT-HOOKS-0.1 section 7.6; the host carries out the action and applies a transform the permit carries per AGENT-HOOKS-0.1 section 6. The `escalate` verdict itself carries no `transform` body.
 2. Deny. The host MUST NOT carry out the action.
-3. Suspend. The host stops the current run and hands the decision to an out of band process. Suspension is terminal for the run. Resumption is the host's responsibility and is not a runtime operation.
+3. Suspend. A host local outcome that AGENT-HOOKS-0.1 section 9 does not define. For the current action it is a deny: the host MUST NOT carry out the action. The host stops the current run and hands the decision to an out of band process. Suspension is terminal for the run. Resumption is the host's responsibility and is not a runtime operation.
 
-When no approval path is configured, or when the path fails or returns an unrecognized outcome, the host MUST fail closed and treat the `escalate` verdict as a `deny`. A `deny` verdict MUST NOT consult the approval path.
+A host with no registered resolver enforces the liftable deny as a plain deny. That is conformant behavior, not an error. When the resolver raises, times out, or returns a resolution that fails validation, the host MUST fail closed with the reason that AGENT-HOOKS-0.1 section 9 names for that failure, in the order section 9 gives: `host_error:approval_identity_mismatch` when the echoed `context_identity` differs from the request's; `host_error:approval_resolver_failed` when the resolver raises or times out, when `outcome` is not one of `approve`, `reject`, or `unresolved`, or when `verdict` is present for `unresolved` or absent for the other two; `host_error:verdict_invalid` when the carried verdict fails AGENT-HOOKS-0.1 section 5 validation or disagrees with its outcome (an `approve` that carries a deny, a `reject` that carries a permit); and `host_error:approval_unresolved` when a well formed resolution carries `outcome: unresolved`. A `deny` without an `approval` block MUST NOT consult the approval path.
 
 An `escalate` verdict at a post action intervention point, such as `post_model_call` or `post_tool_call`, is reached only after the action has already executed. A host that suspends at such a point and later resumes MUST deliver the result that was already produced and MUST NOT execute the action a second time.
 
@@ -553,7 +553,7 @@ This profile evaluates `input` and `post_model_call`. Section 18 keeps `output` 
 
 ## 19. Telemetry and audit
 
-A host MAY supply a telemetry sink. Events are content safe and stable. Known event kinds are `decision`, `annotator_dispatch`, `policy_evaluation`, `evaluation_timing`, `intervention_point.transformed`, `annotator_failed`, and `policy_failed`. The runtime emits `intervention_point.transformed` in addition to `decision` whenever the verdict is `transform`. An event carries stable metadata such as the intervention point, enforcement mode, decision, reason code, error class, policy id, annotator names, duration, and whether a transform was applied. When a verdict carries `evidence` the event MAY include the `evidence_artefact` and the key names of `verification_pointers` recorded as `evidence_verification_pointer_keys`, and it MUST NOT include the pointer URL values. A runtime MAY include the `input_identity` and `enforced_identity` from section 13 as correlation identifiers. The runtime MUST NOT emit policy target values, tool arguments or results, annotation values, model messages, secrets, or personal data.
+A host MAY supply a telemetry sink. Events are content safe and stable. Known event kinds are `decision`, `annotator_dispatch`, `policy_evaluation`, `evaluation_timing`, `intervention_point.transformed`, `annotator_failed`, and `policy_failed`. The runtime emits `intervention_point.transformed` in addition to `decision` whenever the verdict is `transform`. An event carries stable metadata such as the intervention point, enforcement mode, decision, reason code, error class, policy id, annotator names, duration, and whether the verdict carried a transform. When a verdict carries `evidence` the event MAY include the `evidence_artefact` and the key names of `verification_pointers` recorded as `evidence_verification_pointer_keys`, and it MUST NOT include the pointer URL values. A runtime MAY include the `input_identity` and `enforced_identity` from section 13 as correlation identifiers. The runtime MUST NOT emit policy target values, tool arguments or results, annotation values, model messages, secrets, or personal data.
 
 For `0.5.0-alpha.1`, an `annotator_dispatch` or `annotator_failed` event identifies the annotation being dispatched. When it has dependencies, the event SHOULD include `metadata.annotation_needs` as a JSON-encoded array string, for example `"[\"source\",\"derived\"]"`, not a comma-delimited list. This metadata contains dependency names only, never output payloads. Legacy host-defined `needs` values MUST NOT be emitted as dependency metadata.
 
@@ -561,15 +561,15 @@ The default telemetry level emits no `annotator_dispatch` events. A successful e
 
 A host MAY derive an audit record from each evaluation. The action identities defined in section 13, the `input_identity` and `enforced_identity` `sha256:` digests of the canonical policy input, are the stable keys that tie an audit record to the exact intervention point, policy target, snapshot, annotations, and projected tool data the policy evaluated. An audit record SHOULD record the intervention point, the mode, the verdict, the reason, the error class for runtime errors, and the action identities when available. It MUST follow the same redaction rule as telemetry so that it carries no sensitive value.
 
-The telemetry and audit contract is transport neutral. ACS ships an OpenTelemetry binding in the `agent_control_specification_otel` integration crate that maps these events to OpenTelemetry counters and histograms, described in [`docs/observability.md`](../docs/observability.md). That binding is one supported integration and is not required for conformance. A host MAY route the same events to any sink it chooses.
+The telemetry and audit contract is transport neutral. The engine exposes a `TelemetrySink` interface that receives these events; a host implements it to route them to the sink it chooses, such as an OpenTelemetry exporter. No particular sink is required for conformance.
 
 ## 20. Conformance
 
 An implementation conforms to this document as a runtime, as a host, or as both.
 
-A conformant runtime MUST evaluate in the order defined in section 6, build the policy input defined in section 7, serialize it canonically as defined in section 8, normalize results into the verdicts defined in section 13, validate and apply a transform as defined in section 14, enforce the resource limits in section 15, and report failures using only the reserved reasons in section 16. It MUST be stateless and deterministic as defined in section 1.1 and MUST fail closed on every error.
+A conformant runtime MUST evaluate in the order defined in section 6, build the policy input defined in section 7, serialize it canonically as defined in section 8, normalize results into the verdicts defined in section 13, validate a transform as defined in section 14, enforce the resource limits in section 15, and report failures using only the reserved reasons in section 16. It MUST be stateless and deterministic as defined in section 1.1 and MUST fail closed on every error.
 
-A conformant host MUST honor the obligations in section 17. It MUST NOT carry out a denied action, MUST NOT carry out an action whose `escalate` verdict has not resolved to an allow, and MUST substitute the transformed policy target for the original when the runtime returns one. A host MUST NOT present an `evaluate_only` result as enforcement.
+A conformant host MUST honor the obligations in section 17. It MUST NOT carry out a denied action, MUST NOT carry out an action whose `escalate` verdict has not resolved to an allow, and MUST apply a `transform` verdict to the policy target before carrying out the action. A host MUST NOT present an `evaluate_only` result as enforcement.
 
 A host that adopts the incremental stream profile MUST additionally honor the obligations in section 18.1. Those obligations are conditional on adopting the profile and place no requirement on a host that assembles streams before evaluating them.
 
@@ -583,9 +583,9 @@ The runtime trusts the snapshot the host supplies. It does not authenticate the 
 
 Annotations are untrusted signal. An annotator observes potentially adversarial content such as a user prompt or a tool result. A policy MUST treat annotation values as data and MUST NOT let them widen authority. A failed annotator fails closed, so an annotator failure cannot silently allow an action. A dispatcher MUST also treat dependency outputs as untrusted data. In `0.5.0-alpha.1`, `needs` controls ordering and which outputs populate staged `annotations`; it is not a sandbox. Dispatchers still receive the full snapshot and full outputs of named dependencies, and execute with host trust. Selecting a subfield with `from` does not restrict access to those values.
 
-A `transform` verdict is bounded to the policy target. The runtime applies a transform only within `$target` and rejects any `transform` path rooted outside it, so a policy cannot use a transform to reach the snapshot, the projected tool, or host state.
+A `transform` verdict is bounded to the policy target. The runtime accepts a `transform` path only within `$target` and rejects any path rooted outside it, so a policy cannot use a transform to reach the snapshot, the projected tool, or host state.
 
-Approvals bind to `enforced_identity`. An `escalate` verdict is approved against the `enforced_identity` of the action that will execute, and the SDK rederives that identity before proceeding and fails closed on a mismatch. This prevents an approval granted for one action from authorizing a different action and closes a time of check to time of use gap.
+Approvals bind to identity. The host's approval seam computes a `context_identity` over the context shown to the approver and rejects a resolution that does not echo it, with `host_error:approval_identity_mismatch` (AGENT-HOOKS-0.1 section 9). When the host's identity provider is content-derived (AGENT-HOOKS-0.1 section 10.1), this prevents an approval obtained for one content from being replayed against another. A host that declares a `null` provider binds approvals by request and response correlation only, and the echo rule then protects nothing beyond that correlation.
 
 Telemetry MUST NOT carry sensitive values. The runtime emits low cardinality metadata only and never the values enumerated in section 19.
 
@@ -593,7 +593,7 @@ Resource limits bound the work of a single evaluation. A host SHOULD configure t
 
 Dispatchers run with host trust. A policy or annotator dispatcher executes host supplied code and reaches the network and other systems. The host is responsible for the security of that code and of the endpoints it contacts.
 
-The repository threat model in [`docs/security-model.md`](../docs/security-model.md) records the assets, the adversaries, and the mitigations in full.
+This section is the threat model for the runtime. The host side trust boundary, including the approval resolver and the identity provider, is set out in AGENT-HOOKS-0.1 section 1.4.
 
 ## 22. Versioning and stability
 
@@ -615,15 +615,17 @@ The current version carries the `-alpha` pre release tag and the status Draft. W
 
 **[OPA]** Open Policy Agent and the Rego policy language, `https://www.openpolicyagent.org/`.
 
+**[AGENT-HOOKS]** Agent Hooks control contract, AGENT-HOOKS-0.1, `spec/AGENT-HOOKS-0.1.md` in the `responsibleai/agent-hooks` repository. It defines the verdict, the host obligations, the approval seam, and the `host_error:*` reasons this document relies on.
+
 ### 23.2 Informative references
 
-**[THREAT-MODEL]** Agent Control Specification threat and security model, [`docs/security-model.md`](../docs/security-model.md).
+**[EXTRACTION]** Extraction map from the previous tree and the re-basing of ACS on the Agent Hooks contract, [`docs/EXTRACTION.md`](../docs/EXTRACTION.md).
 
-**[IMPL-DESIGN]** Agent Control Specification stateless implementation design, [`docs/stateless-runtime.md`](../docs/stateless-runtime.md).
+**[COMPOSITION]** Composing ACS controls through Agent Hooks, [`docs/ACS-AND-AGENT-HOOKS.md`](../docs/ACS-AND-AGENT-HOOKS.md).
 
 ## 24. Approval manifest section
 
-A manifest MAY carry a top level `approval` object that declares how a host resolves an `escalate` verdict. The section is optional. A manifest without it has no declared resolvers and a host falls back to its own approval configuration as described in section 17.1.
+A manifest MAY carry a top level `approval` object that declares how a host resolves an `escalate` verdict. It is the host's resolver configuration for the approval seam of AGENT-HOOKS-0.1 section 9: it names the resolver the host registers and bounds the wait. It does not define a second approval mechanism. The section is optional. A manifest without it has no declared resolvers and a host falls back to its own approval configuration as described in section 17.1.
 
 | Field | Required | Type | Meaning |
 | --- | --- | --- | --- |
@@ -634,7 +636,9 @@ A manifest MAY carry a top level `approval` object that declares how a host reso
 | `fatigue_window_seconds` | no | integer | Window across which the fatigue counter accumulates. |
 | `resolvers` | no | object | Map of resolver name to an opaque resolver descriptor that carries a discriminating `type` field. |
 
-The runtime validates the shape of `approval`. It MUST fail closed with `runtime_error:manifest_invalid` when `approval` is present and is not an object, when `default_resolver` or `on_timeout` is present and is not a string, when `timeout_seconds`, `fatigue_threshold`, or `fatigue_window_seconds` is present and is not a non negative integer, or when `resolvers` is present and is not an object. The runtime treats each resolver descriptor as opaque beyond its `type` discriminator and does not interpret the rest of its contents. Resolution of a resolver name to a concrete approval mechanism is a host concern defined in section 17.1. When an `escalate` verdict is returned and no resolver matches the `default_resolver`, the SDK enforcement layer MUST fail closed with `runtime_error:approval_resolver_missing`.
+The runtime validates the shape of `approval`. It MUST fail closed with `runtime_error:manifest_invalid` when `approval` is present and is not an object, when `default_resolver` or `on_timeout` is present and is not a string, when `default_resolver` is present and empty, when `timeout_seconds`, `fatigue_threshold`, or `fatigue_window_seconds` is present and is not a positive integer, when `resolvers` is present and is not an object, or when a resolver entry has an empty name or an empty or missing `type`. It MUST also fail closed with `runtime_error:manifest_invalid` when `default_resolver` is present, `resolvers` is non empty, and no entry under `resolvers` has that name. The schema at [`spec/schema/approval.schema.json`](schema/approval.schema.json) is the normative shape. The runtime treats each resolver descriptor as opaque beyond its `type` discriminator and does not interpret the rest of its contents. Resolution of a resolver name to a concrete approval mechanism is a host concern defined in section 17.1. A host that registers no resolver for the named mechanism enforces a liftable deny as a plain deny, as AGENT-HOOKS-0.1 section 9 requires; no reserved reason marks that case.
+
+The timeout and fatigue fields configure the host's resolver. AGENT-HOOKS-0.1 does not define them. `timeout_seconds` bounds the wait, and `on_timeout` names the resolution the resolver returns when that bound elapses. AGENT-HOOKS-0.1 section 9 requires a resolver that times out to yield `deny` with `host_error:approval_resolver_failed`. `on_timeout: deny` and `on_timeout: suspend` agree with that rule, since both deny the current action. `on_timeout: allow` departs from it: it turns a timeout into a permit. A host that selects `allow` takes that risk, and this document does not call that configuration section 9 conformant. The resolver failure reasons are those of AGENT-HOOKS-0.1 section 9, listed in section 17.1. A resolver that returns `unresolved` fails the consultation closed with `host_error:approval_unresolved`. A resolver that raises, times out, returns an `outcome` outside the three values, or returns a `verdict` whose presence does not match its `outcome` fails it closed with `host_error:approval_resolver_failed`. A carried verdict that fails AGENT-HOOKS-0.1 section 5 validation or disagrees with its outcome fails it closed with `host_error:verdict_invalid`.
 
 The `approval` schema is published at [`spec/schema/approval.schema.json`](schema/approval.schema.json).
 
