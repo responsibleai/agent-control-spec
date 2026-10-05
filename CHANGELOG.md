@@ -9,6 +9,10 @@
   that does not exist; dead links to four documents point at the files that
   cover them. `tests/conformance/coverage.md` cites real test files and a test
   now fails when a cited case id or path is missing.
+- The specification says once who applies a `transform` verdict. The runtime
+  validates the transform body and returns it unapplied in both modes; the host
+  applies it per AGENT-HOOKS-0.1 section 6. No sentence still describes a
+  transformed policy target the runtime does not return.
 
 ## 0.4.0-alpha.4
 
