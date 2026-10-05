@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "agent-control-spec"
-version = "0.4.0a4"
+version = "0.4.0b1"
 description = "Agent Control Specification: a stateless policy decision runtime implementing the agent-hooks interceptor contract."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Rust",
 ]
-dependencies = ["agent-hooks-sdk==0.1.0a5"]
+dependencies = ["agent-hooks-sdk==0.1.0b1"]
 
 [project.urls]
 Repository = "https://github.com/responsibleai/agent-control-spec"

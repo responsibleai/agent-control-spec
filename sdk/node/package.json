@@ -1,6 +1,6 @@
 {
   "name": "@responsibleai/agent-control-spec",
-  "version": "0.4.0-alpha.4",
+  "version": "0.4.0-beta.1",
   "description": "Agent Control Specification: a policy decision runtime plugging into agent-hooks as an interceptor. Node wrapper over the Rust engine.",
   "license": "MIT",
   "repository": {
@@ -35,7 +35,7 @@
     "test": "npm run build && node --test test/*.mjs"
   },
   "dependencies": {
-    "@responsibleai/agent-hooks": "0.1.0-alpha.5"
+    "@responsibleai/agent-hooks": "0.1.0-beta.1"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.7.4",

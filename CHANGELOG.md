@@ -14,6 +14,16 @@
   applies it per AGENT-HOOKS-0.1 section 6. No sentence still describes a
   transformed policy target the runtime does not return.
 
+## 0.4.0-beta.1
+
+- Promote the runtime SDKs and generator metadata from
+  `0.4.0-alpha.4` to `0.4.0-beta.1`.
+- Keep the package version independent from manifest contract
+  identifiers. Existing `0.4.0-alpha.1` and `0.5.0-alpha.1`
+  manifests remain supported with unchanged semantics.
+- Depend on the coordinated Agent Hooks `0.1.0-beta.1` release across
+  the Rust, Python, Node, .NET, and generator packages.
+
 ## 0.4.0-alpha.4
 
 - `RELEASING.md` now says the `runtime_error:acs_async_*` reasons ship in
