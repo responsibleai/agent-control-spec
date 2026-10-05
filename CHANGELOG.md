@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The specification names only reasons and documents that exist. Sections 17.1
+  and 24 route the approval path through the AGENT-HOOKS-0.1 section 9 seam and
+  its `host_error:*` reasons instead of two reasons no inventory or code
+  defined; section 19 names the `TelemetrySink` interface instead of a crate
+  that does not exist; dead links to four documents point at the files that
+  cover them. `tests/conformance/coverage.md` cites real test files and a test
+  now fails when a cited case id or path is missing.
+
 ## 0.4.0-alpha.4
 
 - `RELEASING.md` now says the `runtime_error:acs_async_*` reasons ship in
