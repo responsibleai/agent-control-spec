@@ -7,7 +7,7 @@ use crate::{
     policy_output::{normalize_policy_output, runtime_error_verdict, EVIDENCE_TRUNCATED_REASON},
     telemetry::{NoopTelemetrySink, TelemetryEvent, TelemetryEventType, TelemetrySink},
     tool_projection::project_tool,
-    JsonPath, JsonValue, Limits, PathEnv, PerfTelemetry, RuntimeError,
+    JsonPath, JsonValue, Limits, OnDemandAnnotations, PathEnv, PerfTelemetry, RuntimeError,
 };
 use agent_hooks::{InterceptionPoint, Verdict};
 use serde_json::Map;
@@ -20,6 +20,29 @@ use std::{
 
 pub trait PolicyDispatcher: Send + Sync {
     fn evaluate(&self, invocation: &PreparedPolicyInvocation) -> Result<JsonValue, RuntimeError>;
+
+    fn supports_on_demand_annotations(&self) -> bool {
+        false
+    }
+
+    fn evaluate_with_annotations(
+        &self,
+        _invocation: &PreparedPolicyInvocation,
+        _annotations: OnDemandAnnotations,
+    ) -> Result<JsonValue, RuntimeError> {
+        Err(RuntimeError::PolicyInvocationFailed(
+            "policy dispatcher does not support on-demand annotations".into(),
+        ))
+    }
+
+    fn warm_with_annotations(
+        &self,
+        _invocation: &PreparedPolicyInvocation,
+    ) -> Result<(), RuntimeError> {
+        Err(RuntimeError::PolicyInvocationFailed(
+            "policy dispatcher cannot prepare on-demand annotations".into(),
+        ))
+    }
 
     /// Do whatever work for `invocation` can be done before a decision is
     /// needed: parse the bundle, compile the policy, cache the result.
@@ -176,6 +199,15 @@ impl Runtime {
         limits: Limits,
     ) -> Result<Self, RuntimeError> {
         manifest.validate()?;
+        for config in manifest.intervention_points.values() {
+            if manifest.point_has_on_demand_annotations(config)?
+                && !policy.supports_on_demand_annotations()
+            {
+                return Err(RuntimeError::ManifestInvalid(
+                    "policy dispatcher does not support on-demand annotations".into(),
+                ));
+            }
+        }
         if !manifest.extends.is_empty() {
             return Err(RuntimeError::ManifestInvalid(
                 "manifest 'extends' was not resolved; an enforcing runtime requires a fully \
@@ -377,17 +409,59 @@ impl Runtime {
                 }
             })?;
 
+        let callable = self
+            .manifest
+            .point_has_on_demand_annotations(point_config)?;
+        let resolver = if callable {
+            Some(OnDemandAnnotations::new(
+                self.clone(),
+                request.intervention_point,
+                final_policy_input.clone(),
+            )?)
+        } else {
+            None
+        };
         let policy_start = Instant::now();
-        let policy_output = catch_unwind(AssertUnwindSafe(|| self.policy.evaluate(&invocation)))
-            .map_err(|payload| {
-                RuntimeError::PolicyInvocationFailed(format!(
-                    "policy dispatcher panicked: {}",
-                    panic_detail(payload.as_ref())
-                ))
+        let policy_output = catch_unwind(AssertUnwindSafe(|| match &resolver {
+            Some(resolver) => self
+                .policy
+                .evaluate_with_annotations(&invocation, resolver.clone()),
+            None => self.policy.evaluate(&invocation),
+        }))
+        .map_err(|payload| {
+            RuntimeError::PolicyInvocationFailed(format!(
+                "policy dispatcher panicked: {}",
+                panic_detail(payload.as_ref())
+            ))
+        })
+        .and_then(|result| result);
+        let resolution = match &resolver {
+            Some(resolver) => resolver.finish().map(|(reports, failure)| {
+                for (name, report) in reports {
+                    self.emit_event(
+                        TelemetryEvent::new(
+                            TelemetryEventType::AnnotationResolution,
+                            request.intervention_point,
+                        )
+                        .with_annotator(name)
+                        .with_policy_id(&policy.id)
+                        .with_optional_reason_code(report.failure_reason.as_deref())
+                        .with_metadata("status", report.status)
+                        .with_metadata("provider_calls", report.provider_calls.to_string())
+                        .with_metadata("cache_hits", report.cache_hits.to_string())
+                        .with_metadata("skipped_calls", report.skipped_calls.to_string()),
+                    );
+                }
+                failure
+            }),
+            None => Ok(None),
+        };
+        let policy_output = resolution
+            .and_then(|failure| match failure {
+                Some(error) => Err(error),
+                None => policy_output,
             })
-            .and_then(|result| {
-                result.map_err(|err| RuntimeError::PolicyInvocationFailed(err.to_string()))
-            })
+            .map_err(|err| RuntimeError::PolicyInvocationFailed(err.to_string()))
             .map_err(|error| {
                 self.emit_policy_external_event(
                     request.intervention_point,
@@ -487,6 +561,9 @@ impl Runtime {
                 .inspect_err(|error| {
                     self.emit_annotator_failed(intervention_point, annotator_name, error);
                 })?;
+            if self.manifest.annotation_is_on_demand(annotation_config)? {
+                continue;
+            }
             let annotator_config = self
                 .manifest
                 .annotators
@@ -542,63 +619,137 @@ impl Runtime {
                 preliminary_policy_input
             };
 
-            if let Some(input_from) = annotator.input_from() {
-                let path = JsonPath::parse_with_snapshot_alias(input_from)
-                    .map_err(|err| {
-                        RuntimeError::ManifestInvalid(format!(
-                            "invalid from path for annotator '{annotator_name}': {err}"
-                        ))
-                    })
-                    .inspect_err(|error| {
-                        self.emit_annotator_failed(intervention_point, annotator_name, error);
-                    })?;
-                let snapshot = dispatch_input.get(pi_key::SNAPSHOT).ok_or_else(|| {
-                    RuntimeError::ManifestInvalid(
-                        "preliminary policy input missing snapshot".to_string(),
-                    )
-                })?;
-                path.resolve(&PathEnv::with_pi_and_snap(dispatch_input, snapshot))
-                    .inspect_err(|error| {
-                        self.emit_annotator_failed(intervention_point, annotator_name, error);
-                    })?;
-            }
-
-            let dispatch_start = Instant::now();
-            let output = catch_unwind(AssertUnwindSafe(|| {
-                self.annotations
-                    .dispatch(annotator_name, &annotator, dispatch_input)
-            }))
-            .map_err(|payload| {
-                RuntimeError::AnnotationFailed(format!(
-                    "annotator dispatcher panicked: {}",
-                    panic_detail(payload.as_ref())
-                ))
-            })
-            .and_then(|result| result)
-            .map_err(|err| normalize_annotator_error(annotator_name, err))
-            .inspect_err(|error| {
-                self.emit_annotator_external_event(
-                    intervention_point,
-                    annotator_name,
-                    Some(error.reason()),
-                    dispatch_start.elapsed().as_secs_f64() * 1000.0,
-                );
-                self.emit_annotator_failed(intervention_point, annotator_name, error);
-            })?;
-            self.limits
-                .validate_annotator_output(annotator_name, &output)
-                .inspect_err(|error| {
-                    self.emit_annotator_failed(intervention_point, annotator_name, error);
-                })?;
-            self.emit_annotator_external_event(
+            let output = self.invoke_annotation(
                 intervention_point,
                 annotator_name,
+                &annotator,
+                dispatch_input,
                 None,
-                dispatch_start.elapsed().as_secs_f64() * 1000.0,
-            );
+            )?;
             annotations_map.insert(annotator_name.clone(), output);
         }
         Ok(JsonValue::Object(annotations_map))
+    }
+
+    pub(crate) fn annotation_callbacks_require_caller_thread(&self) -> bool {
+        self.annotations.requires_caller_thread() || self.telemetry.requires_caller_thread()
+    }
+
+    pub(crate) fn annotation_order(
+        &self,
+        point: InterceptionPoint,
+    ) -> Result<Vec<String>, RuntimeError> {
+        self.annotation_plans
+            .get(&point)
+            .map(|plan| plan.order.clone())
+            .ok_or_else(|| RuntimeError::ManifestInvalid("missing annotation plan".into()))
+    }
+
+    pub(crate) fn dispatch_demanded_annotation(
+        &self,
+        point: InterceptionPoint,
+        name: &str,
+        input: &JsonValue,
+        completed: &Map<String, JsonValue>,
+        resolver: &OnDemandAnnotations,
+    ) -> Result<JsonValue, RuntimeError> {
+        let config = self
+            .manifest
+            .intervention_points
+            .get(&point)
+            .and_then(|config| config.annotations.get(name))
+            .ok_or_else(|| RuntimeError::ManifestInvalid(format!("missing annotation '{name}'")))?;
+        let declaration =
+            self.manifest.annotators.get(name).ok_or_else(|| {
+                RuntimeError::ManifestInvalid(format!("missing annotator '{name}'"))
+            })?;
+        let mut visible = Map::new();
+        for need in self.manifest.annotation_dependencies(config)? {
+            let output = completed.get(need).ok_or_else(|| {
+                RuntimeError::ManifestInvalid(format!(
+                    "annotation '{name}' needs incomplete '{need}'"
+                ))
+            })?;
+            visible.insert(need.to_string(), output.clone());
+        }
+        let mut staged = input.clone();
+        let visible = JsonValue::Object(visible);
+        self.limits.validate_policy_annotations(&visible)?;
+        staged
+            .as_object_mut()
+            .ok_or_else(|| RuntimeError::ManifestInvalid("policy input is not an object".into()))?
+            .insert(pi_key::ANNOTATIONS.to_string(), visible);
+        let invocation =
+            AnnotatorInvocation::from_annotation_in(&self.manifest, declaration, config);
+        self.invoke_annotation(point, name, &invocation, &staged, Some(resolver))
+    }
+
+    fn invoke_annotation(
+        &self,
+        intervention_point: InterceptionPoint,
+        annotator_name: &str,
+        annotator: &AnnotatorInvocation,
+        dispatch_input: &JsonValue,
+        resolver: Option<&OnDemandAnnotations>,
+    ) -> Result<JsonValue, RuntimeError> {
+        if let Some(input_from) = annotator.input_from() {
+            let path = JsonPath::parse_with_snapshot_alias(input_from)
+                .map_err(|err| {
+                    RuntimeError::ManifestInvalid(format!(
+                        "invalid from path for annotator '{annotator_name}': {err}"
+                    ))
+                })
+                .inspect_err(|error| {
+                    self.emit_annotator_failed(intervention_point, annotator_name, error);
+                })?;
+            let snapshot = dispatch_input.get(pi_key::SNAPSHOT).ok_or_else(|| {
+                RuntimeError::ManifestInvalid(
+                    "preliminary policy input missing snapshot".to_string(),
+                )
+            })?;
+            path.resolve(&PathEnv::with_pi_and_snap(dispatch_input, snapshot))
+                .inspect_err(|error| {
+                    self.emit_annotator_failed(intervention_point, annotator_name, error);
+                })?;
+        }
+
+        if let Some(resolver) = resolver {
+            resolver.before_dispatch(annotator_name)?;
+        }
+        let dispatch_start = Instant::now();
+        let output = catch_unwind(AssertUnwindSafe(|| {
+            self.annotations
+                .dispatch(annotator_name, annotator, dispatch_input)
+        }))
+        .map_err(|payload| {
+            RuntimeError::AnnotationFailed(format!(
+                "annotator dispatcher panicked: {}",
+                panic_detail(payload.as_ref())
+            ))
+        })
+        .and_then(|result| result)
+        .map_err(|err| normalize_annotator_error(annotator_name, err))
+        .inspect_err(|error| {
+            self.emit_annotator_external_event(
+                intervention_point,
+                annotator_name,
+                Some(error.reason()),
+                dispatch_start.elapsed().as_secs_f64() * 1000.0,
+            );
+            self.emit_annotator_failed(intervention_point, annotator_name, error);
+        })?;
+        self.limits
+            .validate_annotator_output(annotator_name, &output)
+            .inspect_err(|error| {
+                self.emit_annotator_failed(intervention_point, annotator_name, error);
+            })?;
+        self.emit_annotator_external_event(
+            intervention_point,
+            annotator_name,
+            None,
+            dispatch_start.elapsed().as_secs_f64() * 1000.0,
+        );
+        Ok(output)
     }
 
     // AGT integration passes decision evidence/identity fields explicitly; keep

@@ -25,6 +25,7 @@ pub mod interceptor;
 pub mod limits;
 pub mod manifest;
 mod manifest_deserializer;
+pub mod on_demand;
 #[cfg(feature = "opa")]
 pub mod opa;
 pub mod paths;
@@ -67,6 +68,7 @@ pub use error::RuntimeError;
 pub use interceptor::AcsInterceptor;
 pub use limits::Limits;
 pub use manifest::{InterventionPointConfig, Manifest, ToolConfig, SUPPORTED_VERSIONS};
+pub use on_demand::{AnnotationResolution, OnDemandAnnotations};
 #[cfg(feature = "opa")]
 pub use opa::{OpaPolicyDispatcher, OpaRegoRunner};
 pub use paths::{JsonPath, PathEnv, PathParseError, PathRoot, PathSegment};

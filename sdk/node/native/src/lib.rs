@@ -138,6 +138,10 @@ struct NodeAnnotatorDispatcher {
 }
 
 impl AnnotatorDispatcher for NodeAnnotatorDispatcher {
+    fn requires_caller_thread(&self) -> bool {
+        true
+    }
+
     fn dispatch(
         &self,
         annotator_name: &str,
@@ -220,6 +224,10 @@ struct NodeTelemetrySink {
 }
 
 impl TelemetrySink for NodeTelemetrySink {
+    fn requires_caller_thread(&self) -> bool {
+        true
+    }
+
     fn emit(&self, event: TelemetryEvent) {
         // TelemetryEvent is not Serialize, so the wire shape lives in
         // `wire::telemetry_event_json`. Every binding then hands the

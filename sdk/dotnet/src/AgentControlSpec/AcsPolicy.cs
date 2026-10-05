@@ -74,6 +74,8 @@ public static class AcsPolicy
     /// stays free of I/O and compilation. Hold the returned policy for
     /// the life of the policy version rather than activating per
     /// request.
+    /// On-demand policies load templates at activation without evaluating
+    /// the query. Their request-bound query compiles during evaluation.
     /// <para>
     /// A Rego policy left naming a relative <c>bundle</c> path is
     /// rejected. A manifest parsed from text has no directory of its

@@ -56,3 +56,7 @@ pre-release, so a plain `npm install` may fetch an older build.
 
 Current version: `0.4.0-alpha.4`, an alpha of the re-based runtime. It
 depends on agent-hooks `0.1.0-alpha.5`.
+
+Source builds also support [on-demand annotators](docs/on-demand-annotators.md)
+under manifest contract `0.6.0-alpha.1`: call registered providers from Rego only
+when needed. This contract is not in the published alpha.4 packages.

@@ -224,6 +224,15 @@ bound when arbitrary host callbacks are involved. Eight lifecycle
 points do not imply eight annotator calls: only each point's configured
 `annotations` request annotation work.
 
+## On-demand annotators
+
+Source builds support `execution: on_demand` under manifest contract
+`0.6.0-alpha.1`. Rego calls `acs.annotate(name, required)` and your existing
+`annotator_dispatcher` supplies the provider. Activation loads templates without
+calling providers. The callable query compiles during evaluation.
+See the [on-demand guide](https://github.com/responsibleai/agent-control-spec/blob/main/docs/on-demand-annotators.md) and
+[local refund example](https://github.com/responsibleai/agent-control-spec/blob/main/examples/on_demand/host.py).
+
 ## Activating a policy version
 
 A host that pins a policy version and serves traffic against it wants

@@ -1,6 +1,6 @@
 # Agent Control Specification
 
-This document specifies version `0.5.0-alpha.1` of the Agent Control Specification (ACS). Its status is Draft. Legacy manifest contract `0.4.0-alpha.1` remains supported as described in section 2.1.
+This document specifies version `0.6.0-alpha.1` of the Agent Control Specification (ACS). Its status is Draft. Manifest contracts `0.4.0-alpha.1` and `0.5.0-alpha.1` remain supported as described in section 2.1.
 
 The machine readable manifest contract is `schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository. That schema governs manifest syntax. This document governs runtime semantics, which are the evaluation order, the policy input shape, verdict handling, transform validation, and fail closed behavior.
 
@@ -67,13 +67,21 @@ A manifest MUST be validated before any evaluation uses it. A manifest that fail
 
 ### 2.1 Version
 
-`agent_control_specification_version` MUST be a non empty string. This document describes `0.5.0-alpha.1`, which opts into the `needs` dependency contract in section 10.1. When validating and comparing version strings, strip surrounding characters with the Unicode `White_Space` property: U+0009 through U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000 through U+200A, U+2028, U+2029, U+202F, U+205F, and U+3000. U+FEFF is not in this set. A runtime MUST reject an unsupported version with `runtime_error:manifest_invalid`; the manifest schema also rejects unsupported versions.
+`agent_control_specification_version` MUST be a non empty string. This document describes `0.6.0-alpha.1`, which retains the `needs` dependency contract introduced in `0.5.0-alpha.1` and adds on-demand annotations in section 10.4. When validating and comparing version strings, strip surrounding characters with the Unicode `White_Space` property: U+0009 through U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000 through U+200A, U+2028, U+2029, U+202F, U+205F, and U+3000. U+FEFF is not in this set. A runtime MUST reject an unsupported version with `runtime_error:manifest_invalid`; the manifest schema also rejects unsupported versions.
 
 Legacy `0.4.0-alpha.1` remains supported with its original semantics: `needs` is an arbitrary host-defined JSON extension passed to the dispatcher, annotators run in ascending lexicographic name order, each receives an empty `annotations` object, and `from` paths at or below `$pi.annotations` are forbidden. The runtime MUST NOT interpret legacy `needs` as dependencies. Bare `$pi` remains allowed and resolves to the preliminary policy input. Other semantics remain unchanged unless this document explicitly states otherwise.
 
 To migrate, first rename any host-specific `needs` setting in declarations or bindings and update the dispatcher that reads it. Then change the version on the root and every parent in the `extends` chain to `0.5.0-alpha.1` atomically, and declare dependencies on point bindings. Every document in the chain MUST share the same version. Adding dependency-shaped `needs` to a `0.4.0-alpha.1` manifest does not opt in: an old engine would treat it as extension data. The new version lets old engines reject the manifest rather than silently ignore its dependencies.
 
 Reserving `needs` is a breaking contract change permitted between minor versions during alpha under section 22. The manifest contract identifier is independent of SDK package versions.
+
+Contract `0.5.0-alpha.1` retains its existing behavior. Contract
+`0.6.0-alpha.1` inherits its dependency, provenance, and staged-input rules,
+except for the explicitly on-demand bindings defined in section 10.4.
+In `0.4.0-alpha.1` and `0.5.0-alpha.1`, `execution` remains opaque host-defined
+extension data and does not defer dispatch. Before migrating to `0.6.0-alpha.1`,
+rename any host-defined `execution` field and update the dispatcher that reads
+it. Change the root and every parent manifest together.
 
 ### 2.2 extends
 
@@ -161,6 +169,11 @@ For a request that carries an intervention point and a snapshot, the runtime MUS
 
 Annotation collection completes before the policy dispatcher is called. Transform handling runs after the verdict is normalized.
 
+Under `0.6.0-alpha.1`, the upfront collection step dispatches only eager
+annotations. The policy dispatcher may demand other bound annotations through
+section 10.4 during policy evaluation. The final policy input contains only
+eager annotation outputs and MUST NOT be mutated during evaluation.
+
 ## 7. Policy input
 
 The runtime builds one canonical policy input object. Every legacy `0.4.0-alpha.1` annotator receives the preliminary form. In `0.5.0-alpha.1`, each annotator receives a staged form whose `annotations` contains only its direct dependency outputs, or is empty when it has no dependencies, per section 10.1. The final form is the argument to the policy dispatcher. The object has exactly five members.
@@ -203,13 +216,13 @@ An intervention point opts into an annotator by adding a member to `annotations`
 
 ### 10.1 Dependencies
 
-This section applies only to `0.5.0-alpha.1`. `needs`, when present, MUST be an array of non empty strings. Every name MUST be an annotation bound at the same intervention point, MUST NOT name the binding itself, and MUST NOT repeat. Invalid types, unknown names, self dependencies, duplicate entries, cycles, and `needs` on a top level annotator declaration MUST fail closed with `runtime_error:manifest_invalid` during manifest validation, before any dispatch. An omitted or empty `needs` means no dependencies.
+This section applies to `0.5.0-alpha.1` and `0.6.0-alpha.1`. `needs`, when present, MUST be an array of non empty strings. Every name MUST be an annotation bound at the same intervention point, MUST NOT name the binding itself, and MUST NOT repeat. Invalid types, unknown names, self dependencies, duplicate entries, cycles, and `needs` on a top level annotator declaration MUST fail closed with `runtime_error:manifest_invalid` during manifest validation, before any dispatch. An omitted or empty `needs` means no dependencies.
 
 The runtime MUST use Kahn's topological ordering, choosing the lexicographically smallest ready annotation after every successful completion. An annotation is ready when all its dependencies have completed. The runtime MUST reconsider the ready set after each completion rather than dispatching a whole layer at once. Document order has no effect, and a dependency MAY appear later in the document. With no dependencies, this produces ascending lexicographic name order.
 
 Each annotator's staged `annotations` object MUST contain the full raw outputs of its direct dependencies, keyed by name. It MUST NOT include transitive dependencies or unrelated completed annotations unless the binding also names them directly. The full snapshot and the other policy input members remain available. `from` selects the invocation's input value; it does not redact the dependency outputs or the snapshot supplied to the dispatcher. A dispatcher receives policy input by value or as an immutable reference, so mutations MUST NOT change recorded outputs or another annotator's input.
 
-On a successful graph evaluation, the runtime MUST dispatch every bound annotator exactly once. Two consumers of the same dependency read the same recorded result. On failure, dispatch stops at the first error; no remaining annotator or policy runs.
+On a successful graph evaluation, the runtime MUST dispatch every bound annotator exactly once, except for on-demand bindings under section 10.4. Two consumers of the same dependency read the same recorded result. On failure, dispatch stops at the first error; no remaining annotator or policy runs.
 
 A `from` path that selects a present `null` value yields `null` and dispatches normally. A missing member fails closed with `runtime_error:path_missing`; an incompatible path segment retains `runtime_error:path_type_mismatch`. The runtime MUST NOT dispatch a consumer whose input path fails to resolve.
 
@@ -259,6 +272,83 @@ ACS defines no built in classifier or judge engine. Annotator execution is alway
 For `0.5.0-alpha.1`, the runtime consumes the binding's `needs` list and MUST omit it from dispatcher invocation fields. Dispatchers receive staged policy input as defined in section 10.1. Under `0.4.0-alpha.1`, `needs` remains a host-defined invocation field and each dispatcher receives the preliminary policy input.
 
 An implementation MAY ship host side default annotator dispatchers. A default `llm` dispatcher MAY provide provider presets for OpenAI compatible chat completions, Azure OpenAI chat completions, Amazon Bedrock Converse, Gemini `generateContent`, and Ollama chat. These presets MUST preserve runtime determinism by keeping network input and output outside pure decision logic. Provider credentials MUST come from explicit manifest fields or named environment variables. For a URL sourced manifest a default dispatcher MUST NOT read any host environment variable, named or provider default, and MUST fail closed as an annotator error. Provider responses MUST be normalized to a JSON annotation before policy execution. A malformed provider response, provider error, missing credential, missing label field, or invalid model JSON MUST fail closed as an annotator error. The normalized shape SHOULD include `label` and `raw` members, and a host MAY preserve a configurable `label_field` for model JSON.
+
+### 10.4 On-demand annotations
+
+This section applies only to `0.6.0-alpha.1`. An annotation binding MAY set
+`execution` to `eager` or `on_demand`. An absent field means `eager`.
+Every other value, including null, MUST fail manifest validation. A top-level
+annotator declaration MUST NOT define `execution`. The runtime consumes this
+field and MUST omit it from annotator invocation fields. Existing `from` and
+provenance checks still apply.
+
+On-demand bindings require a Rego policy and a policy dispatcher that explicitly
+supports callable annotations. An unsupported dispatcher MUST reject runtime
+construction, even if a request would not reach an annotation call. The bundled
+in-process Rego dispatcher supports this contract. The bundled OPA CLI dispatcher
+does not.
+
+The policy calls `acs.annotate(name, required)`. `name` MUST identify an on-demand
+binding at the current intervention point. `required` MUST be a JSON boolean.
+A false call returns `{"status":"not_required"}` without resolving input paths,
+dependencies, or providers. A true call resolves the binding and returns
+`{"status":"completed","value":<raw annotation output>}`. The provider input is
+fixed by the binding's `from` path. The function accepts no request override,
+endpoint, or credential arguments.
+
+Each demanded provider MUST run at most once per evaluation. Repeated true calls
+reuse the same validated raw output. A false call always returns `not_required`,
+without deleting a prior completion. Results MUST NOT be shared across
+evaluations or stored in a prepared policy cache. `input.annotations` contains
+eager outputs only. Callable results MUST NOT mutate policy input.
+
+A true demand resolves its static dependency closure in section 10.1 order.
+Completed eager or on-demand outputs are reused. A demanded consumer forces its
+on-demand dependencies, regardless of earlier false calls to those dependencies.
+Consumer callbacks receive raw direct-dependency outputs, not the function's
+completed envelopes. Eager bindings MUST NOT depend on on-demand bindings.
+Cycles and reentrant resolution MUST fail closed.
+
+A demanded annotation's dispatch failure, timeout, invalid output, or input-path
+failure MUST fail the whole policy invocation closed as
+`runtime_error:policy_invocation_failed`. The resolver MUST retain the failure
+even if a custom dispatcher attempts to return a permit. Eager failures retain
+their existing reasons. No retry is performed by the resolver.
+
+The bundled Rego dispatcher evaluates the callable query once and applies its
+configured Rego timeout to preparation, policy execution, and on-demand calls
+within that dispatch. An expired evaluation MUST NOT accept a late provider
+result. An enclosing host timeout covers the whole emission, including upfront
+eager annotations. Hosts MUST set finite provider operation deadlines.
+
+Thread-affine callbacks run on the thread entering the runtime. Their execution
+cannot be preempted by the Rego worker deadline, but the elapsed deadline is
+checked before and after provider execution and before accepting the result.
+A blocking callback can delay the caller until it returns. Hosts needing a
+responsive event loop must isolate the whole synchronous evaluation. Other
+callbacks may run on the Rego worker. The runtime does not terminate provider
+threads or guarantee cancellation of remote work.
+
+Activation MUST NOT execute on-demand providers. The bundled dispatcher loads
+and parses a reusable template without evaluating the callable query. It binds
+the request-local function to a clone and compiles the query during evaluation.
+The clone and its callback MUST NOT be stored back in the template cache.
+
+The bundled callable path uses strict built-in errors and refuses `http.send`,
+`time.now_ns`, `rand.intn`, `uuid.rfc4122`, and `opa.runtime`. This does not
+change the language rule for undefined: an undefined argument prevents an
+extension call. Policies MUST use a boolean guard defined for admitted inputs
+and fail closed when no function result exists. Host input validation and
+policy authoring remain responsible for those conditions. Strict mode alone
+does not prove a guard is total.
+
+At the end of callable evaluation, the runtime emits one `annotation_resolution`
+telemetry event per on-demand binding. Its metadata carries `status`
+(`unrequested`, `skipped`, `completed`, or `failed`), `provider_calls`,
+`cache_hits`, and `skipped_calls`. A failed resolution MAY carry its underlying
+reserved reason as `reason_code`. Events MUST contain no annotation values.
+They are emitted independently of the performance-telemetry level. The host
+owns correlation and durable recording.
 
 ## 11. Information flow control
 

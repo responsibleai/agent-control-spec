@@ -34,6 +34,69 @@ const pinnedPromptManifest = path.join(sharedFixtures, "pinned-prompt.yaml");
 const builder = () =>
   new AgentContextBuilder({ agentId: "a", framework: "test", sessionId: "s" });
 
+test("on-demand Rego annotations run JS callbacks on the caller and reuse results", () => {
+  const manifest = `agent_control_specification_version: "0.6.0-alpha.1"
+policies:
+  gate:
+    type: rego
+    query: data.gate.verdict
+annotators:
+  probe:
+    type: endpoint
+intervention_points:
+  input:
+    policy_target: $snap.input
+    policy:
+      id: gate
+    annotations:
+      probe:
+        from: $target.content
+        execution: on_demand
+`;
+  const source = `package gate
+first := acs.annotate("probe", input.policy_target.value.content != "skip")
+second := acs.annotate("probe", input.policy_target.value.content != "skip")
+default verdict := {"decision":"deny"}
+verdict := {"decision":"allow"} if {
+  first == second
+  first.status == "not_required"
+}
+verdict := {"decision":"allow"} if {
+  first == second
+  first.value.content == input.policy_target.value.content
+}`;
+  const calls = [];
+  const policy = ActivatedPolicy.activateFromMemory(
+    manifest,
+    { gate: { modules: { "gate.rego": source } } },
+    {
+      annotatorDispatcher(name, invocation, input) {
+        assert.equal(name, "probe");
+        assert.equal(invocation.execution, undefined);
+        assert.deepEqual(input.annotations, {});
+        const content = input.policy_target.value.content;
+        calls.push(content);
+        if (content === "fail") throw new Error("provider failed");
+        if (content === "async") return Promise.reject(new Error("async provider failed"));
+        return { content };
+      },
+    },
+  );
+  assert.deepEqual(calls, [], "activation must not call the provider");
+  for (const content of ["skip", "one", "two"]) {
+    assert.equal(policy.evaluate("input", builder().input(content)).decision, "allow");
+  }
+  assert.deepEqual(calls, ["one", "two"]);
+  const failed = policy.evaluate("input", builder().input("fail"));
+  assert.equal(failed.decision, "deny");
+  assert.equal(failed.reason, "runtime_error:policy_invocation_failed");
+  assert.deepEqual(calls, ["one", "two", "fail"]);
+  const asynchronous = policy.evaluate("input", builder().input("async"));
+  assert.equal(asynchronous.decision, "deny");
+  assert.equal(asynchronous.reason, "runtime_error:policy_invocation_failed");
+  assert.deepEqual(calls, ["one", "two", "fail", "async"]);
+});
+
 // A manifest binding a custom policy that a host policy dispatcher
 // answers, and a classifier annotator whose value the dispatcher reads
 // from `input.annotations.mood`. The manifest is deliberately minimal:

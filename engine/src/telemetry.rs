@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 pub enum TelemetryEventType {
     Decision,
     AnnotatorDispatch,
+    AnnotationResolution,
     PolicyEvaluation,
     EvaluationTiming,
     /// AGT D2: the runtime emits this event in addition to `Decision`
@@ -20,6 +21,7 @@ impl TelemetryEventType {
         match self {
             Self::Decision => "decision",
             Self::AnnotatorDispatch => "annotator_dispatch",
+            Self::AnnotationResolution => "annotation_resolution",
             Self::PolicyEvaluation => "policy_evaluation",
             Self::EvaluationTiming => "evaluation_timing",
             Self::InterventionPointTransformed => "intervention_point.transformed",
@@ -157,6 +159,10 @@ impl TelemetryEvent {
 }
 
 pub trait TelemetrySink: Send + Sync {
+    fn requires_caller_thread(&self) -> bool {
+        false
+    }
+
     fn emit(&self, event: TelemetryEvent);
 
     fn shutdown(&self) {}

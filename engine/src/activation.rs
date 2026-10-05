@@ -88,6 +88,9 @@ impl ActivatedPolicy {
     /// decision instead, and fails closed there if it cannot finish.
     /// So activation compiles the policy in the ordinary case, but a
     /// successful activation is not a proof that it did.
+    ///
+    /// On-demand policies load templates without evaluating their query.
+    /// Request-bound compilation happens during evaluation.
     pub fn activate(runtime: Runtime) -> Result<Self, RuntimeError> {
         let points: Vec<InterceptionPoint> = runtime
             .manifest()
@@ -322,5 +325,11 @@ fn warm_point(runtime: &Runtime, point: InterceptionPoint) -> Result<(), Runtime
     };
     let invocation =
         prepare_policy_invocation(policy, binding, &JsonValue::Object(Default::default()))?;
-    runtime.policy_dispatcher().warm(&invocation)
+    if manifest.point_has_on_demand_annotations(config)? {
+        runtime
+            .policy_dispatcher()
+            .warm_with_annotations(&invocation)
+    } else {
+        runtime.policy_dispatcher().warm(&invocation)
+    }
 }
