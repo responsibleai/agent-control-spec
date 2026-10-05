@@ -1,0 +1,19 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: tool-permissions
+policies:
+  gate:
+    type: rego
+    bundle: ./policy.rego
+    data_paths: [../common.rego]
+    query: data.acs.packs.tool_permissions.verdict
+tools:
+  search: {allowed_roles: [reader, operator]}
+  read_document: {allowed_roles: [reader, operator]}
+  send_email: {allowed_roles: [operator]}
+  delete_record: {allowed_roles: [administrator]}
+intervention_points:
+  pre_tool_call:
+    policy_target: $.target
+    tool_name_from: $.tool_call.name
+    policy: {id: gate}

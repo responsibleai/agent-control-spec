@@ -1,0 +1,13 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: destinations
+policies:
+  gate:
+    type: rego
+    bundle: ./policy.rego
+    data_paths: [./config.json, ../common.rego]
+    query: data.acs.packs.destinations.verdict
+intervention_points:
+  pre_tool_call:
+    policy_target: $.target
+    policy: {id: gate}

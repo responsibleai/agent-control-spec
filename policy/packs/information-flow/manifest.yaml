@@ -1,0 +1,23 @@
+agent_control_specification_version: "0.4.0-alpha.1"
+metadata:
+  name: information-flow
+policies:
+  gate:
+    type: rego
+    bundle: ./policy.rego
+    data_paths: [./config.json, ../common.rego, ../../lib/ifc.rego]
+    query: data.acs.packs.information_flow.verdict
+tools:
+  send_email: {clearance: public}
+  archive: {clearance: confidential}
+intervention_points:
+  pre_tool_call:
+    policy_target: $.target
+    tool_name_from: $.tool_call.name
+    policy: {id: gate}
+  pre_model_call:
+    policy_target: $.target
+    policy: {id: gate}
+  output:
+    policy_target: $.target
+    policy: {id: gate}
