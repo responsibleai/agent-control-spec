@@ -62,7 +62,7 @@ lakera_guard = ["default-dispatchers"]
 auto = ["default-dispatchers"]
 
 [dependencies]
-agent-hooks-sdk = "0.1.0-alpha.3"
+agent-hooks-sdk = "0.1.0-alpha.5"
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -81,7 +81,7 @@ tempfile = { version = "3.20", optional = true }
 
 [dev-dependencies]
 serde-saphyr = { version = "1.2", default-features = false, features = ["serialize", "deserialize"] }
-agent-hooks-sdk = { version = "0.1.0-alpha.3", features = ["ctk"] }
+agent-hooks-sdk = { version = "0.1.0-alpha.5", features = ["ctk"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 jsonschema = { version = "0.47", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
