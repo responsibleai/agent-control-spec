@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Reject unknown policy-output members before typed verdict conversion. Unknown
+  root, warning and transform members now fail closed with
+  `runtime_error:policy_output_invalid` instead of being silently discarded.
+  Opaque approval metadata, transform values and evidence pointer names remain
+  unchanged, as do the `warn` and `escalate` policy intents.
+
 - The specification names only reasons and documents that exist. Sections 17.1
   and 24 route the approval path through the AGENT-HOOKS-0.1 section 9 seam and
   its `host_error:*` reasons instead of two reasons no inventory or code

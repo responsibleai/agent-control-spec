@@ -60,6 +60,18 @@ fn activate(bundle: InMemoryRegoBundle) -> ActivatedPolicy {
         .expect("activate from memory")
 }
 
+fn activate_output(output: JsonValue) -> ActivatedPolicy {
+    let bundle = InMemoryRegoBundle::new(
+        BTreeMap::from([(
+            "gate.rego".to_string(),
+            format!("package gate\nverdict := {output}\n"),
+        )]),
+        Vec::new(),
+    )
+    .expect("bundle");
+    activate(bundle)
+}
+
 fn snapshot() -> JsonValue {
     json!({"input": {"text": "hello"}})
 }
@@ -100,6 +112,78 @@ fn a_bundle_held_only_in_memory_decides() {
     let verdict = verdict(&policy);
     assert_eq!(verdict["decision"], json!("allow"));
     assert_eq!(verdict["reason"], json!("permitted"));
+}
+
+#[test]
+fn unknown_policy_output_members_fail_closed_before_typed_projection() {
+    let mut outputs = vec![
+        json!({"decision": "allow", "warnings": [{"reason": "warning", "unknown": true}]}),
+        json!({"decision": "transform", "transform": {"path": "$target.text", "value": "safe", "unknown": true}}),
+        json!({"decision": "allow", "evidence": {"artefact": "sha256:abc", "unknown": true}}),
+    ];
+    for mut output in [
+        json!({"decision": "allow"}),
+        json!({"decision": "deny"}),
+        json!({"decision": "transform", "transform": {"path": "$target.text", "value": null}}),
+        json!({"decision": "warn", "reason": "warning"}),
+        json!({"decision": "escalate", "approval": {}}),
+    ] {
+        output["unknown"] = json!(true);
+        outputs.push(output);
+    }
+    for output in outputs {
+        let policy = activate_output(output.clone());
+        let result = policy.evaluate(InterceptionPoint::Input, snapshot());
+        assert_eq!(result.verdict.decision, Decision::Deny, "{output}");
+        assert_eq!(
+            result.verdict.reason.as_deref(),
+            Some("runtime_error:policy_output_invalid"),
+            "{output}"
+        );
+    }
+}
+
+#[test]
+fn opaque_policy_output_values_survive_normalization() {
+    let approval = json!({"unknown": {"review": true}, "steps": [1, null]});
+    let pointers = json!({"unknown": "https://example.com/proof"});
+    let transform_value = json!({"unknown": {"items": [true, null, 3]}});
+    for (output, expected_decision) in [
+        (
+            json!({"decision": "escalate", "approval": approval, "evidence": {"verification_pointers": pointers}}),
+            "deny",
+        ),
+        (
+            json!({"decision": "warn", "reason": "warning", "message": "review"}),
+            "allow",
+        ),
+        (
+            json!({"decision": "transform", "transform": {"path": "$target.text", "value": transform_value}}),
+            "transform",
+        ),
+        (
+            json!({"decision": "transform", "transform": {"path": "$target.text", "value": null}}),
+            "transform",
+        ),
+    ] {
+        let actual = verdict(&activate_output(output.clone()));
+        assert_eq!(actual["decision"], json!(expected_decision));
+        for member in ["approval", "evidence"] {
+            if output.get(member).is_some() {
+                assert_eq!(actual[member], output[member]);
+            }
+        }
+        if output.get("transform").is_some() {
+            assert_eq!(actual["transform"]["path"], output["transform"]["path"]);
+            assert_eq!(actual["transform"]["value"], output["transform"]["value"]);
+        }
+        if output["decision"] == "warn" {
+            assert_eq!(
+                actual["warnings"],
+                json!([{"reason": "warning", "message": "review"}])
+            );
+        }
+    }
 }
 
 #[test]

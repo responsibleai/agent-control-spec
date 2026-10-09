@@ -34,6 +34,19 @@ pub const EVIDENCE_MAX_BYTES: usize = 10_240;
 /// neither reserved prefix, as section 18.1 requires of every warning.
 pub const EVIDENCE_TRUNCATED_REASON: &str = "evidence_truncated";
 
+fn reject_unknown_members(
+    object: &serde_json::Map<String, JsonValue>,
+    allowed: &[&str],
+    location: &str,
+) -> Result<(), RuntimeError> {
+    if object.keys().any(|key| !allowed.contains(&key.as_str())) {
+        return Err(RuntimeError::PolicyOutputInvalid(format!(
+            "{location} has an unknown member"
+        )));
+    }
+    Ok(())
+}
+
 fn string_field(
     object: &serde_json::Map<String, JsonValue>,
     key: &str,
@@ -76,6 +89,7 @@ fn warnings_field(
                         "policy output warnings entries must be objects".to_string(),
                     )
                 })?;
+                reject_unknown_members(entry, &["reason", "message"], "policy output warning")?;
                 let reason = string_field(entry, "reason")?;
                 // Section 18.1: a warning carries neither reserved prefix.
                 // The runtime and the host own those namespaces, and the
@@ -140,6 +154,7 @@ fn transform_field(value: &JsonValue) -> Result<Transform, RuntimeError> {
     let object = value.as_object().ok_or_else(|| {
         RuntimeError::PolicyOutputInvalid("transform must be an object".to_string())
     })?;
+    reject_unknown_members(object, &["path", "value"], "policy output transform")?;
     let path = object
         .get("path")
         .and_then(JsonValue::as_str)
@@ -227,7 +242,7 @@ fn evidence_field(
 
 /// Normalize raw dispatcher output into an agent-hooks verdict.
 ///
-/// Fails closed on: unknown decisions, reserved reason prefixes on the
+/// Fails closed on: unknown decisions or members, reserved reason prefixes on the
 /// verdict or on a warning, the removed `effects` key, malformed
 /// transforms/warnings/approval/evidence, a warning that uses the
 /// runtime owned `evidence_truncated` reason, and anything the
@@ -255,6 +270,21 @@ pub fn normalize_policy_output(output: JsonValue) -> Result<Verdict, RuntimeErro
                 .to_string(),
         ));
     }
+
+    reject_unknown_members(
+        object,
+        &[
+            "decision",
+            "reason",
+            "message",
+            "warnings",
+            "result_labels",
+            "approval",
+            "evidence",
+            "transform",
+        ],
+        "policy output",
+    )?;
 
     let reason = reason_field(object)?;
     let message = string_field(object, "message")?;

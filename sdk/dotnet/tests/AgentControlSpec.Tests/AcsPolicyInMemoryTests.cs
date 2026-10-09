@@ -67,6 +67,31 @@ public sealed class AcsPolicyInMemoryTests
         Assert.Equal("permitted", verdict.Reason);
     }
 
+    [Theory]
+    [InlineData("{\"decision\":\"allow\",\"unknown\":true}")]
+    [InlineData("{\"decision\":\"allow\",\"warnings\":[{\"reason\":\"warning\",\"unknown\":true}]}")]
+    [InlineData("{\"decision\":\"transform\",\"transform\":{\"path\":\"$target\",\"value\":null,\"unknown\":true}}")]
+    [InlineData("{\"decision\":\"allow\",\"evidence\":{\"artefact\":\"sha256:abc\",\"unknown\":true}}")]
+    public void UnknownPolicyOutputMembersFailClosedBeforeManagedProjection(string output)
+    {
+        var bundles = new Dictionary<string, RegoBundle>
+        {
+            ["gate"] = new RegoBundle
+            {
+                Modules = new Dictionary<string, string>
+                {
+                    ["gate.rego"] = $"package gate\nverdict := {output}\n",
+                },
+            },
+        };
+        using var policy = AcsPolicy.ActivateFromMemory(ManifestYaml, bundles);
+
+        var verdict = Decide(policy);
+
+        Assert.Equal(Decision.Deny, verdict.Decision);
+        Assert.Equal("runtime_error:policy_output_invalid", verdict.Reason);
+    }
+
     [Fact]
     public void DataDocumentsMountWhereTheCallerPutsThem()
     {
