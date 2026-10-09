@@ -359,9 +359,13 @@ A policy dispatcher returns a JSON object. The runtime normalizes it into a verd
 | `decision` | yes | string | One of the AGENT-HOOKS-0.1 decisions `allow`, `deny`, `transform`, or the policy-language intents `warn` and `escalate`, which normalize to `allow` carrying a warning and `deny` carrying an approval block. |
 | `reason` | no | string | MUST NOT start with `runtime_error:`. |
 | `message` | no | string | Free form text for a caller. |
+| `warnings` | no | array of objects | Each entry admits only the optional string members `reason` and `message`; their reserved reasons are defined in sections 13.3 and 18.1. |
+| `approval` | no | object | Opaque host metadata, permitted only on `deny` or the `escalate` intent. |
 | `transform` | required when `decision` is `transform`, forbidden otherwise | object | A `{path, value}` replacement rooted at `$target` per section 14. |
 | `evidence` | no | object | Offline verification evidence per section 13.3. |
 | `result_labels` | no | array of strings | Information-flow labels for the data produced at this sink, returned verbatim to the host. See section 13.2. |
+
+Before constructing a typed verdict, normalization MUST reject unknown members at the policy-output root, in each `warnings` entry, and in `transform`, with `runtime_error:policy_output_invalid`. It MUST NOT discard these members and validate only the remaining fields. This restriction does not apply to keys inside the opaque `approval` object, native JSON in `transform.value`, or the named URL map `evidence.verification_pointers`.
 
 Normalization MUST fail closed with `runtime_error:policy_output_invalid` when the output is not an object, when `decision` is absent or is not one of the values above, when `reason` starts with the reserved `runtime_error:` prefix, when `reason` or `message` has the wrong JSON type, when `transform` is present while `decision` is not `transform`, when `transform` is absent while `decision` is `transform`, when `evidence` is present and is not an object, when `evidence` carries a member other than `artefact` and `verification_pointers` or a member of the wrong JSON type (`null` counts as absent), when a `warnings` entry `reason` starts with either reserved prefix (section 18.1) or uses the runtime owned `evidence_truncated` reason (section 13.3), or when `result_labels` is present and is not an array of strings. The size of `evidence` is not a fail closed condition: evidence over the section 13.3 cap is degraded as that section defines, and the verdict stands.
 
