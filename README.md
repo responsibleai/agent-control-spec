@@ -55,4 +55,4 @@ package is pre-release: npm's `latest` tag can lag the newest
 pre-release, so a plain `npm install` may fetch an older build.
 
 Current version: `0.4.0-alpha.4`, an alpha of the re-based runtime. It
-depends on agent-hooks `0.1.0-alpha.5`.
+depends on agent-hooks `0.1.0-beta.2`.

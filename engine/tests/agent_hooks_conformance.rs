@@ -263,6 +263,11 @@ impl Harness for AcsReferenceHost {
                 .iter()
                 .map(|record| serde_json::to_value(record).expect("record serializes"))
                 .collect(),
+            // `postures` (0.1.0-beta.1) and `load` (0.1.0-beta.2) are
+            // runner-owned: the runner fills them from the Harness
+            // declaration. Spread the default so later runner-owned
+            // fields do not break this build.
+            ..Default::default()
         }
     }
 

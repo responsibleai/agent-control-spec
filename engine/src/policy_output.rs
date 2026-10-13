@@ -22,12 +22,11 @@ const RESERVED_PREFIXES: [&str; 2] = ["runtime_error:", "host_error:"];
 
 /// AGENT-HOOKS-0.1 section 5.3 cap on the RFC 8785 canonical size of
 /// the `evidence` member, in bytes. `Verdict::validate` in the
-/// agent-hooks SDK enforces the same bound. The published SDK
-/// (0.1.0-alpha.5) keeps its constant private, so the engine restates
-/// it here; a unit test probes `Verdict::validate` at the boundary so
-/// the two cannot drift apart unnoticed. Switch to
-/// `agent_hooks::EVIDENCE_MAX_BYTES` once the next alpha exports it.
-pub const EVIDENCE_MAX_BYTES: usize = 10_240;
+/// agent-hooks SDK enforces the same bound. The SDK exports the
+/// constant since 0.1.0-beta.1; the engine re-exports it under its
+/// own name so callers keep one value. A unit test still probes
+/// `Verdict::validate` at the boundary.
+pub const EVIDENCE_MAX_BYTES: usize = agent_hooks::EVIDENCE_MAX_BYTES;
 
 /// Warning reason the engine appends when it degrades oversize
 /// evidence (specification section 13.3). Engine owned. It carries
