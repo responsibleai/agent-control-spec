@@ -289,10 +289,8 @@ adapter too. Limits default field by field; inspect `DEFAULT_LIMITS`.
 File activation applies loader limits while resolving `extends`.
 In-memory activation still requires already-composed manifest text
 and rejects unresolved relative bundle paths.
-The synchronous interceptor constructor does not yet apply configured
-limits while loading its manifest. The cross-binding correction and
-constructor coverage are tracked in
-[#82](https://github.com/responsibleai/agent-control-spec/issues/82).
+The `AcsInterceptor` constructor applies the same limits while loading
+its manifest.
 
 `evaluate()` and `AcsInterceptor.intercept()` are synchronous. GIL
 release is not an asyncio yield, and the emitter's timeout cannot

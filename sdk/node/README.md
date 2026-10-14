@@ -31,7 +31,10 @@ emitter.register(AcsInterceptor.fromPath("manifest.yaml"), "acs");
 Zero-config construction: bundled annotators; Rego policies through the
 in-process Rego evaluator, Cedar through the built-in evaluator, `test`
 policies through their embedded verdict. Custom policies require a host
-dispatcher and fail closed under this construction.
+dispatcher and fail closed under this construction. The bundled
+annotators make HTTPS calls during evaluation when the manifest declares
+annotators, and evaluation blocks for the annotator budget. A manifest
+with no annotators makes no network call.
 
 ## Activating a policy version
 

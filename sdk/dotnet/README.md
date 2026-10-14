@@ -11,6 +11,12 @@ var emitter = new InterceptionEmitter(EnforcementMode.Enforce);
 emitter.Register(acs, "acs");
 ```
 
+`FromPath` installs the bundled dispatchers: Rego in process, Cedar
+through the built-in evaluator, and the bundled annotators. The bundled
+annotators make HTTPS calls during evaluation when the manifest declares
+annotators, and evaluation blocks for the annotator budget. A manifest
+with no annotators makes no network call.
+
 ## Install
 
 ```sh
@@ -112,10 +118,12 @@ does not matter.
 `bench/` measures this surface: activation cost, warm p50/p95/p99, and
 throughput at concurrency 32. See [bench/README.md](bench/README.md).
 
-Native libraries: this wrapper loads `agent_control_spec_ffi` (built
-with `cargo build --release -p agent-control-spec-ffi`), and the
-agent-hooks package separately loads `agent_hooks_ffi`; both resolve
-from the platform loader path (`LD_LIBRARY_PATH` on Linux).
+Native libraries: the NuGet package carries `agent_control_spec_ffi`
+for `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64` and `win-x64`
+under `runtimes/`, and the agent-hooks package carries `agent_hooks_ffi`
+the same way. Package users need no loader-path setup.
 
-Build/test: `dotnet restore && dotnet test` from `sdk/dotnet` with
-`LD_LIBRARY_PATH` pointing at `target/release`.
+Source checkouts: build the engine binding with
+`cargo build --release -p agent-control-spec-ffi`, then run
+`dotnet restore && dotnet test` from `sdk/dotnet` with `LD_LIBRARY_PATH`
+(the platform loader path) pointing at `target/release`.
