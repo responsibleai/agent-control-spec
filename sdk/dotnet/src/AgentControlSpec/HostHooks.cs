@@ -170,11 +170,10 @@ public static class AcsManifestTools
 /// </example>
 public sealed class AcsHostInterceptor : IInterceptor, IDisposable
 {
-    // The delegates are held so the GC cannot collect them while native
-    // code still holds their function pointers. Dropping this field is
-    // the classic way to turn a working callback into an intermittent
-    // crash under load.
-    private readonly List<Delegate> _pinned = [];
+    // The callback delegates are rooted by the handle, which releases
+    // them only after the native interceptor is freed. Dropping them
+    // earlier is the classic way to turn a working callback into an
+    // intermittent crash under load.
     private readonly InterceptorHandle _handle;
 
     private AcsHostInterceptor(InterceptorHandle handle) => _handle = handle;
@@ -291,9 +290,8 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
             perfTelemetry.ToString().ToLowerInvariant(),
             limits);
 
-        var interceptor = new AcsHostInterceptor(handle);
-        interceptor._pinned.AddRange(pinned);
-        return interceptor;
+        handle.Pin(pinned);
+        return new AcsHostInterceptor(handle);
     }
 
     /// <summary>Evaluate one agent context.</summary>
@@ -307,14 +305,10 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     }
 
     /// <summary>
-    /// Release the native interceptor. Waits for any call in flight on
-    /// another thread; later calls throw <see cref="ObjectDisposedException"/>.
-    /// The delegates stay pinned until the handle is closed, so a callback
-    /// the engine is still running keeps its target.
+    /// Marks the interceptor closed. A call already in flight on another
+    /// thread finishes first; the native free runs when the last such call
+    /// returns, and the callback delegates are released after it. Later
+    /// calls throw <see cref="ObjectDisposedException"/>.
     /// </summary>
-    public void Dispose()
-    {
-        _handle.Dispose();
-        _pinned.Clear();
-    }
+    public void Dispose() => _handle.Dispose();
 }

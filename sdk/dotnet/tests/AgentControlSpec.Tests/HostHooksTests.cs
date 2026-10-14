@@ -86,6 +86,43 @@ public sealed class HostHooksTests : IDisposable
         Assert.Equal("unsafe_content", denied.Reason);
     }
 
+    [Fact]
+    public async Task DisposeDuringAnInFlightCallLetsItsCallbacksFinish()
+    {
+        // The annotator blocks until Dispose has been called on another
+        // thread, then returns. The verdict must still come from the
+        // callback's answer: the delegate kept its target and the native
+        // interceptor was freed only after the call returned.
+        var manifest = WriteFixture();
+        using var disposeCalled = new ManualResetEventSlim();
+        using var inCallback = new ManualResetEventSlim();
+        var interceptor = AcsHostInterceptor.FromPath(
+            manifest,
+            annotator: (_, _, _) =>
+            {
+                inCallback.Set();
+                disposeCalled.Wait(TimeSpan.FromSeconds(10));
+                return """{"severity":7}""";
+            });
+
+        var call = Task.Run(async () => await interceptor.InterceptAsync(Input("hello")));
+        Assert.True(inCallback.Wait(TimeSpan.FromSeconds(10)), "the callback did not start");
+        var dispose = Task.Run(() =>
+        {
+            interceptor.Dispose();
+        });
+        // Dispose must not block: it marks the handle closed and leaves
+        // the free to the call in flight.
+        Assert.True(dispose.Wait(TimeSpan.FromSeconds(10)), "Dispose blocked on the in-flight call");
+        disposeCalled.Set();
+
+        var verdict = await call;
+        Assert.Equal(Decision.Deny, verdict.Decision);
+        Assert.Equal("unsafe_content", verdict.Reason);
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            async () => await interceptor.InterceptAsync(Input("hello")));
+    }
+
     private string WriteChainedFixture()
     {
         var bundle = Path.Combine(_dir, "chain-bundle");

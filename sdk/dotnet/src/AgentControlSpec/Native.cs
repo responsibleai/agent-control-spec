@@ -657,21 +657,31 @@ internal sealed class StreamSessionHandle : SafeHandle
 /// <summary>Owns one native interceptor.</summary>
 /// <remarks>
 /// Every call pairs <c>DangerousGetHandle</c> with <c>DangerousAddRef</c>
-/// and <c>DangerousRelease</c>, so a <c>Dispose</c> racing an in-flight
-/// <c>Intercept</c> waits for the call instead of freeing under it, and
-/// a call after <c>Dispose</c> surfaces as
-/// <see cref="ObjectDisposedException"/>.
+/// and <c>DangerousRelease</c>. <c>Dispose</c> marks the handle closed; a
+/// call already in flight on another thread finishes first, and the
+/// native free runs when the last such call returns. A call after
+/// <c>Dispose</c> surfaces as <see cref="ObjectDisposedException"/>.
+/// The host callback delegates the engine holds function pointers to
+/// are rooted here and released only after the native free, so a
+/// callback the engine is still running keeps its target.
 /// </remarks>
 internal sealed class InterceptorHandle : SafeHandle
 {
+    private readonly List<Delegate> _pinned = [];
+
     internal InterceptorHandle(IntPtr handle)
         : base(IntPtr.Zero, ownsHandle: true) => SetHandle(handle);
 
     public override bool IsInvalid => handle == IntPtr.Zero;
 
+    /// <summary>Root delegates until the native interceptor is freed.</summary>
+    internal void Pin(IEnumerable<Delegate> delegates) => _pinned.AddRange(delegates);
+
     protected override bool ReleaseHandle()
     {
         Native.InterceptorFree(handle);
+        // Only now can nothing in native code reach the delegates.
+        _pinned.Clear();
         return true;
     }
 }

@@ -59,8 +59,9 @@ public sealed class AcsInterceptor : IInterceptor, IDisposable
     }
 
     /// <summary>
-    /// Release the native interceptor. Waits for any call in flight on
-    /// another thread; later calls throw <see cref="ObjectDisposedException"/>.
+    /// Marks the interceptor closed. A call already in flight on another
+    /// thread finishes first; the native free runs when the last such call
+    /// returns. Later calls throw <see cref="ObjectDisposedException"/>.
     /// </summary>
     public void Dispose() => _handle.Dispose();
 }
