@@ -125,7 +125,32 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - name: Install OPA (pinned, checksum-verified)
+        # Without OPA on PATH the OPA suites print a skip notice and
+        # report green having run nothing. Same release as the rust job.
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS" in
+            macOS)
+              asset=opa_darwin_arm64_static
+              sum=54e7008e696d39e8e4f96594e2b71bcbe45fd9a4f838102bcf1240638bf3fbe1
+              bin=opa ;;
+            Windows)
+              asset=opa_windows_amd64.exe
+              sum=e2f2e2b735ab98f316171ca47a6b352288cdeb5a616e31aa16335b8934748453
+              bin=opa.exe ;;
+            *) echo "unexpected RUNNER_OS=$RUNNER_OS"; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/opa-bin"
+          curl -fsSL -o "$RUNNER_TEMP/opa-bin/$bin" \
+            "https://github.com/open-policy-agent/opa/releases/download/v1.20.2/$asset"
+          echo "$sum  $RUNNER_TEMP/opa-bin/$bin" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/opa-bin/$bin"
+          echo "$RUNNER_TEMP/opa-bin" >> "$GITHUB_PATH"
       - run: cargo test --workspace --all-features --locked
+        env:
+          AGENT_CONTROL_REQUIRE_OPA: "1"
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with: { python-version: "3.12" }
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -175,6 +200,19 @@ jobs:
           tar -xzf cargo-audit.tgz
           find examples -name Cargo.lock -print0 | xargs -0 -r -n1 \
             ./cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit audit --file
+      # deny.toml holds the advisory, licence and source policy for the
+      # workspace lockfile and the Python binding's own lockfile; the
+      # cargo-audit step above covers only the example lockfiles.
+      - name: cargo-deny over the workspace lockfile
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: ./Cargo.toml
+          arguments: --all-features --locked --config deny.toml
+      - name: cargo-deny over the Python binding lockfile
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
+        with:
+          manifest-path: ./sdk/python/Cargo.toml
+          arguments: --all-features --locked --config deny.toml
       - name: JSON artefacts parse
         run: |
           set -e
@@ -268,7 +306,7 @@ jobs:
         working-directory: sdk/node
       - name: Build and install the python wheel
         run: |
-          pip install maturin==1.8.7
+          pip install --require-hashes -r .github/requirements/maturin.txt
           maturin build --release -m sdk/python/Cargo.toml -o dist
           pip install dist/*.whl
       - name: Compare every language across the whole surface
@@ -296,7 +334,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install maturin==1.8.7
+      - run: pip install --require-hashes -r .github/requirements/maturin.txt
       - run: npm ci
         working-directory: sdk/node
       - run: python tests/conformance/bindings/run.py published_artifacts

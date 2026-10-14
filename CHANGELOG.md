@@ -41,6 +41,27 @@
   validates the transform body and returns it unapplied in both modes; the host
   applies it per AGENT-HOOKS-0.1 section 6. No sentence still describes a
   transformed policy target the runtime does not return.
+- Add `SECURITY.md` with the trust model, the private reporting
+  channel and the supported versions, and `.github/CODEOWNERS` so the
+  code owner review rule names a reviewer.
+- Ship the LICENSE text in every published artifact: the crate, the
+  wheel and sdist, the npm loader and platform packages. The NuGet
+  package carries the .NET README. The PyPI classifier moves from
+  Alpha to Beta.
+- Pin the release toolchain: Rust 1.99.0 for release builds, maturin
+  1.15.0 by hash (the same version the sdist and the dev lock declare),
+  npm 11.21.0 for the publish step, and a locked NuGet restore against a
+  committed `packages.lock.json`. `check-version-consistency.py` fails
+  when the maturin pins drift apart.
+- The release workflow refuses a manual run that asks to publish, fails
+  when the tag name does not match the version surfaces, attests the
+  exact npm tarballs it publishes, and creates a GitHub Release with
+  the SBOMs attached and notes taken from this file. RELEASING.md
+  covers partial failure, re-runs and yank.
+- CI runs cargo-deny against the workspace and Python binding lockfiles
+  with `deny.toml`, and the cross-platform leg installs OPA so the OPA
+  suites run there instead of skipping.
+
 
 ## 0.4.0-alpha.4
 
