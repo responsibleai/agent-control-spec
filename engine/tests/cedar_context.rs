@@ -16,6 +16,8 @@ use agent_control_spec::{
     JsonValue, Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError,
     Verdict,
 };
+
+mod common;
 use serde_json::json;
 use std::{
     fs,
@@ -77,8 +79,7 @@ fn write_fixture(name: &str, content: &str) -> String {
 }
 
 fn library_path() -> String {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
+    common::repo_root()
         .join("policy")
         .join("cedar-lib")
         .join("agt_default.cedar")

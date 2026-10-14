@@ -1,4 +1,6 @@
 use agent_control_spec::{InterceptionPoint, Manifest};
+
+mod common;
 use serde_json::Value;
 use std::{
     fs,
@@ -10,10 +12,7 @@ fn fixture_root() -> PathBuf {
 }
 
 fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("core crate should live under the repository root")
-        .to_path_buf()
+    common::repo_root()
 }
 
 fn assert_manifest_invalid(path: PathBuf, expected_detail: &str) {

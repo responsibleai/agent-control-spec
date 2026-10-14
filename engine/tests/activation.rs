@@ -5,6 +5,8 @@ use agent_control_spec::{
     Manifest, PolicyDispatcher, PreparedPolicyInvocation, RegoPolicyInvocation, RegorusRegoRunner,
     RuntimeError,
 };
+
+mod common;
 use serde_json::json;
 use std::{
     fs,
@@ -17,10 +19,7 @@ use std::{
 };
 
 fn bank_agent_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("examples")
-        .join("bank_agent")
+    common::repo_root().join("examples").join("bank_agent")
 }
 
 fn test_artifact_dir(name: &str) -> PathBuf {
@@ -207,8 +206,7 @@ fn activation_tolerates_a_dispatcher_that_cannot_warm() {
 /// would send hosts chdir-ing around a process they do not own.
 #[test]
 fn activation_resolves_bundles_relative_to_the_manifest_not_the_process() {
-    let smoke = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
+    let smoke = common::repo_root()
         .join("fixtures")
         .join("smoke")
         .canonicalize()
