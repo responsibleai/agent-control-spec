@@ -134,7 +134,7 @@ fn with_current_env<T>(
 }
 
 struct NodeAnnotatorDispatcher {
-    func: FunctionRef<FnArgs<(String, String, String)>, String>,
+    func: FunctionRef<FnArgs<(String, String, String)>, Utf16String>,
 }
 
 impl AnnotatorDispatcher for NodeAnnotatorDispatcher {
@@ -170,6 +170,10 @@ impl AnnotatorDispatcher for NodeAnnotatorDispatcher {
                             "host annotator dispatcher threw: {e}"
                         ))
                     })?;
+                // Strict: an unpaired surrogate in the result fails the
+                // dispatch closed instead of becoming U+FFFD.
+                let raw = decode("host annotator dispatcher result", &raw)
+                    .map_err(|e| RuntimeError::AnnotationFailed(e.reason))?;
                 serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
                     RuntimeError::AnnotationFailed(format!(
                         "host annotator dispatcher returned non-JSON: {e}"
@@ -181,7 +185,7 @@ impl AnnotatorDispatcher for NodeAnnotatorDispatcher {
 }
 
 struct NodePolicyDispatcher {
-    func: FunctionRef<FnArgs<(String,)>, String>,
+    func: FunctionRef<FnArgs<(String,)>, Utf16String>,
 }
 
 impl PolicyDispatcher for NodePolicyDispatcher {
@@ -205,6 +209,8 @@ impl PolicyDispatcher for NodePolicyDispatcher {
                             "host policy dispatcher threw: {e}"
                         ))
                     })?;
+                let raw = decode("host policy dispatcher result", &raw)
+                    .map_err(|e| RuntimeError::PolicyInvocationFailed(e.reason))?;
                 serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
                     RuntimeError::PolicyInvocationFailed(format!(
                         "host policy dispatcher returned non-JSON: {e}"
@@ -296,8 +302,8 @@ pub fn default_limits() -> napi::Result<String> {
 // Kept private so they never leak into the TS declaration; napi-derive
 // still sees the expanded types on the entry points that take them as
 // arguments (aliases are not expanded through the `#[napi]` macro).
-type NodeAnnotatorFn = FunctionRef<FnArgs<(String, String, String)>, String>;
-type NodePolicyFn = FunctionRef<FnArgs<(String,)>, String>;
+type NodeAnnotatorFn = FunctionRef<FnArgs<(String, String, String)>, Utf16String>;
+type NodePolicyFn = FunctionRef<FnArgs<(String,)>, Utf16String>;
 type NodeTelemetryFn = FunctionRef<FnArgs<(String,)>, ()>;
 
 fn build_annotator(dispatcher: Option<NodeAnnotatorFn>) -> Arc<dyn AnnotatorDispatcher> {
@@ -379,8 +385,8 @@ pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Hand
 #[allow(clippy::type_complexity)]
 pub fn interceptor_new_with_hooks(
     manifest_path: Utf16String,
-    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, String>>,
-    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, String>>,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Utf16String>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Utf16String>>,
     telemetry_sink: Option<FunctionRef<FnArgs<(String,)>, ()>>,
     perf_telemetry: Option<Utf16String>,
     limits_json: Option<Utf16String>,
@@ -508,8 +514,8 @@ pub fn policy_activate_from_memory(
 #[allow(clippy::type_complexity)]
 pub fn policy_activate_with_hooks(
     manifest_path: Utf16String,
-    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, String>>,
-    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, String>>,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Utf16String>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Utf16String>>,
 ) -> napi::Result<External<PolicyHandle>> {
     let manifest_path = decode("manifest_path", &manifest_path)?;
     let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
@@ -527,8 +533,8 @@ pub fn policy_activate_with_hooks(
 pub fn policy_activate_from_memory_with_hooks(
     manifest_yaml: Utf16String,
     bundles_json: Utf16String,
-    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, String>>,
-    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, String>>,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Utf16String>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Utf16String>>,
 ) -> napi::Result<External<PolicyHandle>> {
     let manifest_yaml = decode("manifest_yaml", &manifest_yaml)?;
     let bundles_json = decode("bundles_json", &bundles_json)?;
