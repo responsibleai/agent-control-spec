@@ -24,8 +24,8 @@
         "string",
         "null"
       ],
-      "pattern": "^(?!runtime_error:).*",
-      "description": "Policy supplied reason. The runtime_error prefix is reserved for core failures."
+      "pattern": "^(?!runtime_error:|host_error:).*",
+      "description": "Policy supplied reason. The runtime_error: prefix is reserved for core failures and the host_error: prefix for hosts; normalization rejects both."
     },
     "message": {
       "type": [

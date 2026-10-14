@@ -62,6 +62,33 @@
   with `deny.toml`, and the cross-platform leg installs OPA so the OPA
   suites run there instead of skipping.
 
+- The README states what ACS guarantees and what it does not. Determinism
+  is conditioned on dispatcher results, with the builtins the bundled Rego
+  dispatcher blocks named; a scope paragraph says ACS computes verdicts and
+  leaves enforcement to the agent-hooks emitter and the host; a Security
+  line points at SECURITY.md; a Rust example goes from a manifest to a
+  registered interceptor.
+- The specification matches the engine. Section 1 says the SDKs expose an
+  interceptor and the host's emitter applies verdicts; no SDK adapter
+  enforces. Section 13 lists the `warnings` and `approval` members, rejects
+  `host_error:` reasons alongside `runtime_error:` ones, and section 16 and
+  `spec/reserved-reasons.json` give `transform_invalid` its real cause: an
+  unparseable path under `$target`. Section 12.4 says malformed Cedar advice
+  surfaces as `policy_invocation_failed` and names the
+  `PolicyTarget::"unspecified"` resource sentinel. Section 11 requires the
+  Cedar IFC library to deny when `ifc` or `source_labels` is absent. The
+  manifest schema requires `policy_target` and `policy` on every
+  intervention point entry; the verdict and Cedar advice schemas reject
+  both reserved reason prefixes. The unreferenced `effect.schema.json` and
+  the remaining effect-era text in `spec/README.md` and the fixture README
+  are gone; `spec/README.md` lists the `approval` property.
+- SDK READMEs: the Python README no longer says the interceptor constructor
+  ignores loader limits; the Node and .NET READMEs say the bundled
+  annotators make HTTPS calls during evaluation; the .NET README says the
+  NuGet package ships the native library and scopes `LD_LIBRARY_PATH` to
+  source builds.
+- `sdk/python/requirements-dev.lock` carries hashes, so `uv pip install -r`
+  verifies every artifact. The pins are unchanged.
 
 ## 0.4.0-alpha.4
 

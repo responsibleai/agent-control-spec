@@ -10,7 +10,7 @@ The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RE
 
 ACS evaluates one intervention point of one agent at a time. The host assembles a complete JSON snapshot for that intervention point and calls the runtime. The runtime selects the value under evaluation, attaches host supplied annotations, calls a host supplied policy dispatcher, normalizes the result into a verdict, and validates any transform the verdict carries. The runtime does not apply the transform; the host does, per AGENT-HOOKS-0.1 section 6.
 
-The runtime computes verdicts. Acting on a verdict, by allowing, transforming, escalating, or refusing the action under control, happens at the host integration boundary defined in section 17. The ACS SDKs implement that boundary in their adapters, so a host that wraps an action in an adapter gets enforcement without writing it by hand.
+The runtime computes verdicts. Acting on a verdict, by allowing, transforming, escalating, or refusing the action under control, happens at the host integration boundary defined in section 17. The ACS SDKs expose the runtime as an agent-hooks interceptor and nothing more. The host's agent-hooks emitter applies the verdict (AGENT-HOOKS-0.1 sections 6 and 8): it blocks a denied action and returns the transformed target the host must use. ACS returns verdicts only; it does not block, rewrite, or carry out any action.
 
 ### 1.1 Invariants
 
@@ -20,13 +20,13 @@ The runtime is deterministic. Two evaluations with the same manifest, snapshot, 
 
 The runtime fails closed. Any error during evaluation MUST yield a `deny` verdict whose reason is one of the reserved identifiers in section 16. The runtime MUST NOT return a `transform` verdict on any path that ends in a runtime error.
 
-Intervention point evaluation performs no input or output of its own. Network requests during evaluation, classifier and judge execution, policy engine execution, model calls, tool calls, stream assembly, and parallel dispatch belong to the host. File based manifest loading may perform bounded HTTPS fetches for URL `extends` during construction. The runtime and host exchange typed values through synchronous dispatcher interfaces.
+Intervention point evaluation performs no input or output of its own. Network requests during evaluation, classifier and judge execution, policy engine execution, model calls, tool calls, stream assembly, and parallel dispatch belong to the host. File based manifest loading may perform bounded HTTPS fetches for URL `extends` during construction. The runtime and host exchange typed values through synchronous dispatcher interfaces. The shipped SDK constructors install the section 10.3 default annotator dispatchers, which perform HTTPS calls during evaluation when the manifest declares annotators; evaluation then blocks for the annotator budget. That input and output belongs to the dispatcher, and so to the host, not to the runtime.
 
 ### 1.2 Terminology
 
 This section defines the terms this document uses with a specific meaning. Every other term carries its ordinary meaning.
 
-**Host.** The application that embeds ACS. The host assembles snapshots, calls the runtime, supplies dispatchers, and acts on verdicts. The ACS SDK adapters run inside the host and perform that integration on its behalf.
+**Host.** The application that embeds ACS. The host assembles snapshots, calls the runtime, supplies dispatchers, and acts on verdicts. The ACS SDKs run inside the host as agent-hooks interceptors; the host's emitter acts on the verdict they return.
 
 **Runtime.** The stateless, deterministic engine defined by this document. The runtime computes a verdict and performs no input or output of its own.
 
@@ -61,7 +61,7 @@ A manifest is a single YAML or JSON document. The schema rejects unknown top lev
 | `annotators` | no | Map of named annotator declarations, defined in section 10. |
 | `approval` | no | Approval resolver declarations, defined in section 24. |
 
-`policies` MUST contain at least one entry. `intervention_points` MUST contain at least one entry and MUST key its entries only by the names in section 4.
+`policies` MUST contain at least one entry. `intervention_points` MUST contain at least one entry and MUST key its entries only by the names in section 4. Both requirements apply to the merged manifest: the schema admits a document that carries only some top level properties, so a parent named in `extends` can supply tools or annotators alone. An intervention point entry is complete wherever it appears. The schema requires `policy_target` and `policy` on every entry, in a parent as in the root document.
 
 A manifest MUST be validated before any evaluation uses it. A manifest that fails validation MUST cause every evaluation to fail closed with `runtime_error:manifest_invalid`.
 
@@ -274,6 +274,8 @@ The reusable Rego library package `agent_control_specification.lib.ifc` defines 
 
 A no write down policy MUST deny a flow unless the sink clearance dominates every source label in `input.snapshot.ifc.source_labels`. If labels are incomparable, the comparison MUST fail closed. A policy emitted denial SHOULD use `reason` value `ifc_clearance_violation` with `decision` value `deny`.
 
+The Cedar library `policy/cedar-lib/ifc.cedar` mirrors the Rego library. Cedar cannot iterate a set to compute a lattice closure, so the host precomputes the labels the sink clearance dominates into the resource entity attribute `clearance_dominated_labels`. The library MUST fail closed the way the paragraph above requires: a request whose snapshot lacks the `ifc` block or its `source_labels` member (`result_labels` at `output`) is denied, not permitted by default. A `forbid` that guards those members with `has` and then evaluates to false when they are absent is not sufficient on its own; a second `forbid` MUST deny the absent case. That denial SHOULD use `reason` value `ifc_source_labels_missing_input` at `input` and `ifc_result_labels_missing_output` at `output`.
+
 This model follows established attribute and sink enforcement practice. ABAC and XACML provide labels as request attributes supplied by the policy enforcement point. OS information flow systems such as HiStar, Flume, and Asbestos enforce labels at sinks with labels carried on data. For LLM agents, CaMeL tracks data provenance and capabilities and enforces policy at tool call sinks.
 
 ## 12. Policies
@@ -318,7 +320,7 @@ The Cedar runtime requires a `Request{principal, action, resource, context}`. Th
 | --- | --- | --- |
 | `principal` | `$pi.snapshot.agent.id`, or `$pi.snapshot.envelope.agent.id` for AGT-shaped snapshots, resolved to `Agent::"<id>"`. The runtime MUST fail closed with `runtime_error:policy_invocation_failed` when neither is a string | `Agent` entity |
 | `action` | The intervention point name mapped as `Action::"<ip>"` | `Action` entity |
-| `resource` | `$pi.tool` projected as `Tool::"<name>"` at tool intervention points, otherwise `$pi.policy_target` projected as `PolicyTarget::"<kind>"` | entity |
+| `resource` | `$pi.tool` projected as `Tool::"<name>"` at tool intervention points, otherwise `$pi.policy_target` projected as `PolicyTarget::"<kind>"`, where `<kind>` is the configured `policy_target_kind`. A point that sets no `policy_target_kind` yields the sentinel `PolicyTarget::"unspecified"`, so a policy or entities file for such a point names that id | entity |
 | `context` | Every member of `$pi.snapshot`, the `envelope` block included, plus `$pi.annotations` as one nested record under `annotations` | record |
 
 A policy reads the snapshot at `context.<member>`, for example `context.tool_call.args.host` or `context.envelope.budgets.tool_call_count`, and an annotator's output at `context.annotations.<name>`. The `annotations` record is always present, and empty when no annotator ran. A snapshot member named `annotations` collides with that record and MUST fail closed with `runtime_error:policy_invocation_failed`. `$pi.policy_target`, `$pi.tool` and `$pi.intervention_point` are not part of the context.
@@ -346,7 +348,7 @@ Cedar's authorization result maps to a verdict. Cedar reports the policies that 
 }
 ```
 
-The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that is not JSON or does not match the schema MUST fail closed with `runtime_error:policy_output_invalid`. Both objects in the schema are closed, so a member outside them is a mismatch, and so is a `transform` advice without a `transform` body; each fails closed the same way. A `transform` advice whose `path` is outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden`. The section 14 rules apply to the `transform` body after translation: a `path` under `$target` that does not parse fails closed with `runtime_error:transform_invalid`.
+The dispatcher extracts the advice, validates it against [`spec/schema/cedar_advice.schema.json`](schema/cedar_advice.schema.json), and produces the corresponding verdict. Advice that is not JSON or does not match the schema is a dispatcher error: the dispatcher reports it as malformed policy output, and the runtime folds it, like every dispatcher error, into the section 12.3 verdict, so the verdict carries `runtime_error:policy_invocation_failed` and the detail reaches a host only through a dispatcher the host wraps. Both objects in the schema are closed, so a member outside them is a mismatch, and so is a `transform` advice without a `transform` body; each fails closed the same way. The `transform` body itself is validated after translation, during normalization, so the section 14 reasons apply to it: a `path` outside `$target` fails closed with `runtime_error:transform_target_forbidden`, and a `path` under `$target` that does not parse fails closed with `runtime_error:transform_invalid`.
 
 The runtime offers an optional bundled `cedar` dispatcher that links the Cedar Rust crate when the `cedar` build feature is enabled. A host MAY supply its own dispatcher instead. A dispatcher error MUST fail closed with `runtime_error:policy_invocation_failed`.
 
@@ -357,13 +359,15 @@ A policy dispatcher returns a JSON object. The runtime normalizes it into a verd
 | Member | Required | Type | Constraint |
 | --- | --- | --- | --- |
 | `decision` | yes | string | One of the AGENT-HOOKS-0.1 decisions `allow`, `deny`, `transform`, or the policy-language intents `warn` and `escalate`, which normalize to `allow` carrying a warning and `deny` carrying an approval block. |
-| `reason` | no | string | MUST NOT start with `runtime_error:`. |
+| `reason` | no | string | MUST NOT start with `runtime_error:` or `host_error:`. |
 | `message` | no | string | Free form text for a caller. |
 | `transform` | required when `decision` is `transform`, forbidden otherwise | object | A `{path, value}` replacement rooted at `$target` per section 14. |
+| `warnings` | no | array of objects | Each entry is `{reason, message}`, both optional strings. An entry `reason` MUST NOT start with `runtime_error:` or `host_error:` and MUST NOT be the runtime owned `evidence_truncated` (section 13.3). The `warn` intent appends one entry. |
+| `approval` | permitted only when the normalized decision is `deny` | object | The AGENT-HOOKS-0.1 approval block that makes the deny liftable (section 13.1). The `escalate` intent supplies an empty one when the output carries none. |
 | `evidence` | no | object | Offline verification evidence per section 13.3. |
 | `result_labels` | no | array of strings | Information-flow labels for the data produced at this sink, returned verbatim to the host. See section 13.2. |
 
-Normalization MUST fail closed with `runtime_error:policy_output_invalid` when the output is not an object, when `decision` is absent or is not one of the values above, when `reason` starts with the reserved `runtime_error:` prefix, when `reason` or `message` has the wrong JSON type, when `transform` is present while `decision` is not `transform`, when `transform` is absent while `decision` is `transform`, when `evidence` is present and is not an object, when `evidence` carries a member other than `artefact` and `verification_pointers` or a member of the wrong JSON type (`null` counts as absent), when a `warnings` entry `reason` starts with either reserved prefix (section 18.1) or uses the runtime owned `evidence_truncated` reason (section 13.3), or when `result_labels` is present and is not an array of strings. The size of `evidence` is not a fail closed condition: evidence over the section 13.3 cap is degraded as that section defines, and the verdict stands.
+Normalization MUST fail closed with `runtime_error:policy_output_invalid` when the output is not an object, when `decision` is absent or is not one of the values above, when `reason` starts with the reserved `runtime_error:` or `host_error:` prefix, when `reason` or `message` has the wrong JSON type, when `transform` is present while `decision` is not `transform`, when `transform` is absent while `decision` is `transform`, when `warnings` is present and is not an array of objects, when `approval` is present and is not an object, when `approval` is present while the normalized decision is not `deny`, when `evidence` is present and is not an object, when `evidence` carries a member other than `artefact` and `verification_pointers` or a member of the wrong JSON type (`null` counts as absent), when a `warnings` entry `reason` starts with either reserved prefix (section 18.1) or uses the runtime owned `evidence_truncated` reason (section 13.3), or when `result_labels` is present and is not an array of strings. The size of `evidence` is not a fail closed condition: evidence over the section 13.3 cap is degraded as that section defines, and the verdict stands.
 
 ### 13.1 Decisions
 
@@ -431,7 +435,7 @@ Annotators run sequentially on the calling thread. If the host enforces a per-di
 
 ## 16. Reserved reasons
 
-A runtime failure yields a `deny` verdict whose `reason` is one of the identifiers below. A policy MUST NOT emit a reason that starts with `runtime_error:`.
+A runtime failure yields a `deny` verdict whose `reason` is one of the identifiers below. A policy MUST NOT emit a reason that starts with `runtime_error:`, and MUST NOT emit one that starts with `host_error:`, the prefix AGENT-HOOKS-0.1 section 11 reserves for hosts; the runtime rejects both with `runtime_error:policy_output_invalid`.
 
 | Reason | Cause |
 | --- | --- |
@@ -445,7 +449,7 @@ A runtime failure yields a `deny` verdict whose `reason` is one of the identifie
 | `runtime_error:annotation_timeout` | An annotator dispatch timed out. |
 | `runtime_error:policy_invocation_failed` | Policy preparation or dispatch failed. |
 | `runtime_error:policy_output_invalid` | The dispatcher output could not be normalized. |
-| `runtime_error:transform_invalid` | A `transform` was malformed, its path did not resolve, or its value could not be set. |
+| `runtime_error:transform_invalid` | A `transform` path under `$target` could not be parsed. |
 | `runtime_error:transform_target_forbidden` | A `transform` path pointed outside `$target`. |
 | `runtime_error:resource_limit_exceeded` | Evaluation or manifest loading exceeded a configured resource limit. |
 | `runtime_error:resolution_path_traversal` | AGT host side resolution refused an action path that resolved outside the workspace root. |
@@ -471,7 +475,7 @@ An SDK enforcement layer MAY also fail closed with a reserved `runtime_error:` r
 | `runtime_error:acs_async_closed` | `sdk-adapter` | The ACS async adapter refused a call because closing had started. |
 | `runtime_error:request_invalid` | `sdk-wire` | A JSON wire binding received a malformed intervention request envelope and failed closed before policy input construction. |
 
-A machine readable inventory of every reserved reason with producer attribution lives in [`spec/reserved-reasons.json`](reserved-reasons.json). A policy MUST NOT emit any reason that starts with `runtime_error:`, including the SDK layer reasons.
+A machine readable inventory of every reserved reason with producer attribution lives in [`spec/reserved-reasons.json`](reserved-reasons.json). A policy MUST NOT emit any reason that starts with `runtime_error:`, including the SDK layer reasons, or with `host_error:`.
 
 An intentional scope bypass is an `allow`, not a runtime error. The Python adapter's `acs_point_unbound` label is diagnostic and is not added to the reserved error inventory. A policy can emit that ordinary label; it is not authenticated producer attribution.
 

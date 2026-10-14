@@ -2,7 +2,7 @@
   "$id": "https://agent-control-specification.test/schema/cedar_advice.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "AGT cedar advice payload",
-  "description": "AGT D3.3 cedar advice annotation. Cedar policy authors attach this JSON object as the `advice` annotation on a permit policy. The cedar dispatcher extracts it from the cedar response and translates it into a verdict-shaped JSON object that the runtime normalizes through `normalize_policy_output`. Advice that does not match this schema MUST fail closed with `runtime_error:policy_output_invalid`. A transform advice whose `transform.path` is outside `$target` MUST fail closed with `runtime_error:transform_target_forbidden` per AGT D1.1.",
+  "description": "Cedar advice annotation (specification section 12.4). Cedar policy authors attach this JSON object as the `advice` annotation on a permit policy. The cedar dispatcher extracts it from the cedar response and translates it into a verdict-shaped JSON object that the runtime normalizes through `normalize_policy_output`. Advice that does not match this schema is a dispatcher error, which the runtime folds into `runtime_error:policy_invocation_failed` (section 12.3). A transform advice whose `transform.path` is outside `$target` fails closed during normalization with `runtime_error:transform_target_forbidden`.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -23,8 +23,8 @@
         "string",
         "null"
       ],
-      "pattern": "^(?!runtime_error:).*",
-      "description": "Optional policy supplied reason string. MUST NOT use the reserved `runtime_error:` prefix."
+      "pattern": "^(?!runtime_error:|host_error:).*",
+      "description": "Optional policy supplied reason string. MUST NOT use the reserved `runtime_error:` or `host_error:` prefix."
     },
     "message": {
       "type": [
