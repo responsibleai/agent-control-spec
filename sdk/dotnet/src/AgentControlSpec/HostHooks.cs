@@ -175,10 +175,9 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     // the classic way to turn a working callback into an intermittent
     // crash under load.
     private readonly List<Delegate> _pinned = [];
-    private readonly IntPtr _handle;
-    private bool _disposed;
+    private readonly InterceptorHandle _handle;
 
-    private AcsHostInterceptor(IntPtr handle) => _handle = handle;
+    private AcsHostInterceptor(InterceptorHandle handle) => _handle = handle;
 
     private delegate IntPtr NativeAnnotator(
         IntPtr ctx, IntPtr name, IntPtr invocation, IntPtr input, out IntPtr errOut);
@@ -300,20 +299,22 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     /// <summary>Evaluate one agent context.</summary>
     public ValueTask<Verdict> InterceptAsync(AgentContext context, CancellationToken ct = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         var wire = Native.Intercept(_handle, context.Json.ToJsonString());
         var parsed = System.Text.Json.Nodes.JsonNode.Parse(wire) as System.Text.Json.Nodes.JsonObject
             ?? throw new AgentControlSpecNativeException("engine returned a non-object verdict");
         return ValueTask.FromResult(Verdict.FromWire(parsed));
     }
 
-    /// <summary>Release the native interceptor.</summary>
+    /// <summary>
+    /// Release the native interceptor. Waits for any call in flight on
+    /// another thread; later calls throw <see cref="ObjectDisposedException"/>.
+    /// The delegates stay pinned until the handle is closed, so a callback
+    /// the engine is still running keeps its target.
+    /// </summary>
     public void Dispose()
     {
-        if (_disposed)
-            return;
-        _disposed = true;
-        Native.Free(_handle);
+        _handle.Dispose();
         _pinned.Clear();
     }
 }

@@ -48,6 +48,47 @@ public sealed class AcsInterceptorTests
     }
 
     [Fact]
+    public async Task DisposeIsIdempotentAndInterceptAfterItIsRejected()
+    {
+        var acs = AcsInterceptor.FromPath(Manifest);
+        acs.Dispose();
+        acs.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            async () => await acs.InterceptAsync(Builder().Input("hello")));
+        Assert.Throws<ObjectDisposedException>(() => acs.Name);
+    }
+
+    [Fact]
+    public async Task DisposeDuringConcurrentInterceptDoesNotFreeUnderACallInFlight()
+    {
+        // The failure this would catch is a use-after-free, which shows
+        // up as a crashed test host rather than a failed assertion.
+        var acs = AcsInterceptor.FromPath(Manifest);
+        using var started = new CountdownEvent(8);
+
+        var readers = Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
+        {
+            started.Signal();
+            for (var i = 0; i < 500; i++)
+            {
+                try
+                {
+                    await acs.InterceptAsync(Builder().Input("hello"));
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+            }
+        })).ToArray();
+
+        started.Wait();
+        acs.Dispose();
+        await Task.WhenAll(readers);
+    }
+
+    [Fact]
     public async Task EngineFailureFailsClosedAsRuntimeErrorDeny()
     {
         using var acs = AcsInterceptor.FromPath(Manifest);

@@ -101,7 +101,7 @@ internal static partial class Native
             throw new AgentControlSpecNativeException(TakeString(errOut));
     }
 
-    internal static IntPtr InterceptorNew(string manifestPath)
+    internal static InterceptorHandle InterceptorNew(string manifestPath)
     {
         byte[] pathBytes;
         try
@@ -114,31 +114,77 @@ internal static partial class Native
                 $"manifestPath is not encodable as UTF-8: {e.Message}");
         }
 
-        var handle = acs_interceptor_new_ex(pathBytes, (nuint)pathBytes.Length, out var err);
-        ThrowIfError(err);
-        if (handle == IntPtr.Zero)
+        var raw = acs_interceptor_new_ex(pathBytes, (nuint)pathBytes.Length, out var err);
+        // Take ownership before anything can throw, so a handle the
+        // engine did return is never leaked by an error on the way out.
+        var handle = new InterceptorHandle(raw);
+        try
+        {
+            ThrowIfError(err);
+        }
+        catch
+        {
+            handle.Dispose();
+            throw;
+        }
+        if (handle.IsInvalid)
             throw new AgentControlSpecNativeException("acs_interceptor_new returned no handle");
         return handle;
     }
 
-    internal static void SetName(IntPtr handle, string name)
+    // Every call on an interceptor pairs DangerousGetHandle with
+    // DangerousAddRef and DangerousRelease, as PolicyEvaluate does: the
+    // native pointer cannot be freed while a call is in flight, and a
+    // call after Dispose throws ObjectDisposedException instead of
+    // handing a dead pointer to native code.
+    internal static void SetName(InterceptorHandle handle, string name)
     {
-        acs_interceptor_set_name(handle, name, out var err);
-        ThrowIfError(err);
+        var added = false;
+        try
+        {
+            handle.DangerousAddRef(ref added);
+            acs_interceptor_set_name(handle.DangerousGetHandle(), name, out var err);
+            ThrowIfError(err);
+        }
+        finally
+        {
+            if (added)
+                handle.DangerousRelease();
+        }
     }
 
-    internal static string Intercept(IntPtr handle, string contextJson)
+    internal static string Intercept(InterceptorHandle handle, string contextJson)
     {
-        var verdict = acs_intercept(handle, contextJson, out var err);
-        ThrowIfError(err);
-        return TakeString(verdict);
+        var added = false;
+        try
+        {
+            handle.DangerousAddRef(ref added);
+            var verdict = acs_intercept(handle.DangerousGetHandle(), contextJson, out var err);
+            ThrowIfError(err);
+            return TakeString(verdict);
+        }
+        finally
+        {
+            if (added)
+                handle.DangerousRelease();
+        }
     }
 
-    internal static string Name(IntPtr handle)
+    internal static string Name(InterceptorHandle handle)
     {
-        var name = acs_interceptor_name(handle, out var err);
-        ThrowIfError(err);
-        return TakeString(name);
+        var added = false;
+        try
+        {
+            handle.DangerousAddRef(ref added);
+            var name = acs_interceptor_name(handle.DangerousGetHandle(), out var err);
+            ThrowIfError(err);
+            return TakeString(name);
+        }
+        finally
+        {
+            if (added)
+                handle.DangerousRelease();
+        }
     }
 
     private const int ManifestValid = 0;
@@ -218,7 +264,7 @@ internal static partial class Native
         return TakeString(json);
     }
 
-    internal static void Free(IntPtr handle) => acs_interceptor_free(handle);
+    internal static void InterceptorFree(IntPtr handle) => acs_interceptor_free(handle);
 
     internal static ActivatedPolicyHandle PolicyActivate(string manifestPath)
     {
@@ -502,7 +548,7 @@ internal static partial class Native
     private static partial IntPtr acs_artifact_diagnostics(
         string manifestYaml, string? bundlesJson, out IntPtr errOut);
 
-    internal static IntPtr InterceptorNewWithHooks(
+    internal static InterceptorHandle InterceptorNewWithHooks(
         string manifestPath,
         IntPtr annotatorFn, IntPtr annotatorCtx,
         IntPtr policyFn, IntPtr policyCtx,
@@ -511,22 +557,38 @@ internal static partial class Native
         string? perfTelemetry,
         string? limitsJson)
     {
-        var bytes = System.Text.Encoding.UTF8.GetBytes(manifestPath);
+        byte[] bytes;
+        try
+        {
+            bytes = StrictUtf8.GetBytes(manifestPath);
+        }
+        catch (System.Text.EncoderFallbackException e)
+        {
+            throw new AgentControlSpecNativeException(
+                $"manifestPath is not encodable as UTF-8: {e.Message}");
+        }
         var perf = perfTelemetry is null
             ? IntPtr.Zero
             : Marshal.StringToCoTaskMemUTF8(perfTelemetry);
         var limits = limitsJson is null ? IntPtr.Zero : Marshal.StringToCoTaskMemUTF8(limitsJson);
         try
         {
-            var handle = acs_interceptor_new_with_hooks(
+            var raw = acs_interceptor_new_with_hooks(
                 bytes, (nuint)bytes.Length,
                 annotatorFn, annotatorCtx, policyFn, policyCtx,
                 telemetryFn, telemetryCtx, hookFree, perf, limits, out var err);
-            if (handle == IntPtr.Zero)
+            var handle = new InterceptorHandle(raw);
+            try
             {
                 ThrowIfError(err);
-                throw new AgentControlSpecNativeException("interceptor construction returned no handle");
             }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
+            if (handle.IsInvalid)
+                throw new AgentControlSpecNativeException("interceptor construction returned no handle");
 
             return handle;
         }
@@ -588,6 +650,28 @@ internal sealed class StreamSessionHandle : SafeHandle
     protected override bool ReleaseHandle()
     {
         Native.StreamSessionFree(handle);
+        return true;
+    }
+}
+
+/// <summary>Owns one native interceptor.</summary>
+/// <remarks>
+/// Every call pairs <c>DangerousGetHandle</c> with <c>DangerousAddRef</c>
+/// and <c>DangerousRelease</c>, so a <c>Dispose</c> racing an in-flight
+/// <c>Intercept</c> waits for the call instead of freeing under it, and
+/// a call after <c>Dispose</c> surfaces as
+/// <see cref="ObjectDisposedException"/>.
+/// </remarks>
+internal sealed class InterceptorHandle : SafeHandle
+{
+    internal InterceptorHandle(IntPtr handle)
+        : base(IntPtr.Zero, ownsHandle: true) => SetHandle(handle);
+
+    public override bool IsInvalid => handle == IntPtr.Zero;
+
+    protected override bool ReleaseHandle()
+    {
+        Native.InterceptorFree(handle);
         return true;
     }
 }

@@ -22,10 +22,9 @@ namespace AgentControlSpec;
 /// <summary>Wraps the ACS engine as an agent-hooks interceptor.</summary>
 public sealed class AcsInterceptor : IInterceptor, IDisposable
 {
-    private readonly IntPtr _handle;
-    private bool _disposed;
+    private readonly InterceptorHandle _handle;
 
-    private AcsInterceptor(IntPtr handle) => _handle = handle;
+    private AcsInterceptor(InterceptorHandle handle) => _handle = handle;
 
     /// <summary>
     /// Build an interceptor from a manifest path using the zero-config
@@ -52,18 +51,16 @@ public sealed class AcsInterceptor : IInterceptor, IDisposable
     /// </summary>
     public ValueTask<Verdict> InterceptAsync(AgentContext context, CancellationToken ct = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         var wire = Native.Intercept(_handle, context.Json.ToJsonString());
         var parsed = JsonNode.Parse(wire) as JsonObject
             ?? throw new AgentControlSpecNativeException("engine returned a non-object verdict");
         return ValueTask.FromResult(Verdict.FromWire(parsed));
     }
 
-    public void Dispose()
-    {
-        if (_disposed)
-            return;
-        _disposed = true;
-        Native.Free(_handle);
-    }
+    /// <summary>
+    /// Release the native interceptor. Waits for any call in flight on
+    /// another thread; later calls throw <see cref="ObjectDisposedException"/>.
+    /// </summary>
+    public void Dispose() => _handle.Dispose();
 }
