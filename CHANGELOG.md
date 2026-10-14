@@ -89,6 +89,14 @@
   source builds.
 - `sdk/python/requirements-dev.lock` carries hashes, so `uv pip install -r`
   verifies every artifact. The pins are unchanged.
+- The specification records the rules the pre-release engine fixes
+  enforce: identical intervention point fields across `extends` documents
+  and no `tools` from a fetched document (2.2); `$policy_target` as an
+  invalid transform root (3.2, 14); no redirects and no response body in
+  annotator error detail (10.3, 21); the IFC missing-label gate (11); the
+  Rego builtins the bundled dispatcher shadows (12.3); the Cedar parse-once
+  cache (12.4); bounded runtime error messages (13); wire names in
+  telemetry (19).
 
 ## 0.4.0-alpha.4
 
