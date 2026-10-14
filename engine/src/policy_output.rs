@@ -147,15 +147,23 @@ fn transform_field(value: &JsonValue) -> Result<Transform, RuntimeError> {
                 "transform.path is required when decision is transform".to_string(),
             )
         })?;
+    // Specification 3.2 and 14 root a transform at `$target` and nothing
+    // else. The agent-hooks parser also reads the pre-0.4 `$policy_target`
+    // spelling, so it is refused here first: the engine emits one
+    // grammar. A path rooted anywhere else is outside the target.
+    if is_rooted_at(path, "$policy_target") {
+        return Err(RuntimeError::TransformInvalid(
+            "transform.path invalid: the $policy_target root was renamed $target".to_string(),
+        ));
+    }
+    if !is_rooted_at(path, "$target") {
+        return Err(RuntimeError::TransformTargetForbidden(path.to_string()));
+    }
     // The agent-hooks transform grammar is authoritative: parse with the
     // same parser the host will use at apply time, so nothing the engine
     // emits can pass here and fail there.
     agent_hooks::parse_transform_path(path).map_err(|err| {
-        if path.starts_with("$target") {
-            RuntimeError::TransformInvalid(format!("transform.path invalid: {err:?}"))
-        } else {
-            RuntimeError::TransformTargetForbidden(path.to_string())
-        }
+        RuntimeError::TransformInvalid(format!("transform.path invalid: {err:?}"))
     })?;
     let value = object.get("value").cloned().ok_or_else(|| {
         RuntimeError::PolicyOutputInvalid(
@@ -166,6 +174,16 @@ fn transform_field(value: &JsonValue) -> Result<Transform, RuntimeError> {
         path: path.to_string(),
         value,
     })
+}
+
+/// Whether `path` is `root` itself or `root` followed by a `.` or `[`
+/// step. `$targets.x` is not rooted at `$target`.
+fn is_rooted_at(path: &str, root: &str) -> bool {
+    match path.strip_prefix(root) {
+        Some("") => true,
+        Some(rest) => rest.starts_with('.') || rest.starts_with('['),
+        None => false,
+    }
 }
 
 fn evidence_field(
@@ -483,11 +501,44 @@ fn truncation_warning(
     }
 }
 
+/// Longest annotator error detail a synthesized verdict message carries.
+/// The detail names the annotator and the failure class; the bound keeps
+/// a dispatcher that puts more there from growing the verdict a host may
+/// show to a user or write to its record.
+pub const MAX_RUNTIME_ERROR_DETAIL_BYTES: usize = 256;
+
+/// `detail` with control characters removed and cut to
+/// [`MAX_RUNTIME_ERROR_DETAIL_BYTES`] on a character boundary. A cut
+/// detail ends in `...`.
+fn bounded_detail(detail: &str) -> String {
+    let cleaned = detail
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>();
+    if cleaned.len() <= MAX_RUNTIME_ERROR_DETAIL_BYTES {
+        return cleaned;
+    }
+    let mut end = MAX_RUNTIME_ERROR_DETAIL_BYTES - 3;
+    while !cleaned.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &cleaned[..end])
+}
+
 /// Engine-synthesized fail-closed verdict for a runtime error.
+///
+/// The message is fixed text plus, for an annotation failure, the
+/// detail the dispatcher gave, bounded by [`bounded_detail`]. The
+/// bundled dispatchers never put a response body in that detail (they
+/// report status and a digest); the bound is for host dispatchers that
+/// might.
 pub fn runtime_error_verdict(error: &RuntimeError) -> Verdict {
     let message = match error {
         RuntimeError::AnnotationFailed(detail) if !detail.is_empty() => {
-            format!("Request blocked by Agent Control Specification. {detail}")
+            format!(
+                "Request blocked by Agent Control Specification. {}",
+                bounded_detail(detail)
+            )
         }
         _ => "Request blocked by Agent Control Specification.".to_string(),
     };
@@ -503,6 +554,80 @@ pub fn runtime_error_verdict(error: &RuntimeError) -> Verdict {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn runtime_error_verdict_bounds_and_cleans_the_annotation_detail() {
+        let detail = format!("scan: {}\u{7}\n{}", "x".repeat(1_048_576), "tail");
+        let verdict = runtime_error_verdict(&RuntimeError::AnnotationFailed(detail));
+        let message = verdict.message.unwrap();
+        assert!(message.starts_with("Request blocked by Agent Control Specification. scan: xxx"));
+        assert!(message.ends_with("..."));
+        assert!(!message.chars().any(char::is_control));
+        assert!(
+            message.len()
+                <= "Request blocked by Agent Control Specification. ".len()
+                    + MAX_RUNTIME_ERROR_DETAIL_BYTES
+        );
+
+        let short = runtime_error_verdict(&RuntimeError::AnnotationFailed(
+            "scan: HTTP request failed with status 500".to_string(),
+        ));
+        assert_eq!(
+            short.message.as_deref(),
+            Some("Request blocked by Agent Control Specification. scan: HTTP request failed with status 500")
+        );
+    }
+
+    #[test]
+    fn bounded_detail_cuts_on_a_character_boundary() {
+        let detail = "\u{e9}".repeat(300);
+        let bounded = bounded_detail(&detail);
+        assert!(bounded.ends_with("..."));
+        assert!(bounded.len() <= MAX_RUNTIME_ERROR_DETAIL_BYTES);
+        assert!(bounded
+            .trim_end_matches("...")
+            .chars()
+            .all(|c| c == '\u{e9}'));
+    }
+
+    /// Only `$target` roots a transform. The old `$policy_target` root
+    /// is invalid, not forbidden: it names the target, so the reason a
+    /// host sees must not say the path pointed elsewhere. A path rooted
+    /// anywhere else is forbidden, and a malformed `$target` path is
+    /// invalid.
+    #[test]
+    fn transform_path_roots_are_told_apart() {
+        let cases = [
+            ("$target.content", None),
+            ("$target", None),
+            ("$target[0]", None),
+            (
+                "$policy_target.content",
+                Some("runtime_error:transform_invalid"),
+            ),
+            ("$policy_target", Some("runtime_error:transform_invalid")),
+            ("$target..content", Some("runtime_error:transform_invalid")),
+            (
+                "$targets.content",
+                Some("runtime_error:transform_target_forbidden"),
+            ),
+            (
+                "$snap.input",
+                Some("runtime_error:transform_target_forbidden"),
+            ),
+            ("content", Some("runtime_error:transform_target_forbidden")),
+        ];
+        for (path, expected) in cases {
+            let result = transform_field(&json!({"path": path, "value": "x"}));
+            match expected {
+                None => assert!(result.is_ok(), "{path}: {result:?}"),
+                Some(reason) => {
+                    let error = result.expect_err(path);
+                    assert_eq!(error.reason(), reason, "{path}: {error}");
+                }
+            }
+        }
+    }
 
     fn pointers(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
         entries

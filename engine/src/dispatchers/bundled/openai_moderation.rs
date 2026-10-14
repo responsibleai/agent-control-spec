@@ -55,8 +55,9 @@ impl BundledClassifierProvider for OpenAiModerationProvider {
         let response = transport.send(request)?;
         if !(200..300).contains(&response.status) {
             return Err(format!(
-                "openai_moderation HTTP {} {}",
-                response.status, response.body
+                "openai_moderation HTTP {} ({})",
+                response.status,
+                crate::dispatchers::http::describe_error_body(&response.body)
             ));
         }
         parse_response(cfg, &response.body)

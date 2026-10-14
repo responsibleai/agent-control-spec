@@ -341,17 +341,19 @@ pub fn stream_config_from_json(
 /// One telemetry event.
 ///
 /// `TelemetryEvent` does not derive `Serialize`, so a sink reached
-/// through any binding sees the shape stated here.
+/// through any binding sees the shape stated here. Every enum is
+/// written with its wire name (`pre_tool_call`, `evaluate_only`), the
+/// same spelling the manifest and the agent context use.
 pub fn telemetry_event_json(event: &crate::telemetry::TelemetryEvent) -> Value {
     json!({
         "event_type": event.event_type.as_str(),
-        "intervention_point": format!("{:?}", event.intervention_point).to_lowercase(),
-        "decision": event.decision.map(|d| format!("{d:?}").to_lowercase()),
+        "intervention_point": event.intervention_point.as_str(),
+        "decision": event.decision.map(|d| d.as_str()),
         "reason_code": event.reason_code,
         "error_class": event.error_class,
         "policy_id": event.policy_id,
         "annotators": event.annotators,
-        "enforcement_mode": event.enforcement_mode.map(|m| format!("{m:?}").to_lowercase()),
+        "enforcement_mode": event.enforcement_mode.map(enforcement_mode_str),
         "duration_ms": event.duration_ms,
         "evidence_artefact": event.evidence_artefact,
         "evidence_verification_pointer_keys": event.evidence_verification_pointer_keys,
@@ -360,9 +362,66 @@ pub fn telemetry_event_json(event: &crate::telemetry::TelemetryEvent) -> Value {
     })
 }
 
+/// An enforcement mode's wire name, the `snake_case` spelling its
+/// `Serialize` derive uses.
+pub fn enforcement_mode_str(mode: crate::EnforcementMode) -> &'static str {
+    match mode {
+        crate::EnforcementMode::Enforce => "enforce",
+        crate::EnforcementMode::EvaluateOnly => "evaluate_only",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::{TelemetryEvent, TelemetryEventType};
+    use crate::{Decision, EnforcementMode, InterceptionPoint};
+
+    /// Telemetry names enums the way the wire does, not the way `Debug`
+    /// does: `pre_tool_call`, not `pretoolcall`.
+    #[test]
+    fn telemetry_event_uses_wire_names_for_every_enum() {
+        let points = [
+            (InterceptionPoint::AgentStartup, "agent_startup"),
+            (InterceptionPoint::Input, "input"),
+            (InterceptionPoint::PreModelCall, "pre_model_call"),
+            (InterceptionPoint::PostModelCall, "post_model_call"),
+            (InterceptionPoint::PreToolCall, "pre_tool_call"),
+            (InterceptionPoint::PostToolCall, "post_tool_call"),
+            (InterceptionPoint::Output, "output"),
+            (InterceptionPoint::AgentShutdown, "agent_shutdown"),
+        ];
+        for (point, name) in points {
+            let event = TelemetryEvent::new(TelemetryEventType::Decision, point);
+            let json = telemetry_event_json(&event);
+            assert_eq!(json["intervention_point"], name);
+            assert_eq!(
+                json["intervention_point"],
+                serde_json::to_value(point).unwrap(),
+                "the manifest spelling and the telemetry spelling agree"
+            );
+        }
+        for (mode, name) in [
+            (EnforcementMode::Enforce, "enforce"),
+            (EnforcementMode::EvaluateOnly, "evaluate_only"),
+        ] {
+            let mut event =
+                TelemetryEvent::new(TelemetryEventType::Decision, InterceptionPoint::Input);
+            event.enforcement_mode = Some(mode);
+            event.decision = Some(Decision::Transform);
+            let json = telemetry_event_json(&event);
+            assert_eq!(json["enforcement_mode"], name);
+            assert_eq!(
+                json["enforcement_mode"],
+                serde_json::to_value(mode).unwrap()
+            );
+            assert_eq!(json["decision"], "transform");
+        }
+        let event = TelemetryEvent::new(TelemetryEventType::Decision, InterceptionPoint::Input);
+        let json = telemetry_event_json(&event);
+        assert!(json["enforcement_mode"].is_null());
+        assert!(json["decision"].is_null());
+    }
 
     #[test]
     fn absent_limit_fields_keep_their_own_defaults() {

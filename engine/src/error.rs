@@ -30,23 +30,26 @@ pub enum RuntimeError {
     PolicyInvocationFailed(String),
     PolicyOutputInvalid(String),
     ResourceLimitExceeded(String),
-    /// AGT D6: AGT-side resolution layer detected path traversal. The
-    /// resolution layer runs on the host before the engine; this variant
-    /// exists so SDKs that materialize manifests through a thin Rust
-    /// helper can surface the same reserved reason byte-for-byte.
+    /// A host-side `extends` resolver detected path traversal. That
+    /// resolver runs on the host before the engine (specification 2.2
+    /// and 16); this variant exists so SDKs that materialize manifests
+    /// through a thin Rust helper can surface the same reserved reason
+    /// byte-for-byte.
     ResolutionPathTraversal(String),
-    /// AGT D6: cycle in the extends chain detected by the AGT-side
-    /// resolution layer.
+    /// A host-side `extends` resolver detected a cycle in the chain
+    /// (specification 16).
     ResolutionCycle(String),
-    /// AGT D6: invalid governance.yaml encountered by the AGT-side
-    /// resolution layer.
+    /// A host-side `extends` resolver found an invalid governance
+    /// document (specification 16).
     ResolutionInvalidGovernance(String),
-    /// AGT D6: non-mergeable section in the AGT-side resolution layer.
+    /// A host-side `extends` resolver found a section it cannot merge
+    /// (specification 16).
     ResolutionMergeConflict(String),
-    /// AGT D1.1: a `transform` verdict's `path` is outside `$target`.
+    /// A `transform` verdict's `path` is outside `$target`
+    /// (specification 14).
     TransformTargetForbidden(String),
-    /// AGT D1.1: a `transform` verdict's path did not resolve, or value
-    /// could not be set.
+    /// A `transform` verdict's path did not parse, or its value could
+    /// not be set (specification 14).
     TransformInvalid(String),
 }
 

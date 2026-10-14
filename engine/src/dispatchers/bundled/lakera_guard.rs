@@ -42,8 +42,9 @@ impl BundledClassifierProvider for LakeraGuardProvider {
         let response = transport.send(request)?;
         if !(200..300).contains(&response.status) {
             return Err(format!(
-                "lakera_guard HTTP {} {}",
-                response.status, response.body
+                "lakera_guard HTTP {} ({})",
+                response.status,
+                crate::dispatchers::http::describe_error_body(&response.body)
             ));
         }
         parse_response(cfg, &response.body)
@@ -206,7 +207,8 @@ mod tests {
         let error = LakeraGuardProvider
             .classify(&cfg(), "hello", &transport)
             .unwrap_err();
-        assert!(error.contains("lakera_guard HTTP 401 unauthorized"));
+        assert!(error.contains("lakera_guard HTTP 401 ("), "{error}");
+        assert!(!error.contains("unauthorized"), "{error}");
     }
 
     #[test]

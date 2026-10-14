@@ -42,8 +42,9 @@ impl BundledClassifierProvider for PerspectiveProvider {
         let response = transport.send(request)?;
         if !(200..300).contains(&response.status) {
             return Err(format!(
-                "perspective HTTP {} {}",
-                response.status, response.body
+                "perspective HTTP {} ({})",
+                response.status,
+                crate::dispatchers::http::describe_error_body(&response.body)
             ));
         }
         parse_response(cfg, &response.body, &attributes)

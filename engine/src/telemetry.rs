@@ -7,9 +7,10 @@ pub enum TelemetryEventType {
     AnnotatorDispatch,
     PolicyEvaluation,
     EvaluationTiming,
-    /// AGT D2: the runtime emits this event in addition to `Decision`
-    /// whenever the verdict is `Decision::Transform`. Wire name is
-    /// `intervention_point.transformed` per AGT-EVIDENCE-1.0 §3.
+    /// The runtime emits this event in addition to `Decision` whenever
+    /// the verdict is `Decision::Transform`. Wire name is
+    /// `intervention_point.transformed` (`spec/SPECIFICATION.md`
+    /// section 19).
     InterventionPointTransformed,
     AnnotatorFailed,
     PolicyFailed,
@@ -40,12 +41,12 @@ pub struct TelemetryEvent {
     pub annotators: Vec<String>,
     pub enforcement_mode: Option<EnforcementMode>,
     pub duration_ms: Option<f64>,
-    /// AGT D2 / AGT-EVIDENCE-1.0 §3 verbatim `artefact` string from the
-    /// originating verdict's `evidence` payload. `None` when the verdict
-    /// carried no evidence.
+    /// Verbatim `artefact` string from the originating verdict's
+    /// `evidence` payload (`spec/SPECIFICATION.md` section 13.3). `None`
+    /// when the verdict carried no evidence.
     pub evidence_artefact: Option<String>,
-    /// AGT D2 / AGT-EVIDENCE-1.0 §3 sorted keys (not values) of the
-    /// originating verdict's `evidence.verification_pointers` map. Empty
+    /// Sorted keys (not values) of the originating verdict's
+    /// `evidence.verification_pointers` map (section 13.3). Empty
     /// when no pointers were attached. The URL values are intentionally
     /// omitted to keep telemetry cardinality bounded; auditors recover
     /// them from the audit record. When the runtime degraded the
@@ -145,7 +146,7 @@ impl TelemetryEvent {
         self
     }
 
-    /// Attach AGT D2 / AGT-EVIDENCE-1.0 §3 evidence fields from the
+    /// Attach the section 13.3 evidence fields from the
     /// originating verdict. `artefact` is forwarded verbatim; the pointer
     /// map is reduced to its sorted keys so the URL values never reach
     /// telemetry sinks.
