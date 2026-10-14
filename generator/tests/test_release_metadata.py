@@ -24,8 +24,10 @@ def copied_metadata(tmp_path):
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((module.ROOT / relative).read_bytes())
-    for relative in ("Cargo.lock", "sdk/python/Cargo.lock"):
-        (tmp_path / relative).write_bytes((module.ROOT / relative).read_bytes())
+    for relative in ("Cargo.lock", "sdk/python/Cargo.lock", *module.MATURIN_PIN_FILES):
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((module.ROOT / relative).read_bytes())
     module.ROOT = tmp_path
     return module
 
@@ -77,3 +79,13 @@ def test_regorus_cannot_drift_between_lockfiles(tmp_path, capsys, relative):
     assert "Regorus versions disagree" in diagnostic
     assert "Cargo.lock:" in diagnostic
     assert "sdk/python/Cargo.lock:" in diagnostic
+
+
+def test_missing_surface_is_one_line_not_a_traceback(tmp_path, capsys):
+    module = copied_metadata(tmp_path)
+    (tmp_path / ".github/requirements/maturin.txt").unlink()
+    assert module.main() == 1
+    assert (
+        "missing version surface: .github/requirements/maturin.txt"
+        in capsys.readouterr().out
+    )

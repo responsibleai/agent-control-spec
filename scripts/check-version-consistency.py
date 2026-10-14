@@ -45,6 +45,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# The files that pin the maturin build backend besides pyproject.toml.
+MATURIN_PIN_FILES = (
+    "sdk/python/requirements-dev.lock",
+    ".github/requirements/maturin.txt",
+)
+
 
 def normalize(version: str) -> str:
     """Map a SemVer or PEP 440 pre-release to one canonical spelling."""
@@ -117,10 +123,7 @@ def read_maturin_pins() -> dict[str, str]:
     pinned = [r for r in build if re.fullmatch(r"maturin==[\w.]+", r)]
     assert len(pinned) == 1, "pyproject [build-system] must pin maturin exactly"
     pins["sdk/python/pyproject.toml"] = pinned[0].split("==")[1]
-    for relative in (
-        "sdk/python/requirements-dev.lock",
-        ".github/requirements/maturin.txt",
-    ):
+    for relative in MATURIN_PIN_FILES:
         text = (ROOT / relative).read_text(encoding="utf-8")
         m = re.search(r"^maturin==([\w.]+)", text, re.MULTILINE)
         assert m, f"no maturin pin in {relative}"
@@ -129,8 +132,14 @@ def read_maturin_pins() -> dict[str, str]:
 
 
 def main() -> int:
-    versions = read_versions()
-    maturin = read_maturin_pins()
+    try:
+        versions = read_versions()
+        maturin = read_maturin_pins()
+    except FileNotFoundError as exc:
+        print(
+            f"::error::missing version surface: {Path(exc.filename).relative_to(ROOT)}"
+        )
+        return 1
     if len(set(maturin.values())) != 1:
         print("::error::maturin pins disagree:")
         for path, version in maturin.items():
