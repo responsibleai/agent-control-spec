@@ -8,6 +8,10 @@
 //! interceptors with an `InterceptionEmitter`"). The vendored vectors
 //! and their provenance are under `conformance/agent-hooks/`.
 
+// The harness returns the SDK's `InterceptionBlocked` as its `Err`; that
+// type is large by design and the test does not box it.
+#![allow(clippy::result_large_err)]
+
 use agent_control_spec::{
     AcsInterceptor, AnnotatorDispatcher, AnnotatorInvocation, JsonValue, Manifest,
     PolicyDispatcher, PreparedPolicyInvocation, RuntimeError,
