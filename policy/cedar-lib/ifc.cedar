@@ -84,3 +84,33 @@ forbid (
   context.response.ifc has result_labels &&
   context.response.ifc.result_labels.isEmpty()
 };
+
+// Fail closed when the sink is an IFC sink (the resource carries
+// `clearance_dominated_labels`) but the snapshot carries no labels
+// for it. Specification section 11 treats a missing label field as a
+// denial. A resource without the attribute is not an IFC sink and
+// these rules do not match it.
+
+@id("ifc_source_labels_missing_input")
+forbid (
+  principal,
+  action == Action::"input",
+  resource
+) when {
+  resource has clearance_dominated_labels &&
+  !(context has input &&
+    context.input has ifc &&
+    context.input.ifc has source_labels)
+};
+
+@id("ifc_result_labels_missing_output")
+forbid (
+  principal,
+  action == Action::"output",
+  resource
+) when {
+  resource has clearance_dominated_labels &&
+  !(context has response &&
+    context.response has ifc &&
+    context.response.ifc has result_labels)
+};

@@ -142,5 +142,111 @@
     "decision": "deny",
     "reason": [],
     "num_errors": 0
+  },
+  {
+    "name": "missing_ifc_block_denies_fail_closed",
+    "request": {
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"input\"",
+      "resource": "PolicyTarget::\"user_input\"",
+      "context": {
+        "input": {"body": "hi"}
+      }
+    },
+    "entities": [
+      {"uid": {"type": "PolicyTarget", "id": "user_input"}, "attrs": {"clearance_dominated_labels": ["public", "internal", "confidential", "secret"]}, "parents": []},
+      {"uid": {"type": "Agent", "id": "a"}, "attrs": {}, "parents": []}
+    ],
+    "decision": "deny",
+    "reason": ["ifc_source_labels_missing_input"],
+    "num_errors": 0
+  },
+  {
+    "name": "missing_source_labels_member_denies_fail_closed",
+    "request": {
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"input\"",
+      "resource": "PolicyTarget::\"user_input\"",
+      "context": {
+        "input": {"body": "hi", "ifc": {}}
+      }
+    },
+    "entities": [
+      {"uid": {"type": "PolicyTarget", "id": "user_input"}, "attrs": {"clearance_dominated_labels": ["public", "internal", "confidential", "secret"]}, "parents": []},
+      {"uid": {"type": "Agent", "id": "a"}, "attrs": {}, "parents": []}
+    ],
+    "decision": "deny",
+    "reason": ["ifc_source_labels_missing_input"],
+    "num_errors": 0
+  },
+  {
+    "name": "missing_input_block_denies_fail_closed",
+    "request": {
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"input\"",
+      "resource": "PolicyTarget::\"user_input\"",
+      "context": {}
+    },
+    "entities": [
+      {"uid": {"type": "PolicyTarget", "id": "user_input"}, "attrs": {"clearance_dominated_labels": ["public", "internal", "confidential", "secret"]}, "parents": []},
+      {"uid": {"type": "Agent", "id": "a"}, "attrs": {}, "parents": []}
+    ],
+    "decision": "deny",
+    "reason": ["ifc_source_labels_missing_input"],
+    "num_errors": 0
+  },
+  {
+    "name": "output_missing_result_labels_denies_fail_closed",
+    "request": {
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"output\"",
+      "resource": "PolicyTarget::\"assistant_output\"",
+      "context": {
+        "response": {"content": "hi", "ifc": {}}
+      }
+    },
+    "entities": [
+      {"uid": {"type": "PolicyTarget", "id": "assistant_output"}, "attrs": {"clearance_dominated_labels": ["public", "internal", "confidential", "secret"]}, "parents": []},
+      {"uid": {"type": "Agent", "id": "a"}, "attrs": {}, "parents": []}
+    ],
+    "decision": "deny",
+    "reason": ["ifc_result_labels_missing_output"],
+    "num_errors": 0
+  },
+  {
+    "name": "output_missing_ifc_block_denies_fail_closed",
+    "request": {
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"output\"",
+      "resource": "PolicyTarget::\"assistant_output\"",
+      "context": {
+        "response": {"content": "hi"}
+      }
+    },
+    "entities": [
+      {"uid": {"type": "PolicyTarget", "id": "assistant_output"}, "attrs": {"clearance_dominated_labels": ["public", "internal", "confidential", "secret"]}, "parents": []},
+      {"uid": {"type": "Agent", "id": "a"}, "attrs": {}, "parents": []}
+    ],
+    "decision": "deny",
+    "reason": ["ifc_result_labels_missing_output"],
+    "num_errors": 0
+  },
+  {
+    "name": "resource_without_clearance_attribute_is_not_an_ifc_sink",
+    "request": {
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"input\"",
+      "resource": "PolicyTarget::\"user_input\"",
+      "context": {
+        "input": {"body": "hi"}
+      }
+    },
+    "entities": [
+      {"uid": {"type": "PolicyTarget", "id": "user_input"}, "attrs": {}, "parents": []},
+      {"uid": {"type": "Agent", "id": "a"}, "attrs": {}, "parents": []}
+    ],
+    "decision": "deny",
+    "reason": [],
+    "num_errors": 0
   }
 ]
