@@ -184,5 +184,5 @@ Do not advance the consumer pin in the pre-publication version bump: CI
 cannot install a release that does not exist yet.
 
 When changing `sdk/python/requirements-dev.in`, regenerate its lock with
-`uv pip compile requirements-dev.in -o requirements-dev.lock --universal`
+`uv pip compile requirements-dev.in -o requirements-dev.lock --universal --generate-hashes`
 from `sdk/python/`. The checkout tests use that lock, not the consumer pin.
