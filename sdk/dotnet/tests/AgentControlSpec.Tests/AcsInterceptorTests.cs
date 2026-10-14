@@ -71,14 +71,11 @@ public sealed class AcsInterceptorTests
     public async Task RegistersWithAnAgentHooksEmitterEndToEnd()
     {
         // The agent-hooks emitter needs its own native library
-        // (agent_hooks_ffi), which the NuGet package intentionally does
-        // not ship. Run the end-to-end only where a host provides it on
-        // the loader path; the remaining tests cover the full wrapper
-        // surface without it.
-        if (!System.Runtime.InteropServices.NativeLibrary.TryLoad(
-                "agent_hooks_ffi", out _))
-            return;
-
+        // (agent_hooks_ffi). The ResponsibleAI.AgentHooks package ships
+        // it under runtimes/<rid>/native and the test host resolves it
+        // through the package's deps.json, so the test runs wherever the
+        // package restores. A missing library fails here with
+        // DllNotFoundException instead of passing with the body skipped.
         using var acs = AcsInterceptor.FromPath(Manifest, name: "acs");
         var emitter = new InterceptionEmitter(EnforcementMode.Enforce);
         emitter.Register(acs, "acs");
