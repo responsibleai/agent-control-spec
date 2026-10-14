@@ -172,6 +172,25 @@ def test_host_annotator_dispatcher_that_raises_fails_closed_not_silent():
     assert verdict.reason.startswith("runtime_error:"), verdict.reason
 
 
+def test_host_annotator_dispatcher_output_is_not_rewritten():
+    """A dispatcher result the engine cannot carry as JSON fails closed
+    instead of being quietly retyped: a lone surrogate is not replaced
+    with U+FFFD and an integer past 64 bits is not turned into a
+    string. Either would hand the policy a value the dispatcher never
+    returned."""
+    for bad in ({"blocked": False, "note": "\udcff"}, {"blocked": False, "n": 2**70}):
+        dispatcher = RecordingAnnotator(bad)
+        policy = ActivatedPolicy.from_memory(
+            ANNOTATOR_MANIFEST,
+            _bundles(),
+            annotator_dispatcher=dispatcher,
+        )
+        verdict = policy.evaluate("input", _builder().input(content="hello"))
+        assert dispatcher.calls, "dispatcher must run"
+        assert verdict.decision.value == "deny", bad
+        assert verdict.reason == "runtime_error:annotation_failed", verdict.reason
+
+
 def test_host_annotator_dispatcher_can_be_a_plain_callable():
     """The old API accepted objects with `dispatch`; a plain callable
     with the same signature is admitted too so hosts can write a small
