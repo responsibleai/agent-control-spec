@@ -12,7 +12,8 @@
   "files": [
     "dist",
     "binding.js",
-    "binding.d.ts"
+    "binding.d.ts",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"

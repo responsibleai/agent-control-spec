@@ -6,7 +6,8 @@
   ],
   "main": "agent-control-spec.win32-x64-msvc.node",
   "files": [
-    "agent-control-spec.win32-x64-msvc.node"
+    "agent-control-spec.win32-x64-msvc.node",
+    "LICENSE"
   ],
   "description": "Prebuilt win32-x64-msvc native binary for @responsibleai/agent-control-spec.",
   "license": "MIT",

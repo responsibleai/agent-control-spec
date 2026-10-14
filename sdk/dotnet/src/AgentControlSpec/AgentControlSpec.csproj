@@ -9,6 +9,7 @@
     <Version>0.4.0-beta.1</Version>
     <Description>Agent Control Specification: a policy decision runtime plugging into agent-hooks as an interceptor. .NET wrapper over the Rust engine (native library agent_control_spec_ffi resolved from the loader path).</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/responsibleai/agent-control-spec</RepositoryUrl>
     <!--
       Where the per-RID native builds are staged before packing. The
@@ -41,6 +42,10 @@
     <Error Condition="'@(_AcsNativeAsset)' == ''"
            Text="No native assets staged in $(AcsNativeDir)runtimes. A package without agent_control_spec_ffi throws DllNotFoundException on the first call. Build the FFI for each supported RID and stage it before packing." />
   </Target>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ResponsibleAI.AgentHooks" Version="0.1.0-beta.2" />

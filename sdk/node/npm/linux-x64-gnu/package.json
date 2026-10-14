@@ -6,7 +6,8 @@
   ],
   "main": "agent-control-spec.linux-x64-gnu.node",
   "files": [
-    "agent-control-spec.linux-x64-gnu.node"
+    "agent-control-spec.linux-x64-gnu.node",
+    "LICENSE"
   ],
   "description": "Prebuilt linux-x64-gnu native binary for @responsibleai/agent-control-spec.",
   "license": "MIT",
