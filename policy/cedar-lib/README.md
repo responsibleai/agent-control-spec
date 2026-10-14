@@ -192,7 +192,11 @@ worth knowing.
 - **No lattice agility at evaluation time.** Cedar cannot iterate
   over a set to compute lattice closures inside policy evaluation.
   The `ifc.cedar` library expects the host to precompute the closure
-  into the resource entity attribute `clearance_dominated_labels`.
+  into the resource entity attribute `clearance_dominated_labels`. A
+  resource without that attribute is not an IFC sink: none of the IFC
+  forbids applies to it, including `ifc_source_labels_missing_input`
+  and `ifc_result_labels_missing_output`, which fail closed when a
+  sink's snapshot carries no labels.
   The Rego library `data.agt.ifc` exposes
   `dominates_with_lattice` and `verdict_with_lattice` that take the
   lattice document at call time.

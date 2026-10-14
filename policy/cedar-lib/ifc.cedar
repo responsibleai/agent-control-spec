@@ -32,6 +32,11 @@
 // include the sink clearance label itself when the lattice is
 // reflexive, which the default AGT lattice in
 // `policy/lib/agt_ifc.rego` is.
+//
+// A resource without `clearance_dominated_labels` is not an IFC sink.
+// None of the forbids below applies to it, including the two that fail
+// closed when the snapshot carries no labels. A host that wants a sink
+// checked gives its resource entity the attribute.
 
 @id("ifc_clearance_violation_input")
 forbid (
