@@ -137,7 +137,7 @@ def main() -> int:
         maturin = read_maturin_pins()
     except FileNotFoundError as exc:
         print(
-            f"::error::missing version surface: {Path(exc.filename).relative_to(ROOT)}"
+            f"::error::missing version surface: {Path(exc.filename).relative_to(ROOT).as_posix()}"
         )
         return 1
     if len(set(maturin.values())) != 1:
