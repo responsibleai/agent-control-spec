@@ -202,7 +202,9 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     /// field. Null keeps every default. A host feeding large payloads
     /// raises <c>max_snapshot_bytes</c>; one hardening against a hostile
     /// manifest lowers <c>max_extends_depth</c> or
-    /// <c>manifest_url_timeout_ms</c>.
+    /// <c>manifest_url_timeout_ms</c>. The caps bound manifest loading
+    /// (the <c>extends</c> chain), evaluation and the bundled
+    /// dispatchers alike.
     /// </param>
     public static AcsHostInterceptor FromPath(
         string manifestPath,

@@ -472,7 +472,7 @@ fn interceptor_new(
     // stalled interpreter, and the sibling `policy_activate` already
     // drops the GIL for the same reason.
     let runtime = py.detach(move || {
-        let manifest = Manifest::from_path(&manifest_path)
+        let manifest = Manifest::from_path_with_limits(&manifest_path, limits)
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Runtime::with_telemetry_perf_and_limits(
             manifest,

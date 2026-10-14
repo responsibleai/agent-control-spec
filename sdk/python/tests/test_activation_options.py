@@ -135,6 +135,25 @@ extends: ["parent.yaml"]
         factory(str(child), limits={"max_extends_depth": 0})
 
 
+def test_interceptor_loader_uses_host_manifest_limits(tmp_path):
+    """The synchronous constructor resolves ``extends`` under the same
+    caps as :class:`ActivatedPolicy`. A host that lowered
+    ``max_extends_depth`` on the interceptor and still got the chain
+    loaded would believe it was protected when it was not."""
+    parent = tmp_path / "parent.yaml"
+    parent.write_text(MANIFEST)
+    child = tmp_path / "manifest.yaml"
+    child.write_text(
+        """
+agent_control_specification_version: "0.4.0-alpha.1"
+extends: ["parent.yaml"]
+"""
+    )
+    assert AcsInterceptor(str(child)).intercept(context()).decision == "allow"
+    with pytest.raises(ValueError, match="depth"):
+        AcsInterceptor(str(child), limits={"max_extends_depth": 0})
+
+
 def test_options_do_not_bypass_in_memory_bundle_validation():
     source = MANIFEST.replace(
         "type: test\n    verdict:\n      decision: allow",

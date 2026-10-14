@@ -482,6 +482,32 @@ public sealed class HostHooksTests : IDisposable
     }
 
     [Fact]
+    public async Task TheConstructorResolvesExtendsUnderTheHostLoaderCaps()
+    {
+        // Same chain, loaded once with default caps and once with
+        // max_extends_depth 0. A host that lowered the cap on the
+        // interceptor and still got the chain loaded would believe it was
+        // protected when it was not.
+        var parent = WriteFixture();
+        var child = Path.Combine(_dir, "child.yaml");
+        File.WriteAllText(child, $"""
+            agent_control_specification_version: "0.4.0-alpha.1"
+            extends: ["{Path.GetFileName(parent)}"]
+            """);
+
+        using var permissive = AcsHostInterceptor.FromPath(
+            child, annotator: (_, _, _) => """{"severity":1}""");
+        Assert.Equal(Decision.Allow, (await permissive.InterceptAsync(Input("hi"))).Decision);
+
+        var error = Assert.Throws<AgentControlSpecNativeException>(() =>
+            AcsHostInterceptor.FromPath(
+                child,
+                annotator: (_, _, _) => """{"severity":1}""",
+                limits: """{"max_extends_depth": 0}"""));
+        Assert.Contains("depth", error.Message);
+    }
+
+    [Fact]
     public void ALimitThatIsNotANumberIsRefused()
     {
         var manifest = WriteFixture();

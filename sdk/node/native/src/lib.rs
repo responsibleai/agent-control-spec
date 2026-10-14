@@ -366,8 +366,9 @@ pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Hand
 /// cap does not restate the other nine. A host feeding large payloads
 /// raises `max_snapshot_bytes`; one hardening against a hostile
 /// manifest lowers `max_extends_depth` or `manifest_url_timeout_ms`.
-/// A field present but not a non-negative integer is a hard ERROR, not
-/// a silently-kept default.
+/// The caps bound manifest loading (the `extends` chain), evaluation
+/// and the bundled dispatchers alike. A field present but not a
+/// non-negative integer is a hard ERROR, not a silently-kept default.
 ///
 /// Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
 /// engine's evaluation. A callback that throws surfaces as a fail-closed
@@ -385,9 +386,12 @@ pub fn interceptor_new_with_hooks(
     limits_json: Option<Utf16String>,
 ) -> napi::Result<External<Handle>> {
     let manifest_path = decode("manifest_path", &manifest_path)?;
-    let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
     let perf = parse_perf(perf_telemetry)?;
     let limits = parse_limits(limits_json)?;
+    // The host's caps bound manifest loading too: `max_extends_depth`
+    // and the URL caps apply while the `extends` chain is resolved.
+    let manifest =
+        Manifest::from_path_with_limits(&manifest_path, limits).map_err(|e| err(format!("{e}")))?;
     let annotations = build_annotator_with_limits(annotator_dispatcher, limits);
     let policy = build_policy_with_limits(policy_dispatcher, limits);
     let telemetry = build_telemetry(telemetry_sink);

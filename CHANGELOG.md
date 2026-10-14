@@ -9,6 +9,10 @@
   evaluation with `runtime_error:policy_invocation_failed`. The
   specification's 12.4 mapping and the verdict schema cite documents in
   this repository. Closes #84.
+- The interceptor constructors in the FFI, Python, Node and .NET SDKs
+  load the manifest under the host's `limits`, so `max_extends_depth`
+  and the URL caps bound the `extends` chain the same way they do for
+  `ActivatedPolicy`. Closes #82.
 - Package and repository READMEs drop em dashes and bold-label bullets,
   name the crates.io and NuGet install commands, and the dry-run
   description says what the dry run does. Clippy runs on test targets

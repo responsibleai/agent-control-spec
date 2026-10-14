@@ -1054,6 +1054,12 @@ impl TelemetrySink for HostTelemetrySink {
 /// slot, so a host overrides only what it needs. `perf_telemetry` is
 /// `off`, `external` or `full`, and NULL means `off`.
 ///
+/// `limits_json` is a JSON object of resource caps overriding the
+/// engine's defaults field by field; NULL or empty keeps every default.
+/// The caps bound manifest loading (`max_extends_depth` and the URL
+/// caps apply while the `extends` chain is resolved), evaluation and
+/// the bundled dispatchers alike.
+///
 /// `annotator_ctx`, `policy_ctx` and `telemetry_ctx` are opaque to the
 /// engine. Dispatch happens on whichever thread evaluates, so a context
 /// shared across threads must be safe to use from all of them.
@@ -1087,13 +1093,6 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
             Some(p) => p,
             None => return std::ptr::null_mut(),
         };
-        let manifest = match Manifest::from_path(path) {
-            Ok(m) => m,
-            Err(e) => {
-                set_err(err_out, format!("{e}"));
-                return std::ptr::null_mut();
-            }
-        };
         let perf = match read_optional(perf_telemetry, "perf_telemetry", err_out) {
             Ok(Some(raw)) => match wire::parse_perf_telemetry(raw) {
                 Ok(level) => level,
@@ -1124,6 +1123,15 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
             }
             Ok(_) => Limits::default(),
             Err(()) => return std::ptr::null_mut(),
+        };
+        // The host's caps bound manifest loading too: `max_extends_depth`
+        // and the URL caps apply while the `extends` chain is resolved.
+        let manifest = match Manifest::from_path_with_limits(path, limits) {
+            Ok(m) => m,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return std::ptr::null_mut();
+            }
         };
 
         let annotations: Arc<dyn AnnotatorDispatcher> = match annotator_fn {
@@ -2289,6 +2297,72 @@ intervention_points:
                     .contains("timeout of 0 ms"));
             }
         }
+    }
+
+    #[test]
+    fn hook_constructor_resolves_extends_under_the_host_loader_caps() {
+        // Same chain, loaded once with default caps and once with
+        // `max_extends_depth: 0`. A host that lowered the cap on the
+        // interceptor and still got the chain loaded would believe it
+        // was protected when it was not.
+        let dir = std::env::temp_dir().join(format!("acs-hook-depth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("parent.yaml"), valid_manifest_source()).unwrap();
+        std::fs::write(
+            dir.join("child.yaml"),
+            "agent_control_specification_version: \"0.4.0-alpha.1\"\nextends:\n  - ./parent.yaml\n",
+        )
+        .unwrap();
+        let child = dir.join("child.yaml");
+        let path = child.to_str().unwrap().as_bytes();
+        let construct = |limits: Option<&CString>| {
+            let mut err: *mut c_char = std::ptr::null_mut();
+            let handle = unsafe {
+                acs_interceptor_new_with_hooks(
+                    path.as_ptr(),
+                    path.len(),
+                    None,
+                    std::ptr::null_mut(),
+                    None,
+                    std::ptr::null_mut(),
+                    None,
+                    std::ptr::null_mut(),
+                    None,
+                    std::ptr::null(),
+                    limits.map_or(std::ptr::null(), |l| l.as_ptr()),
+                    &mut err,
+                )
+            };
+            let message = if err.is_null() {
+                None
+            } else {
+                let m = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+                unsafe { acs_free_string(err) };
+                Some(m)
+            };
+            (handle, message)
+        };
+
+        let (handle, message) = construct(None);
+        assert!(message.is_none(), "default caps failed: {message:?}");
+        assert!(!handle.is_null());
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hello","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+        assert_eq!(verdict["decision"], "allow");
+
+        let limits = CString::new(r#"{"max_extends_depth":0}"#).unwrap();
+        let (handle, message) = construct(Some(&limits));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            handle.is_null(),
+            "a breached loader cap must not yield a handle"
+        );
+        let message = message.expect("a breached loader cap sets err_out");
+        assert!(message.contains("depth"), "message was: {message}");
     }
 
     fn validate(bytes: &[u8]) -> (i32, Option<String>) {
