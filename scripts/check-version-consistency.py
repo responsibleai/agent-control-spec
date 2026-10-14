@@ -26,6 +26,13 @@ why nothing noticed it drifting.
 
 PEP 440 spells SemVer pre-releases differently (0.4.0-alpha.1 ->
 0.4.0a1), so versions are compared after normalizing both spellings.
+
+The maturin build backend is pinned in three places that must agree:
+sdk/python/pyproject.toml [build-system] requires (the sdist build),
+sdk/python/requirements-dev.lock (the CI editable install) and
+.github/requirements/maturin.txt (the hashed pin the release and CI wheel
+builds install). A wheel built by one maturin and an sdist declaring
+another once shipped in the same release.
 """
 
 from __future__ import annotations
@@ -102,8 +109,33 @@ def read_versions() -> dict[str, str]:
     return versions
 
 
+def read_maturin_pins() -> dict[str, str]:
+    pins: dict[str, str] = {}
+    build = tomllib.loads(
+        (ROOT / "sdk/python/pyproject.toml").read_text(encoding="utf-8")
+    )["build-system"]["requires"]
+    pinned = [r for r in build if re.fullmatch(r"maturin==[\w.]+", r)]
+    assert len(pinned) == 1, "pyproject [build-system] must pin maturin exactly"
+    pins["sdk/python/pyproject.toml"] = pinned[0].split("==")[1]
+    for relative in (
+        "sdk/python/requirements-dev.lock",
+        ".github/requirements/maturin.txt",
+    ):
+        text = (ROOT / relative).read_text(encoding="utf-8")
+        m = re.search(r"^maturin==([\w.]+)", text, re.MULTILINE)
+        assert m, f"no maturin pin in {relative}"
+        pins[relative] = m.group(1)
+    return pins
+
+
 def main() -> int:
     versions = read_versions()
+    maturin = read_maturin_pins()
+    if len(set(maturin.values())) != 1:
+        print("::error::maturin pins disagree:")
+        for path, version in maturin.items():
+            print(f"  {path}: {version}")
+        return 1
     regorus = {}
     for relative in ("Cargo.lock", "sdk/python/Cargo.lock"):
         lock = tomllib.loads((ROOT / relative).read_text(encoding="utf-8"))
@@ -120,6 +152,7 @@ def main() -> int:
     normalized = {path: normalize(v) for path, v in versions.items()}
     if len(set(normalized.values())) == 1:
         print(f"package version surfaces agree: {next(iter(normalized.values()))}")
+        print(f"maturin pins agree: {next(iter(maturin.values()))}")
         return 0
     print("::error::version surfaces disagree:")
     for path, raw in versions.items():

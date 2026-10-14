@@ -20,7 +20,12 @@ the tag's publication set. The tag workflow does not publish the generator.
    strings. Committing a regenerated copy is harmless but never
    required.
 2. Dry-run: Actions → release → Run workflow (`dry_run: true`). Builds
-   everything and produces SBOMs; attests and uploads nothing.
+   everything, packs the npm tarballs with the publish-time manifest
+   edits, and produces SBOMs; attests and uploads nothing. A manual run
+   is always a dry run: the workflow's preflight job refuses
+   `dry_run: false` with an error, so the only path to the registries
+   is a tag push. The `release` environment admits `main` and `v*`
+   tags only, so a dry run from a feature branch stops at that gate.
 3. Tag the merged commit and push:
 
    ```bash
@@ -28,11 +33,22 @@ the tag's publication set. The tag workflow does not publish the generator.
    git push origin v<version>
    ```
 
+   The tag name must be `v` plus the version every manifest carries.
+   The preflight job runs `scripts/check-version-consistency.py` and
+   fails the whole run when the tag disagrees with it, or when
+   `CHANGELOG.md` has no `## <version>` section (the release notes
+   come from that section through `scripts/release-notes.py`).
+
 4. The tag run publishes: crates.io `agent-control-spec`, PyPI
    `agent-control-spec`, npm `@responsibleai/agent-control-spec` plus
    four platform packages, NuGet `ResponsibleAI.AgentControlSpec`.
-   All legs are idempotent: already-published versions are skipped, so
-   a re-run after a partial failure is safe.
+   Each artifact carries the LICENSE text and a build provenance
+   attestation; the npm attestation covers the exact tarballs the
+   workflow publishes. A final job creates the GitHub Release for the
+   tag (pre-release when the version has a hyphen) with the four SBOMs
+   attached. All legs are idempotent: already-published versions are
+   skipped and an existing release gets its SBOMs re-uploaded, so a
+   re-run after a partial failure is safe.
 
 5. Pre-release only: move the npm `latest` dist-tag. Skip this step
    for a stable release, which the workflow publishes under `latest`
@@ -56,6 +72,59 @@ the tag's publication set. The tag workflow does not publish the generator.
    ```
 
    Check with `npm view @responsibleai/agent-control-spec dist-tags`.
+
+## Pinned tooling
+
+The release workflow builds with one Rust toolchain, `RUST_TOOLCHAIN`
+in `release.yml`, pinned to the exact version the ci workflow resolves
+as `stable` today (1.99.0). When stable moves, CI runs on the new
+version first; bump the pin in a PR once CI is green on it, not during
+a release. maturin installs by hash from
+`.github/requirements/maturin.txt`, and `check-version-consistency.py`
+fails when that pin, `[build-system] requires` in
+`sdk/python/pyproject.toml` and `requirements-dev.lock` disagree; the
+header of the requirements file says how to regenerate it. npm is
+installed at an exact version in the publish step because the npm
+bundled with Node 22 predates trusted publishing. NuGet restores with
+`--locked-mode` against the committed
+`sdk/dotnet/src/AgentControlSpec/packages.lock.json`; a package
+reference change must update that file in the same PR
+(`dotnet restore --use-lock-file` from `sdk/dotnet`).
+
+## Partial failure, re-run and yank
+
+The four publish legs run in parallel and one can fail after another
+has uploaded. Fix the cause and re-run the failed jobs from the Actions
+page; every leg skips a version that already exists on its registry,
+and the release job uploads the SBOMs to the release it finds. Do not
+re-tag: a tag that moved no longer matches the attestations and the
+published artifacts.
+
+When a published version must be withdrawn, mark it on each registry
+rather than deleting it. None of these steps removes the files from
+consumers who already have them; they stop new resolution and show the
+version as withdrawn. Run them from an interactive login with 2FA.
+
+```bash
+V=<version>                                   # SemVer spelling
+cargo yank --version "$V" agent-control-spec  # crates.io
+# PyPI: Manage project -> Releases -> <version> -> Options -> Yank
+#       (web interface only; twine has no yank command)
+for p in agent-control-spec agent-control-spec-linux-x64-gnu \
+         agent-control-spec-darwin-x64 agent-control-spec-darwin-arm64 \
+         agent-control-spec-win32-x64-msvc; do
+  npm deprecate "@responsibleai/$p@$V" "Withdrawn: <reason>. Use <fixed version>."
+done
+# NuGet: Manage package -> Listing -> untick "List in search results"
+#        for ResponsibleAI.AgentControlSpec <version>
+```
+
+Then publish the fixed version under a new tag, add a CHANGELOG entry
+that names the withdrawn version and the reason, and move the npm
+`latest` dist-tag if the withdrawn version held it (step 5 above).
+`cargo yank --undo` and the PyPI and NuGet listing toggles reverse a
+mistaken withdrawal; `npm deprecate` with an empty message clears the
+deprecation.
 
 ## Async adapter contract changes
 

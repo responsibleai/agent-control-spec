@@ -12,6 +12,13 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/responsibleai/agent-control-spec</RepositoryUrl>
     <!--
+      packages.lock.json next to this file records the resolved package
+      graph. CI and the release workflow restore with locked-mode, so a
+      dependency change must update the lock file in the same PR
+      (run `dotnet restore` with the use-lock-file switch).
+    -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!--
       Where the per-RID native builds are staged before packing. The
       release workflow fills this from its build matrix; a local
       `dotnet pack` finds it empty and produces a managed-only package,

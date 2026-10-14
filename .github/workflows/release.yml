@@ -1,8 +1,14 @@
 # Tag-driven release pipeline.
 #
-# Trigger: push a tag `v*` (e.g. v0.4.0-alpha.1) — one tag releases all
+# Trigger: push a tag `v*` (e.g. v0.4.0-beta.1); one tag releases all
 # packages together (see RELEASING.md). Or run manually with
-# dry_run=true to build everything and skip every upload.
+# dry_run=true to build everything and skip every upload. A manual run
+# never publishes: the preflight job refuses dry_run=false, so the only
+# path to the registries is a tag push.
+#
+# Toolchains are pinned: the Rust toolchain below (keep it on the version
+# the ci workflow runs on stable today; see RELEASING.md), maturin by
+# hash from .github/requirements/maturin.txt, npm by exact version.
 #
 # Publishing setup (one-time, per registry):
 #   PyPI   — trusted publishing (OIDC): PyPI supports PENDING publishers,
@@ -32,7 +38,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Build everything and produce SBOMs; skip attestation and all uploads
+        description: Build everything and produce SBOMs; skip attestation and all uploads. Only `true` is accepted; a tag push is the only way to publish.
         type: boolean
         default: true
 
@@ -40,10 +46,42 @@ permissions:
   contents: read
 
 env:
-  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+  # Every manual run is a dry run (preflight refuses dry_run=false), so
+  # the publish-side steps also require a pushed tag below.
+  DRY_RUN: ${{ github.event_name == 'workflow_dispatch' }}
+  RUST_TOOLCHAIN: "1.99.0"
 
 jobs:
+  # Stops two mistakes before any build starts: a manual dispatch that
+  # asks to publish, and a tag whose name does not match the version the
+  # package manifests carry.
+  preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Refuse a manual dispatch that asks to publish
+        if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+        run: |
+          echo "::error::A manual run cannot publish. Run it with dry_run=true, or push a v* tag to release."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Version surfaces agree
+        run: python3 scripts/check-version-consistency.py
+      - name: Tag name matches the version surfaces
+        if: github.ref_type == 'tag'
+        run: |
+          expected="${GITHUB_REF_NAME#v}"
+          actual=$(python3 scripts/check-version-consistency.py | sed -n 's/^package version surfaces agree: //p')
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::tag $GITHUB_REF_NAME names version $expected but the package manifests say $actual"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches version $actual"
+      - name: Release notes exist for this version
+        if: github.ref_type == 'tag'
+        run: python3 scripts/release-notes.py "${GITHUB_REF_NAME#v}" > /dev/null
+
   python:
+    needs: preflight
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -52,12 +90,19 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; stable toolchain
-        with: { toolchain: stable }
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; toolchain pinned by RUST_TOOLCHAIN
+        with: { toolchain: "${{ env.RUST_TOOLCHAIN }}" }
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Build wheel + sdist
+        # maturin is installed by hash from the pinned requirements file,
+        # the same version pyproject.toml declares for the sdist build.
         run: |
-          uv tool install maturin==1.8.7
+          uv venv "$RUNNER_TEMP/maturin-venv"
+          uv pip install --python "$RUNNER_TEMP/maturin-venv/bin/python" \
+            --require-hashes -r .github/requirements/maturin.txt
+          echo "$RUNNER_TEMP/maturin-venv/bin" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/maturin-venv/bin:$PATH"
+          maturin --version
           maturin build --release --locked -m sdk/python/Cargo.toml -o dist
           maturin sdist -m sdk/python/Cargo.toml -o dist
       - name: SBOM
@@ -80,6 +125,7 @@ jobs:
         with: { name: python-dist, path: dist/* }
 
   rust:
+    needs: preflight
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -88,8 +134,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; stable toolchain
-        with: { toolchain: stable }
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; toolchain pinned by RUST_TOOLCHAIN
+        with: { toolchain: "${{ env.RUST_TOOLCHAIN }}" }
       - name: Package (verifies the publishable crate)
         run: cargo package --locked -p agent-control-spec
       - name: SBOM
@@ -112,13 +158,14 @@ jobs:
         run: |
           V=$(cargo pkgid -p agent-control-spec | sed 's/.*[#@]//')
           if curl -sf https://index.crates.io/ag/en/agent-control-spec | grep -q "\"vers\":\"$V\""; then
-            echo "agent-control-spec $V already on crates.io — skipping"
+            echo "agent-control-spec $V already on crates.io, skipping"
             exit 0
           fi
           export CARGO_REGISTRY_TOKEN="${{ steps.cratesio-auth.outputs.token }}"
           cargo publish --locked -p agent-control-spec
 
   node-build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -130,9 +177,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; stable toolchain
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; toolchain pinned by RUST_TOOLCHAIN
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with: { node-version: "22" }
@@ -175,7 +222,30 @@ jobs:
           # loader always checks against the version it ships as.
           node scripts/stamp-binding-version.mjs binding.js
           npx tsc
-          npm pack
+      - name: Pack the five tarballs exactly as they will publish
+        # optionalDependencies are injected here rather than committed:
+        # they cannot be resolved before the platform packages' first
+        # publish, and a lockfile referencing unpublished packages breaks
+        # npm ci. Once all five packages exist on the registry, the
+        # dependency block can move into the committed package.json.
+        # The tarballs under pack/ are what the attestation covers and
+        # what the publish step uploads, so the two cannot drift.
+        run: |
+          # shellcheck disable=SC2016 # ${...} below are JS template literals, not shell
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            p.optionalDependencies = Object.fromEntries(
+              ["linux-x64-gnu","darwin-x64","darwin-arm64","win32-x64-msvc"]
+                .map(t => [`@responsibleai/agent-control-spec-${t}`, p.version]));
+            fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+          '
+          mkdir -p pack
+          for d in npm/*/; do
+            (cd "$d" && npm pack --pack-destination ../../pack)
+          done
+          npm pack --pack-destination pack
+          ls -l pack
         working-directory: sdk/node
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
@@ -187,43 +257,35 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
         with:
           subject-path: |
-            sdk/node/*.tgz
+            sdk/node/pack/*.tgz
             sdk/node/npm/**/*.node
       - name: Publish to npm (platform packages, then the loader package)
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
-        # optionalDependencies are injected here rather than committed:
-        # they cannot be resolved before the platform packages' first
-        # publish, and a lockfile referencing unpublished packages breaks
-        # npm ci. Once all five packages exist on the registry, the
-        # dependency block can move into the committed package.json.
-        # Prerelease versions publish under the `alpha` dist-tag.
+        # Publishes the attested tarballs from pack/, never the working
+        # tree. Prerelease versions publish under the `alpha` dist-tag.
         # Idempotent: versions that already exist are skipped.
         run: |
-          npm install -g npm@latest
+          # The npm bundled with Node 22 predates trusted publishing
+          # (npm >= 11.5.1). Pin the exact version; bump it on purpose,
+          # never with @latest, from a job that holds the OIDC token.
+          npm install -g npm@11.21.0
+          npm --version
           V=$(node -p "require('./package.json').version")
           case "$V" in *-*) T=alpha;; *) T=latest;; esac
+          publish() {
+            # $1 package name, $2 tarball produced by npm pack
+            if npm view "$1@$V" version >/dev/null 2>&1; then
+              echo "$1@$V already on npm, skipping"
+            else
+              npm publish "$2" --access public --tag "$T"
+            fi
+          }
           for d in npm/*/; do
             P=$(node -p "require('./$d/package.json').name")
-            if npm view "$P@$V" version >/dev/null 2>&1; then
-              echo "$P@$V already on npm — skipping"
-            else
-              (cd "$d" && npm publish --access public --tag "$T")
-            fi
+            base=${P#@}
+            publish "$P" "pack/${base//\//-}-$V.tgz"
           done
-          # shellcheck disable=SC2016 # ${...} below are JS template literals, not shell
-          node -e '
-            const fs = require("fs");
-            const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            p.optionalDependencies = Object.fromEntries(
-              ["linux-x64-gnu","darwin-x64","darwin-arm64","win32-x64-msvc"]
-                .map(t => [`@responsibleai/agent-control-spec-${t}`, p.version]));
-            fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
-          '
-          if npm view "@responsibleai/agent-control-spec@$V" version >/dev/null 2>&1; then
-            echo "@responsibleai/agent-control-spec@$V already on npm — skipping"
-          else
-            npm publish --access public --tag "$T"
-          fi
+          publish "@responsibleai/agent-control-spec" "pack/responsibleai-agent-control-spec-$V.tgz"
         working-directory: sdk/node
 
   # The managed assembly calls the engine through agent_control_spec_ffi,
@@ -231,6 +293,7 @@ jobs:
   # throws DllNotFoundException on the first call. Build one library per
   # supported RID and let the pack step assemble them.
   dotnet-native:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -243,9 +306,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; stable toolchain
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master; toolchain pinned by RUST_TOOLCHAIN
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
       - name: Build the engine binding for ${{ matrix.rid }}
         shell: bash
@@ -289,9 +352,11 @@ jobs:
           done
           find sdk/dotnet/native/runtimes -type f | sort
       - name: Pack
+        # --locked-mode fails when packages.lock.json does not match the
+        # csproj instead of resolving a new graph at release time.
         run: |
-          dotnet restore --nologo
-          dotnet pack src/AgentControlSpec -c Release -o dist --nologo -p:AcsNativeAssetsRequired=true
+          dotnet restore --nologo --locked-mode
+          dotnet pack src/AgentControlSpec -c Release -o dist --nologo --no-restore -p:AcsNativeAssetsRequired=true
         working-directory: sdk/dotnet
       - name: Prove the packed artifact runs without a local engine build
         shell: bash
@@ -321,3 +386,41 @@ jobs:
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         run: dotnet nuget push dist/*.nupkg --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" --source https://api.nuget.org/v3/index.json --skip-duplicate
         working-directory: sdk/dotnet
+
+  # The SBOMs the jobs above upload expire with the workflow run. Attach
+  # them to a GitHub Release so they outlive it, with the CHANGELOG
+  # section for the version as the notes. Runs only for a pushed tag, so
+  # a dry run (manual dispatch, even on a tag ref) never creates one.
+  github-release:
+    needs: [python, rust, node, dotnet]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: sbom-*
+          path: sboms
+          merge-multiple: true
+      - name: Create the release with the SBOMs attached
+        # Idempotent: a re-run after a partial failure uploads the SBOMs
+        # to the existing release instead of failing on a duplicate.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          python3 scripts/release-notes.py "$version" > notes.md
+          ls -l sboms
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME exists, uploading SBOMs"
+            gh release upload "$GITHUB_REF_NAME" sboms/* --clobber
+            exit 0
+          fi
+          prerelease=()
+          case "$version" in *-*) prerelease=(--prerelease);; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag \
+            --title "agent-control-spec $version" \
+            --notes-file notes.md "${prerelease[@]}" sboms/*
