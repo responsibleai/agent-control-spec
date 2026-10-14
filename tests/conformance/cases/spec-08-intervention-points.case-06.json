@@ -1,7 +1,7 @@
 {
  "$schema": "../cases.schema.json",
  "id": "spec-08-intervention-points.case-06",
- "spec_section": "8",
+ "spec_section": "4",
  "title": "output dispatches and normalizes escalate",
  "claimable": true,
  "operation": "evaluate",
@@ -25,7 +25,6 @@
  "expected": {
   "decision": "deny",
   "reason": "human_review",
-  "action_identity": "present",
   "approval": "present"
  }
 }

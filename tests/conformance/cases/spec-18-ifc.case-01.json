@@ -1,7 +1,7 @@
 {
   "$schema": "../cases.schema.json",
   "id": "spec-18-ifc.case-01",
-  "spec_section": "18",
+  "spec_section": "11",
   "title": "tool clearance dominates source labels and allows flow",
   "claimable": true,
   "operation": "evaluate",

@@ -194,12 +194,6 @@
       "type": "string"
      }
     },
-    "action_identity": {
-     "enum": [
-      "present",
-      "absent"
-     ]
-    },
     "approval": {
      "type": "string",
      "enum": [

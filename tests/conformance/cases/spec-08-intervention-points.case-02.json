@@ -1,7 +1,7 @@
 {
   "$schema": "../cases.schema.json",
   "id": "spec-08-intervention-points.case-02",
-  "spec_section": "8",
+  "spec_section": "4",
   "title": "pre model call dispatches and preserves deny reason",
   "claimable": true,
   "operation": "evaluate",

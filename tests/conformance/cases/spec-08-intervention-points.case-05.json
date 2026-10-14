@@ -1,7 +1,7 @@
 {
   "$schema": "../cases.schema.json",
   "id": "spec-08-intervention-points.case-05",
-  "spec_section": "8",
+  "spec_section": "4",
   "title": "post tool call dispatch projects known tool",
   "claimable": true,
   "operation": "evaluate",

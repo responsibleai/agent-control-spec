@@ -1,8 +1,8 @@
 {
  "$schema": "../cases.schema.json",
  "id": "spec-08-action-identity.case-08",
- "spec_section": "8",
- "title": "escalation returns canonical action identity",
+ "spec_section": "13",
+ "title": "escalation normalizes to a deny with an approval block",
  "claimable": true,
  "operation": "evaluate",
  "sdk_support": {
@@ -26,7 +26,6 @@
  "expected": {
   "decision": "deny",
   "reason": "approval_required",
-  "action_identity": "present",
   "approval": "present"
  }
 }
