@@ -19,11 +19,28 @@ The layering:
 - Hosts and frameworks integrate agent-hooks once and gain ACS (or any
   other interceptor) without bespoke glue.
 
-ACS decisions are pure: same manifest, same context, same annotations →
-same verdict. Escalation is expressed natively as a liftable deny
-(`deny` + `approval`); warnings ride on `allow`. The engine performs no
-transform application, no approval resolution, and no record keeping.
-Those are host obligations defined by agent-hooks.
+ACS decisions are deterministic: the same manifest, the same context,
+the same annotations and the same dispatcher results give the same
+verdict. A dispatcher is the host-trusted code that runs an annotator
+or a policy, so a dispatcher that reads a clock or the network breaks
+replay. The bundled Rego dispatcher blocks `http.send`, and it blocks
+the clock and random builtins (`time.now_ns`, `rand.intn`,
+`uuid.rfc4122`, `opa.runtime`), so a policy that calls one fails
+closed. Escalation is expressed natively as a liftable deny (`deny` +
+`approval`); warnings ride on `allow`.
+
+ACS computes verdicts and nothing else. It does not sandbox, it does
+not isolate processes, and it does not mediate a path that bypasses an
+intervention point. It applies no transform, resolves no approval and
+keeps no record. Enforcement is the job of the agent-hooks emitter and
+the host that owns it: the emitter blocks a denied action and hands back
+the transformed target the host must use. The host is fully trusted;
+conformance is a test result, not a certification. The threat model is
+in [specification section 21](spec/SPECIFICATION.md#21-security-considerations)
+and in the [agent-hooks threat model](https://github.com/responsibleai/agent-hooks/blob/main/docs/THREAT-MODEL.md).
+
+Security: see [SECURITY.md](SECURITY.md) for the trust model and how to
+report a vulnerability.
 
 ## Layout
 
@@ -48,7 +65,52 @@ parsing budgets and parser dependency details.
 
 Rust: add `agent-control-spec = "0.4.0-beta.1"` to `Cargo.toml`. Cargo
 does not match a pre-release from a bare version requirement, so name
-the exact string while the crate is pre-release.
+the exact string while the crate is pre-release. The bundled annotator
+dispatchers sit behind the `default-dispatchers` feature; the
+zero-config constructor below needs it:
+
+```toml
+[dependencies]
+agent-control-spec = { version = "0.4.0-beta.1", features = ["default-dispatchers"] }
+agent-hooks-sdk = "0.1.0-beta.2"
+serde_json = "1"
+```
+
+From a manifest to a registered interceptor:
+
+```rust
+use agent_control_spec::ActivatedPolicy;
+use agent_hooks::{AgentContextBuilder, EnforcementMode, InterceptionEmitter};
+use serde_json::json;
+
+async fn guard() -> Result<(), Box<dyn std::error::Error>> {
+    // Once per policy version: read the manifest, load and compile its
+    // Rego, and ready every bound intervention point.
+    let policy = ActivatedPolicy::activate_from_path("manifest.yaml")?;
+
+    // Register the policy with an agent-hooks emitter. The emitter
+    // applies verdicts; ACS only computes them.
+    let mut emitter = InterceptionEmitter::new(EnforcementMode::Enforce, None);
+    emitter.register(Box::new(policy.interceptor()));
+
+    // Emit one pre_tool_call context. A deny returns Err; an allow or
+    // transform returns the target the tool call must use.
+    let mut builder = AgentContextBuilder::new("demo-agent", "my-framework", "session-1");
+    let mut ctx = builder.pre_tool_call("call-1", "wire_transfer", json!({"amount": 100}));
+    match emitter.emit(&mut ctx).await {
+        Ok(outcome) => println!("proceed with {}", outcome.target),
+        Err(blocked) => println!("blocked: {blocked}"),
+    }
+    Ok(())
+}
+```
+
+`activate_from_path` installs the bundled dispatchers: Rego in process,
+Cedar through the built-in evaluator, and the bundled annotators, which
+make HTTPS calls during evaluation when the manifest declares
+annotators. A host that wants its own dispatchers uses
+`ActivatedPolicy::activate_with` or `Runtime::new`, and
+`AcsInterceptor::new(runtime)` wraps a runtime directly.
 
 Python: [SDK quickstart](sdk/python/README.md) and
 [composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
