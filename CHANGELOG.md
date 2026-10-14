@@ -122,6 +122,58 @@
 - The .NET end-to-end emitter test no longer returns early when the
   bare-name probe for the agent-hooks native library fails; the package
   ships the library and the test runs.
+- The bundled Cedar dispatcher builds the principal, action and resource
+  uids from their two parts instead of parsing `Type::"<id>"` as a Cedar
+  literal. A quote, a backslash or a `\u{..}` sequence in `agent.id` or a
+  tool name is now part of the id, so a forbid on the literal id fires and
+  an escape no longer names another principal or fails the evaluation.
+- The bundled Cedar dispatcher parses its policy set, and reads any
+  `entities_path` or `schema_path` file, once. `ActivatedPolicy::activate`
+  warms it, so a decision reads no file and parses no policy, and a file
+  edited after activation is not read again. A policy set that does not
+  parse now fails activation instead of the first decision.
+- Annotator HTTP error bodies stay out of verdicts. A non-2xx response is
+  reported as its status code, canonical reason, body size and a digest
+  prefix; the body text, which can echo the policy target, never reaches
+  `verdict.message`. The runtime also strips control characters from an
+  annotation failure detail and cuts it at 256 bytes.
+- The annotator HTTP client no longer follows redirects. A 3xx from the
+  configured endpoint fails the dispatch closed, so an API key under a
+  custom header such as `api-key` is sent to the configured origin only.
+- The Cedar IFC library fails closed when the resource carries
+  `clearance_dominated_labels` but the snapshot carries no labels:
+  `ifc_source_labels_missing_input` at `input` and
+  `ifc_result_labels_missing_output` at `output`, in `ifc.cedar` and
+  `agt_default.cedar`.
+- `extends` merging follows specification 2.2 for intervention points: a
+  point named in more than one document must carry the same
+  `policy_target`, `policy_target_kind`, `tool_name_from` and `policy` in
+  each, and only its annotations are unioned. A document can no longer add
+  `tool_name_from` or `policy_target_kind` to a point another document
+  defined, and an overlay that adds a binding restates the point's
+  `policy_target` and `policy`. A fetched document may not declare
+  `tools`; the catalog is host configuration.
+- The bundled Rego dispatcher shadows `time.now_ns`, `rand.intn`,
+  `uuid.rfc4122` and `opa.runtime` the way it shadows `http.send`: a rule
+  that calls one fails closed with `runtime_error:policy_invocation_failed`.
+- The FFI releases a host callback's `*err_out` string through the
+  registered free callback instead of the engine allocator.
+- The .NET `AcsInterceptor` and `AcsHostInterceptor` hold the native
+  handle in a reference-counted `SafeHandle`, so `Dispose` waits for a
+  call in flight and a later call throws `ObjectDisposedException`.
+  `AcsHostInterceptor` rejects a manifest path that is not encodable as
+  UTF-8 instead of encoding it lossily.
+- Telemetry JSON writes `intervention_point`, `decision` and
+  `enforcement_mode` with their wire names (`pre_tool_call`,
+  `evaluate_only`), not lowercased Rust names.
+- `transform.path` must be rooted at `$target`. The pre-0.4
+  `$policy_target` root is `runtime_error:transform_invalid`; a path rooted
+  elsewhere is `runtime_error:transform_target_forbidden`, and a malformed
+  `$target` path is no longer misreported as forbidden.
+- The Python binding fails closed when a host dispatcher returns a string
+  that is not encodable as UTF-8 or an integer outside the 64-bit range,
+  instead of rewriting the value.
+- CI runs the stock Rego library tests under `policy/lib`.
 
 ## 0.4.0-alpha.4
 
