@@ -930,14 +930,20 @@ unsafe impl Sync for HostCtx {}
 
 impl HostCtx {
     /// Copy a string the host returned, then hand the original back to
-    /// the host's own allocator.
-    unsafe fn take(&self, raw: *mut c_char) -> Option<String> {
+    /// the host's own allocator. `Ok(None)` is a NULL return, which the
+    /// callback uses to report a failure through `*err_out`; a string
+    /// that is not UTF-8 is its own error, not a missing result.
+    unsafe fn take(&self, what: &str, raw: *mut c_char) -> Result<Option<String>, RuntimeError> {
         if raw.is_null() {
-            return None;
+            return Ok(None);
         }
         let copied = CStr::from_ptr(raw).to_str().ok().map(str::to_string);
         self.release(raw);
-        copied
+        copied.map(Some).ok_or_else(|| {
+            RuntimeError::PolicyInvocationFailed(format!(
+                "host {what} returned a string that is not valid UTF-8"
+            ))
+        })
     }
 
     /// Return a string the host allocated to the host's free callback.
@@ -1006,7 +1012,7 @@ impl AnnotatorDispatcher for HostAnnotatorDispatcher {
                 &mut err,
             )
         };
-        let Some(json) = (unsafe { self.host.take(raw) }) else {
+        let Some(json) = unsafe { self.host.take("annotator", raw) }? else {
             return Err(unsafe { self.host.error("annotator", &mut err) });
         };
         serde_json::from_str(&json).map_err(|e| {
@@ -1029,7 +1035,7 @@ impl PolicyDispatcher for HostPolicyDispatcher {
 
         let mut err: *mut c_char = std::ptr::null_mut();
         let raw = unsafe { (self.call)(self.host.ctx, payload.as_ptr(), &mut err) };
-        let Some(json) = (unsafe { self.host.take(raw) }) else {
+        let Some(json) = unsafe { self.host.take("policy dispatcher", raw) }? else {
             return Err(unsafe { self.host.error("policy dispatcher", &mut err) });
         };
         serde_json::from_str(&json).map_err(|e| {
@@ -2778,9 +2784,6 @@ intervention_points:
         }
     }
 
-    /// What the host's free callback has been handed, by pointer.
-    static FREED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
-
     unsafe extern "C" fn failing_policy(
         _ctx: *mut c_void,
         _invocation: *const c_char,
@@ -2790,9 +2793,92 @@ intervention_points:
         std::ptr::null_mut()
     }
 
-    unsafe extern "C" fn counting_free(_ctx: *mut c_void, value: *mut c_char) {
-        FREED.lock().unwrap().push(value as usize);
+    /// Counts, in the `usize` the dispatcher context points at, the
+    /// strings the host's free callback is handed.
+    unsafe extern "C" fn counting_free(ctx: *mut c_void, value: *mut c_char) {
+        *(ctx as *mut usize) += 1;
         drop(CString::from_raw(value));
+    }
+
+    /// `take` tells a NULL result (the callback failed and set
+    /// `*err_out`) from a result that is not UTF-8, and releases the
+    /// latter through the host's free callback.
+    #[test]
+    fn take_reports_a_non_utf8_result_as_its_own_error() {
+        let mut freed = 0_usize;
+        let host = HostCtx {
+            ctx: (&mut freed as *mut usize).cast(),
+            free: Some(counting_free),
+        };
+        let raw = CString::new(vec![b'{', 0xFF, b'}']).unwrap().into_raw();
+        let error = unsafe { host.take("policy dispatcher", raw) }.unwrap_err();
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert_eq!(
+            error.detail(),
+            "host policy dispatcher returned a string that is not valid UTF-8"
+        );
+        assert_eq!(freed, 1);
+
+        assert!(matches!(
+            unsafe { host.take("policy dispatcher", std::ptr::null_mut()) },
+            Ok(None)
+        ));
+        let raw = CString::new("{}").unwrap().into_raw();
+        assert_eq!(
+            unsafe { host.take("policy dispatcher", raw) }
+                .unwrap()
+                .as_deref(),
+            Some("{}")
+        );
+        assert_eq!(freed, 2);
+    }
+
+    unsafe extern "C" fn non_utf8_policy(
+        _ctx: *mut c_void,
+        _invocation: *const c_char,
+        _err_out: *mut *mut c_char,
+    ) -> *mut c_char {
+        CString::new(vec![b'{', 0xFF, b'}']).unwrap().into_raw()
+    }
+
+    /// A result string that is not UTF-8 is reported as such, not as a
+    /// callback that failed without a message, and still goes back to
+    /// the host's free callback.
+    #[test]
+    fn non_utf8_host_result_is_named_in_the_verdict() {
+        let dir = std::env::temp_dir().join(format!("acs-ffi-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = manifest_file(&dir);
+        let path = manifest.to_bytes();
+        let mut freed = 0_usize;
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_interceptor_new_with_hooks(
+                path.as_ptr(),
+                path.len(),
+                None,
+                std::ptr::null_mut(),
+                Some(non_utf8_policy),
+                (&mut freed as *mut usize).cast(),
+                None,
+                std::ptr::null_mut(),
+                Some(counting_free),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        assert!(err.is_null(), "constructor failed");
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hi","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+
+        assert_eq!(verdict["decision"], "deny");
+        assert_eq!(verdict["reason"], "runtime_error:policy_invocation_failed");
+        assert_eq!(freed, 1, "the result string went back to the host once");
     }
 
     /// A host callback that fails sets `*err_out` to a string it
@@ -2805,7 +2891,7 @@ intervention_points:
         std::fs::create_dir_all(&dir).unwrap();
         let manifest = manifest_file(&dir);
         let path = manifest.to_bytes();
-        FREED.lock().unwrap().clear();
+        let mut freed = 0_usize;
 
         let mut err: *mut c_char = std::ptr::null_mut();
         let handle = unsafe {
@@ -2815,7 +2901,7 @@ intervention_points:
                 None,
                 std::ptr::null_mut(),
                 Some(failing_policy),
-                std::ptr::null_mut(),
+                (&mut freed as *mut usize).cast(),
                 None,
                 std::ptr::null_mut(),
                 Some(counting_free),
@@ -2835,10 +2921,8 @@ intervention_points:
 
         assert_eq!(verdict["decision"], "deny");
         assert_eq!(verdict["reason"], "runtime_error:policy_invocation_failed");
-        let freed = FREED.lock().unwrap().clone();
         assert_eq!(
-            freed.len(),
-            1,
+            freed, 1,
             "the error string went back to the host exactly once"
         );
     }
