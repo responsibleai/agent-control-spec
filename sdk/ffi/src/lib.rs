@@ -872,16 +872,18 @@ pub unsafe extern "C" fn acs_policy_free(handle: *mut AcsActivatedPolicy) {
 // absent annotation: a classifier that could not be reached must not
 // read as "found nothing".
 //
-// Ownership: a string the host returns is freed by the host, through
-// the `free` callback registered alongside. The engine copies what it
-// needs first. It never calls `acs_free_string` on host memory.
+// Ownership: a string the host returns, the result and the `*err_out`
+// message alike, is freed by the host, through the `free` callback
+// registered alongside. The engine copies what it needs first. It never
+// calls `acs_free_string` on host memory.
 // ---------------------------------------------------------------------
 
 /// Free a string a host callback returned.
 pub type AcsHookFree = unsafe extern "C" fn(ctx: *mut c_void, value: *mut c_char);
 
 /// Classify one annotation. Returns the annotation value as JSON, or
-/// NULL with `*err_out` set.
+/// NULL with `*err_out` set. Both strings are host allocated; the engine
+/// copies each and hands it back through the registered `AcsHookFree`.
 ///
 /// With manifest contract `0.5.0-alpha.1`, `policy_input_json` is staged:
 /// `annotations` contains the full outputs of direct `needs` dependencies
@@ -901,7 +903,9 @@ pub type AcsAnnotatorFn = unsafe extern "C" fn(
 ) -> *mut c_char;
 
 /// Evaluate one prepared policy invocation. Returns the policy output as
-/// JSON, or NULL with `*err_out` set.
+/// JSON, or NULL with `*err_out` set. Both strings are host allocated;
+/// the engine copies each and hands it back through the registered
+/// `AcsHookFree`.
 pub type AcsPolicyFn = unsafe extern "C" fn(
     ctx: *mut c_void,
     invocation_json: *const c_char,
@@ -932,32 +936,37 @@ impl HostCtx {
             return None;
         }
         let copied = CStr::from_ptr(raw).to_str().ok().map(str::to_string);
+        self.release(raw);
+        copied
+    }
+
+    /// Return a string the host allocated to the host's free callback.
+    /// Without one the string is left to the host: the engine never
+    /// frees host memory with its own allocator.
+    unsafe fn release(&self, raw: *mut c_char) {
         if let Some(free) = self.free {
             free(self.ctx, raw);
         }
-        copied
     }
-}
 
-fn host_error(what: &str, err_out: *mut *mut c_char) -> RuntimeError {
-    let detail = if err_out.is_null() {
-        None
-    } else {
-        let raw = unsafe { *err_out };
-        if raw.is_null() {
+    /// The error for a callback that returned NULL. `*err_out` is a
+    /// string the host allocated; it is copied, then released through
+    /// the host's free callback like every other host string.
+    unsafe fn error(&self, what: &str, err_out: *mut *mut c_char) -> RuntimeError {
+        let detail = if err_out.is_null() || (*err_out).is_null() {
             None
         } else {
-            let message = unsafe { CStr::from_ptr(raw) }
-                .to_string_lossy()
-                .into_owned();
-            unsafe { acs_free_string(raw) };
+            let raw = *err_out;
+            let message = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            self.release(raw);
+            *err_out = std::ptr::null_mut();
             Some(message)
-        }
-    };
-    RuntimeError::PolicyInvocationFailed(match detail {
-        Some(message) => format!("host {what} failed: {message}"),
-        None => format!("host {what} failed without a message"),
-    })
+        };
+        RuntimeError::PolicyInvocationFailed(match detail {
+            Some(message) => format!("host {what} failed: {message}"),
+            None => format!("host {what} failed without a message"),
+        })
+    }
 }
 
 struct HostAnnotatorDispatcher {
@@ -998,7 +1007,7 @@ impl AnnotatorDispatcher for HostAnnotatorDispatcher {
             )
         };
         let Some(json) = (unsafe { self.host.take(raw) }) else {
-            return Err(host_error("annotator", &mut err));
+            return Err(unsafe { self.host.error("annotator", &mut err) });
         };
         serde_json::from_str(&json).map_err(|e| {
             RuntimeError::PolicyInvocationFailed(format!("host annotator returned non JSON: {e}"))
@@ -1021,7 +1030,7 @@ impl PolicyDispatcher for HostPolicyDispatcher {
         let mut err: *mut c_char = std::ptr::null_mut();
         let raw = unsafe { (self.call)(self.host.ctx, payload.as_ptr(), &mut err) };
         let Some(json) = (unsafe { self.host.take(raw) }) else {
-            return Err(host_error("policy dispatcher", &mut err));
+            return Err(unsafe { self.host.error("policy dispatcher", &mut err) });
         };
         serde_json::from_str(&json).map_err(|e| {
             RuntimeError::PolicyInvocationFailed(format!("host policy returned non JSON: {e}"))
@@ -2767,6 +2776,71 @@ intervention_points:
         if !value.is_null() {
             drop(CString::from_raw(value));
         }
+    }
+
+    /// What the host's free callback has been handed, by pointer.
+    static FREED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+    unsafe extern "C" fn failing_policy(
+        _ctx: *mut c_void,
+        _invocation: *const c_char,
+        err_out: *mut *mut c_char,
+    ) -> *mut c_char {
+        *err_out = CString::new("host policy exploded").unwrap().into_raw();
+        std::ptr::null_mut()
+    }
+
+    unsafe extern "C" fn counting_free(_ctx: *mut c_void, value: *mut c_char) {
+        FREED.lock().unwrap().push(value as usize);
+        drop(CString::from_raw(value));
+    }
+
+    /// A host callback that fails sets `*err_out` to a string it
+    /// allocated. The engine copies the text into the verdict and gives
+    /// the string back through the host's free callback, never to its
+    /// own allocator.
+    #[test]
+    fn host_error_strings_are_released_through_the_host_free_callback() {
+        let dir = std::env::temp_dir().join(format!("acs-ffi-err-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = manifest_file(&dir);
+        let path = manifest.to_bytes();
+        FREED.lock().unwrap().clear();
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_interceptor_new_with_hooks(
+                path.as_ptr(),
+                path.len(),
+                None,
+                std::ptr::null_mut(),
+                Some(failing_policy),
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(),
+                Some(counting_free),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        assert!(err.is_null(), "constructor failed");
+        assert!(!handle.is_null());
+
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hi","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+
+        assert_eq!(verdict["decision"], "deny");
+        assert_eq!(verdict["reason"], "runtime_error:policy_invocation_failed");
+        let freed = FREED.lock().unwrap().clone();
+        assert_eq!(
+            freed.len(),
+            1,
+            "the error string went back to the host exactly once"
+        );
     }
 
     /// Manifest provenance stays inside the engine. A local manifest may
