@@ -97,6 +97,31 @@
   Rego builtins the bundled dispatcher shadows (12.3); the Cedar parse-once
   cache (12.4); bounded runtime error messages (13); wire names in
   telemetry (19).
+- The conformance report `conformance/agent-hooks/REPORT.md` carries the
+  AGENT-HOOKS-0.1 section 13.3 claim tuple (framework, adapter version,
+  spec version, capabilities, profiles, identity provider and whether it
+  is content-derived, SDK version, posture, buffered output, kit tag and
+  commit), a Skipped column per part and the list of skipped vectors
+  with the capability each is gated on. The harness pins the result
+  (46 passed, 0 failed, 27 skipped by capability) and fails when a pass
+  turns into a skip or the corpus shrinks.
+- A test recomputes the digest of the vendored agent-hooks vectors the
+  way `PROVENANCE.md` documents and fails when the two disagree.
+- The conformance corpus drops the `action_identity` expectation, which
+  no runner asserted and the runtime does not produce (identity is a
+  host obligation under AGENT-HOOKS-0.1 section 10); the runner now
+  rejects expectation keys it does not assert. Case `spec_section`
+  values follow the current section numbering and a test checks each
+  against the specification headings and the coverage row that cites
+  the case. The unused `verify_release_claims.py` is removed; the Rust
+  coverage test already covers its checks.
+- The engine fixture README describes the current transform contract.
+  The scratch `probe.rs` test is gone. Tests that read files outside the
+  engine package resolve them through one helper that explains why they
+  cannot run from a packaged crate.
+- The .NET end-to-end emitter test no longer returns early when the
+  bare-name probe for the agent-hooks native library fails; the package
+  ships the library and the test runs.
 
 ## 0.4.0-alpha.4
 
