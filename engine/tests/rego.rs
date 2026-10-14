@@ -367,6 +367,50 @@ verdict := {"decision": "allow"} if not deny
     );
 }
 
+/// A decision that reads the clock, randomness or the runtime cannot be
+/// replayed from its recorded input. Each such builtin is shadowed so a
+/// rule that calls it fails closed, whatever the rule would have decided.
+#[test]
+fn a_policy_reading_a_nondeterministic_builtin_fails_closed() {
+    let calls = [
+        ("time.now_ns", "time.now_ns() > 0"),
+        ("rand.intn", "rand.intn(\"seed\", 10) >= 0"),
+        ("uuid.rfc4122", "uuid.rfc4122(\"seed\") != \"\""),
+        ("opa.runtime", "opa.runtime().version != \"\""),
+    ];
+    for (name, call) in calls {
+        let dir = test_artifact_dir(&format!("rego-nondeterministic-{}", name.replace('.', "-")));
+        fs::write(
+            dir.join("clock.rego"),
+            format!(
+                "package clock\n\nfresh if {call}\n\nverdict := {{\"decision\": \"allow\"}} if fresh\n\nverdict := {{\"decision\": \"deny\"}} if not fresh\n"
+            ),
+        )
+        .unwrap();
+
+        let error = RegorusPolicyDispatcher::new()
+            .evaluate(&rego_invocation(
+                "data.clock.verdict",
+                Some(dir.display().to_string()),
+                BTreeMap::new(),
+                json!({"policy_target": {"value": {}}}),
+            ))
+            .unwrap_err();
+
+        assert_eq!(
+            error.reason(),
+            "runtime_error:policy_invocation_failed",
+            "{name}: {}",
+            error.detail()
+        );
+        assert!(
+            error.detail().contains(&format!("{name} is not available")),
+            "{name}: {}",
+            error.detail()
+        );
+    }
+}
+
 #[test]
 fn rego_dispatcher_rejects_malformed_adapter_data_paths() {
     let mut adapter_config = BTreeMap::new();

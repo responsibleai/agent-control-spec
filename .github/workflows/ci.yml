@@ -39,6 +39,9 @@ jobs:
           echo "69da5179ee403d10fa11bab6cfb4ffb0d23dba5f9b682fa977db772a1da5670f  opa" | sha256sum -c -
           chmod +x opa
           sudo install -m 0755 opa /usr/local/bin/opa
+      # The stock Rego library under policy/lib has its own test corpus,
+      # run by `opa test` with the OPA installed above.
+      - run: policy/lib/run_tests.sh
       - run: cargo test --workspace --all-features --locked
         env:
           AGENT_CONTROL_REQUIRE_OPA: "1"

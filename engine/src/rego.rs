@@ -111,6 +111,12 @@ use std::{
 
 /// Eval timeout override, in milliseconds. Shared with the legacy `opa`
 /// CLI dispatcher so hosts that already tune it keep their configuration.
+///
+/// The variable is read once, when a runner is built, and applies to
+/// every policy that runner evaluates. It is process-wide: there is no
+/// per-manifest or per-runtime setting, so two runtimes in one process
+/// that need different budgets must each build their own runner. The
+/// default is 5000 ms.
 pub const REGO_TIMEOUT_ENV: &str = "ACS_OPA_TIMEOUT_MS";
 const DEFAULT_REGO_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -958,6 +964,7 @@ fn build_engine(key: &CacheKey) -> Result<regorus::Engine, RuntimeError> {
     // so surfacing it in host logs would be a new disclosure path.
     engine.set_gather_prints(true);
     shadow_http_send(&mut engine)?;
+    shadow_nondeterministic_builtins(&mut engine)?;
     if let Some(bundle) = &key.inline_bundle {
         load_in_memory_bundle(&mut engine, &bundle.0)?;
     }
@@ -1001,6 +1008,43 @@ fn shadow_http_send(engine: &mut regorus::Engine) -> Result<(), RuntimeError> {
                 "failed to disable the http.send builtin: {err}"
             ))
         })
+}
+
+/// Builtins whose result depends on the moment or on the process rather
+/// than on the input: a policy that reads them is not reproducible from
+/// its recorded input, so the same snapshot can allow once and deny
+/// later and no audit can replay the decision. Each is shadowed so a
+/// call raises and the evaluation fails closed with
+/// `runtime_error:policy_invocation_failed`.
+pub const NONDETERMINISTIC_BUILTINS: [(&str, u8); 4] = [
+    ("time.now_ns", 0),
+    ("rand.intn", 2),
+    ("uuid.rfc4122", 1),
+    ("opa.runtime", 0),
+];
+
+fn shadow_nondeterministic_builtins(engine: &mut regorus::Engine) -> Result<(), RuntimeError> {
+    for (name, arity) in NONDETERMINISTIC_BUILTINS {
+        engine
+            .add_extension(
+                name.to_string(),
+                arity,
+                Box::new(move |_params| {
+                    Err(std::io::Error::other(format!(
+                        "{name} is not available: the in-process Rego dispatcher evaluates \
+                         policy deterministically, and a decision that depends on the clock, \
+                         randomness or the runtime cannot be replayed from its input"
+                    ))
+                    .into())
+                }),
+            )
+            .map_err(|err| {
+                RuntimeError::PolicyInvocationFailed(format!(
+                    "failed to disable the {name} builtin: {err}"
+                ))
+            })?;
+    }
+    Ok(())
 }
 
 /// Which OPA loading rule applies to a root, because `opa eval` treats a
