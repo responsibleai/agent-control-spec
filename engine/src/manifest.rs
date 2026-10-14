@@ -4182,9 +4182,7 @@ intervention_points:
     /// a host declared annotator may set only `from`.
     #[test]
     fn remote_binding_cannot_add_needs_to_host_declared_annotator() {
-        let remote = format!(
-            "agent_control_specification_version: 0.4.0-alpha.1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n"
-        );
+        let remote = "agent_control_specification_version: 0.4.0-alpha.1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n".to_string();
         let path = root_extending_url(
             "url-remote-needs-on-host-annotator.yaml",
             REMOTE,
@@ -4204,9 +4202,7 @@ intervention_points:
     /// result is not something reading the snapshot alone would reach.
     #[test]
     fn remote_declared_annotator_cannot_need_a_host_declared_one() {
-        let remote = format!(
-            "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n"
-        );
+        let remote = "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n".to_string();
         let path = root_extending_url(
             "url-remote-needs-host-result.yaml",
             REMOTE,

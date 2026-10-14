@@ -475,10 +475,6 @@ fn all_committed_manifest_version_values_are_supported() {
         repo_root().join("sdk"),
         repo_root().join("generator"),
         repo_root().join("tests"),
-        repo_root()
-            .parent()
-            .expect("policy-engine should live under repository root")
-            .join("agent-governance-python"),
     ];
     let mut versions = Vec::new();
     for root in roots {

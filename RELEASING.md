@@ -17,10 +17,10 @@ the tag's publication set. The tag workflow does not publish the generator.
    embeds are stamped from `package.json` at publish time
    (`sdk/node/scripts/stamp-binding-version.mjs`, run by the release
    workflow), and the CI drift check compares the file modulo those
-   strings — committing a regenerated copy is harmless but never
+   strings. Committing a regenerated copy is harmless but never
    required.
 2. Dry-run: Actions → release → Run workflow (`dry_run: true`). Builds
-   and attests everything, uploads nothing.
+   everything and produces SBOMs; attests and uploads nothing.
 3. Tag the merged commit and push:
 
    ```bash

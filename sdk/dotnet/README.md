@@ -1,4 +1,4 @@
-# Agent Control Specification — .NET wrapper
+# Agent Control Specification .NET wrapper
 
 `ResponsibleAI.AgentControlSpec` wraps the ACS policy decision engine
 as an [agent-hooks](https://github.com/responsibleai/agent-hooks)
@@ -10,6 +10,15 @@ using var acs = AcsInterceptor.FromPath("manifest.yaml", name: "acs");
 var emitter = new InterceptionEmitter(EnforcementMode.Enforce);
 emitter.Register(acs, "acs");
 ```
+
+## Install
+
+```sh
+dotnet add package ResponsibleAI.AgentControlSpec --prerelease
+```
+
+The package is pre-release, so `--prerelease` is required until a
+stable version ships.
 
 Manifests can also be checked on their own, without building a runtime
 or having `opa` on PATH. Useful when generating or migrating manifests:
@@ -40,7 +49,7 @@ engine accepts. Read it rather than hardcoding the set.
 
 `AcsInterceptor` readies a policy lazily, on the first emission. A host
 that pins a policy version and serves traffic against it wants the
-opposite split — pay to read and compile the bundle once, at a moment of
+opposite split: pay to read and compile the bundle once, at a moment of
 its choosing, then evaluate a named intervention point with nothing left
 to set up. Compiling is bounded by the eval timeout: a policy too slow to
 compile in that window activates anyway, not necessarily fully readied, and pays
@@ -100,7 +109,7 @@ A manifest names its policy bundle relative to itself, so the manifest
 path is the only one that has to be right; the host's working directory
 does not matter.
 
-`bench/` measures this surface — activation cost, warm p50/p95/p99, and
+`bench/` measures this surface: activation cost, warm p50/p95/p99, and
 throughput at concurrency 32. See [bench/README.md](bench/README.md).
 
 Native libraries: this wrapper loads `agent_control_spec_ffi` (built

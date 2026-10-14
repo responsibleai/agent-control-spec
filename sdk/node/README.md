@@ -1,4 +1,4 @@
-# Agent Control Specification — Node wrapper
+# Agent Control Specification Node wrapper
 
 `@responsibleai/agent-control-spec` wraps the ACS policy decision
 engine as an [agent-hooks](https://github.com/responsibleai/agent-hooks)
@@ -110,8 +110,8 @@ validateManifestFile("manifest.yaml");
 `supportedManifestVersions()` reports the grammar versions this engine
 accepts. Read it rather than hardcoding the set.
 
-Build/test: `npm ci && npm test` (compiles the native engine binding —
-Rust toolchain required).
+Build/test: `npm ci && npm test` (compiles the native engine binding; a
+Rust toolchain is required).
 
 Benchmark: `npm run bench` runs `bench/activation.bench.mjs` against
 `examples/bank_agent`, reporting activation cost, first-evaluate cost,

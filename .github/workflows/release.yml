@@ -32,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: Build and attest everything, skip all uploads
+        description: Build everything and produce SBOMs; skip attestation and all uploads
         type: boolean
         default: true
 

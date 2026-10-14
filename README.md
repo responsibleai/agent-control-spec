@@ -7,23 +7,23 @@ contract.
 
 The layering:
 
-- **agent-hooks** defines the control contract: eight interception
+- agent-hooks defines the control contract: eight interception
   points, the `AgentContext` payload, the three-verdict model
   (`allow` / `deny` / `transform`, with warnings and liftable denies),
   host obligations, composition, and the conformance test kit.
-- **ACS (this repository)** is a conformant *interceptor*: a host
-  framework emits interception points through an agent-hooks emitter,
-  and ACS evaluates the bound policy — manifest binding, Cedar / Rego /
-  custom dispatchers, annotators, information-flow labels — and
-  returns an agent-hooks verdict.
+- ACS, this repository, is a conformant interceptor: a host framework
+  emits interception points through an agent-hooks emitter, and ACS
+  evaluates the bound policy (manifest binding, Cedar, Rego or custom
+  dispatchers, annotators, information-flow labels) and returns an
+  agent-hooks verdict.
 - Hosts and frameworks integrate agent-hooks once and gain ACS (or any
   other interceptor) without bespoke glue.
 
 ACS decisions are pure: same manifest, same context, same annotations →
 same verdict. Escalation is expressed natively as a liftable deny
 (`deny` + `approval`); warnings ride on `allow`. The engine performs no
-transform application, no approval resolution, and no record keeping —
-those are host obligations defined by agent-hooks.
+transform application, no approval resolution, and no record keeping.
+Those are host obligations defined by agent-hooks.
 
 ## Layout
 
@@ -46,6 +46,10 @@ Rust builds require Rust 1.89 or newer. See
 [manifest parsing](docs/manifest-parsing.md) for YAML typing rules, host-controlled
 parsing budgets and parser dependency details.
 
+Rust: add `agent-control-spec = "0.4.0-beta.1"` to `Cargo.toml`. Cargo
+does not match a pre-release from a bare version requirement, so name
+the exact string while the crate is pre-release.
+
 Python: [SDK quickstart](sdk/python/README.md) and
 [composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
 
@@ -53,6 +57,9 @@ Node: `npm install @responsibleai/agent-control-spec@alpha`, see the
 [Node wrapper](sdk/node/README.md). Keep the `@alpha` tag while the
 package is pre-release: npm's `latest` tag can lag the newest
 pre-release, so a plain `npm install` may fetch an older build.
+
+.NET: `dotnet add package ResponsibleAI.AgentControlSpec --prerelease`,
+see the [.NET wrapper](sdk/dotnet/README.md).
 
 Current version: `0.4.0-beta.1`, the first beta of the re-based runtime.
 It depends on agent-hooks `0.1.0-beta.2`.

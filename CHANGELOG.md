@@ -2,6 +2,10 @@
 
 ## 0.4.0-beta.1
 
+- Package and repository READMEs drop em dashes and bold-label bullets,
+  name the crates.io and NuGet install commands, and the dry-run
+  description says what the dry run does. Clippy runs on test targets
+  in CI.
 - Promote the runtime SDKs and generator metadata from
   `0.4.0-alpha.4` to `0.4.0-beta.1`.
 - Keep the package version independent from manifest contract

@@ -70,6 +70,7 @@ impl CountingAllowPolicy {
         })
     }
 
+    #[cfg(feature = "default-dispatchers")]
     fn calls(&self) -> usize {
         *self.calls.lock().unwrap()
     }
@@ -650,7 +651,7 @@ fn equality_ignores_composition_and_keeps_provenance() {
     assert_eq!(marked, parse(BARE).mark_url_sourced().unwrap());
     assert_eq!(
         serde_json::to_value(&marked).unwrap(),
-        serde_json::to_value(&parse(BARE)).unwrap(),
+        serde_json::to_value(parse(BARE)).unwrap(),
         "the mark is not grammar"
     );
 
