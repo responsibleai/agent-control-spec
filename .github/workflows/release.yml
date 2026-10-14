@@ -249,7 +249,9 @@ jobs:
           ls -l pack
           # Rehearse the publish of every tarball so a bad path or
           # manifest fails here, on the dry run too, not at upload time.
-          for t in pack/*.tgz; do npm publish "./$t" --dry-run --access public; done
+          V=$(node -p "require('./package.json').version")
+          case "$V" in *-*) T=alpha;; *) T=latest;; esac
+          for t in pack/*.tgz; do npm publish "./$t" --dry-run --access public --tag "$T"; done
         working-directory: sdk/node
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
