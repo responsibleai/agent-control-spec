@@ -72,10 +72,12 @@ impl PolicyDispatcher for BindingPolicyDispatcher {
         match invocation {
             #[cfg(feature = "rego")]
             PreparedPolicyInvocation::Rego(_) => self.rego.warm(invocation),
+            #[cfg(feature = "cedar")]
+            PreparedPolicyInvocation::Cedar(_) => self.cedar.warm(invocation),
             // The remaining engines have nothing to prepare: the `opa`
-            // runner shells out per decision, Cedar compiles per
-            // evaluation, a `test` policy is a literal verdict, and a
-            // custom adapter is not this dispatcher's to ready.
+            // runner shells out per decision, a `test` policy is a
+            // literal verdict, and a custom adapter is not this
+            // dispatcher's to ready.
             _ => Ok(()),
         }
     }
@@ -128,6 +130,32 @@ mod tests {
             input: json!({}),
             canonical_input: "{}".to_string(),
         })
+    }
+
+    /// Over a binding, a Cedar policy is readied at activation like a
+    /// Rego one: a policy set that does not parse fails `warm`, so it
+    /// fails activation rather than the first decision.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn cedar_policy_is_warmed_and_a_broken_one_fails_warm() {
+        use crate::policy::CedarPolicyInvocation;
+
+        let cedar = |policy_set: &str| {
+            PreparedPolicyInvocation::Cedar(CedarPolicyInvocation {
+                policy_set: Some(policy_set.to_string()),
+                policy_path: None,
+                entities_path: None,
+                schema_path: None,
+                input: json!({}),
+                canonical_input: "{}".to_string(),
+            })
+        };
+        let dispatcher = BindingPolicyDispatcher::new();
+        let err = dispatcher.warm(&cedar("not cedar")).unwrap_err();
+        assert_eq!(err.reason(), "runtime_error:policy_invocation_failed");
+        dispatcher
+            .warm(&cedar("permit(principal, action, resource);"))
+            .unwrap();
     }
 
     #[test]

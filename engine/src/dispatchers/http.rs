@@ -359,7 +359,9 @@ mod tests {
                 body.len()
             );
             stream.write_all(head.as_bytes()).unwrap();
-            stream.write_all(body.as_bytes()).unwrap();
+            // The client may stop reading a large body once it has what
+            // it needs, so a short write here is not a test failure.
+            let _ = stream.write_all(body.as_bytes());
             String::from_utf8_lossy(&buffer).into_owned()
         });
         (url, handle)

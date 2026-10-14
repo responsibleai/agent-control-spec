@@ -743,12 +743,12 @@ fn advice_rank(decision: Option<&str>) -> u8 {
 ///   kind of error, not Cedar's message, which can quote snapshot values.
 ///
 /// The policy set, the schema and the entities are parsed once and kept.
-/// [`PolicyDispatcher::warm`] fills the cache at activation and
-/// evaluation reuses the entry, so a decision reads no file and parses
-/// no policy. The cache is keyed by the policy text or `policy_path`,
-/// `entities_path` and `schema_path`; a file edited after activation
-/// does not change later decisions until a new dispatcher, or a new
-/// activation with a different path, parses it again. Clones share one
+/// [`PolicyDispatcher::warm`] reads and parses them at activation,
+/// replacing any earlier entry, and evaluation reuses the entry, so a
+/// decision reads no file and parses no policy. The cache is keyed by
+/// the policy text or `policy_path`, `entities_path` and `schema_path`;
+/// a file edited after activation is read again when the dispatcher is
+/// next warmed, which a host does by activating again. Clones share one
 /// cache. Past [`MAX_CACHED_POLICY_SETS`] distinct keys, evaluation
 /// still works, it just parses on every call.
 #[cfg(feature = "cedar")]
@@ -796,14 +796,14 @@ impl PolicyDispatcher for CedarBuiltinDispatcher {
     }
 
     /// Parses the policy set, the schema and the entities and keeps them
-    /// for evaluation. A policy set that does not parse, or a path that
-    /// does not read, is reported here so activation fails instead of
-    /// the first decision.
+    /// for evaluation. The files are read here, every time: a host that
+    /// reuses one dispatcher across activations gets the current file
+    /// at each activation. A policy set that does not parse, or a path
+    /// that does not read, is reported here so activation fails instead
+    /// of the first decision.
     fn warm(&self, invocation: &PreparedPolicyInvocation) -> Result<(), RuntimeError> {
         match invocation {
-            PreparedPolicyInvocation::Cedar(invocation) => {
-                self.cache.prepared(invocation).map(|_| ())
-            }
+            PreparedPolicyInvocation::Cedar(invocation) => self.cache.refresh(invocation),
             // Another engine's policy is not this dispatcher's to prepare.
             _ => Ok(()),
         }
@@ -898,6 +898,25 @@ mod builtin {
     impl PreparedCache {
         pub(super) fn len(&self) -> usize {
             self.0.lock().map(|cache| cache.len()).unwrap_or(0)
+        }
+
+        /// Reads and parses the state for `invocation` and replaces the
+        /// cached entry. Activation calls this so the files are read at
+        /// each activation, not just the first.
+        pub(super) fn refresh(
+            &self,
+            invocation: &CedarPolicyInvocation,
+        ) -> Result<(), RuntimeError> {
+            let key = CacheKey::of(invocation);
+            let prepared = Arc::new(Prepared::load(invocation)?);
+            if let Ok(mut cache) = self.0.lock() {
+                // Replacing a key already present is not growth, so it
+                // stays allowed at the cap.
+                if cache.len() < MAX_CACHED_POLICY_SETS || cache.contains_key(&key) {
+                    cache.insert(key, prepared);
+                }
+            }
+            Ok(())
         }
 
         /// The prepared state for `invocation`: the cached entry when
@@ -2409,6 +2428,47 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
         assert!(error.detail().contains("entities"), "{}", error.detail());
+    }
+
+    /// Warming reads the files every time. A later activation on the
+    /// same dispatcher sees an edited file: a broken one fails the warm,
+    /// a changed valid one changes the decision.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_warm_rereads_the_files_each_time() {
+        use crate::{PolicyDispatcher, PreparedPolicyInvocation};
+
+        let dir = cedar_test_dir("warm-rereads");
+        let inv = file_backed_invocation(&dir, "permit(principal, action, resource);", "[]");
+        let dispatcher = CedarBuiltinDispatcher::new();
+        dispatcher
+            .warm(&PreparedPolicyInvocation::Cedar(inv.clone()))
+            .unwrap();
+
+        fs::write(inv.policy_path.as_ref().unwrap(), "not cedar").unwrap();
+        let error = dispatcher
+            .warm(&PreparedPolicyInvocation::Cedar(inv.clone()))
+            .unwrap_err();
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        // The failed warm left the earlier entry in place.
+        let output = dispatcher.evaluate_cedar(&inv).unwrap();
+        assert_eq!(
+            normalize_policy_output(output).unwrap().decision,
+            Decision::Allow
+        );
+
+        fs::write(
+            inv.policy_path.as_ref().unwrap(),
+            "@id(\"edited\") forbid(principal, action, resource);",
+        )
+        .unwrap();
+        dispatcher
+            .warm(&PreparedPolicyInvocation::Cedar(inv.clone()))
+            .unwrap();
+        let verdict = normalize_policy_output(dispatcher.evaluate_cedar(&inv).unwrap()).unwrap();
+        assert_eq!(verdict.decision, Decision::Deny);
+        assert_eq!(verdict.reason.as_deref(), Some("edited"));
+        assert_eq!(dispatcher.cache.len(), 1);
     }
 
     /// Without a warm, the first decision parses and later decisions

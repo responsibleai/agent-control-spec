@@ -6,6 +6,10 @@
 //! cases: a host that needs OPA's exact CLI semantics, most visibly the
 //! packaged `.tar.gz` bundles the in-process dispatcher does not read,
 //! and a host that must pin evaluation to a specific `opa` build.
+//!
+//! This dispatcher runs OPA's own builtins. The shadowing of `http.send`,
+//! `time.now_ns`, `rand.intn`, `uuid.rfc4122` and `opa.runtime` in
+//! [`crate::rego`] applies to the bundled in-process dispatcher only.
 
 use crate::{
     policy::rego_adapter_data_paths, runtime::PolicyDispatcher, JsonValue, Limits,

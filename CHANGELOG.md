@@ -128,10 +128,11 @@
   tool name is now part of the id, so a forbid on the literal id fires and
   an escape no longer names another principal or fails the evaluation.
 - The bundled Cedar dispatcher parses its policy set, and reads any
-  `entities_path` or `schema_path` file, once. `ActivatedPolicy::activate`
-  warms it, so a decision reads no file and parses no policy, and a file
-  edited after activation is not read again. A policy set that does not
-  parse now fails activation instead of the first decision.
+  `entities_path` or `schema_path` file, when it is warmed at activation,
+  in Rust and over every binding. A decision reads no file and parses no
+  policy. A host that reuses one dispatcher across activations gets the
+  current file at each activation. A policy set that does not parse now
+  fails activation instead of the first decision.
 - Annotator HTTP error bodies stay out of verdicts. A non-2xx response is
   reported as its status code, canonical reason, body size and a digest
   prefix; the body text, which can echo the policy target, never reaches
@@ -156,8 +157,12 @@
 - The bundled Rego dispatcher shadows `time.now_ns`, `rand.intn`,
   `uuid.rfc4122` and `opa.runtime` the way it shadows `http.send`: a rule
   that calls one fails closed with `runtime_error:policy_invocation_failed`.
+  The opt-in `opa` CLI dispatcher does not shadow these builtins.
 - The FFI releases a host callback's `*err_out` string through the
-  registered free callback instead of the engine allocator.
+  registered free callback instead of the engine allocator, and reports a
+  result string that is not valid UTF-8 as such instead of as a missing
+  message. The Node binding decodes dispatcher results strictly: an
+  unpaired surrogate fails the dispatch closed instead of becoming U+FFFD.
 - The .NET `AcsInterceptor` and `AcsHostInterceptor` hold the native
   handle in a reference-counted `SafeHandle`, so `Dispose` waits for a
   call in flight and a later call throws `ObjectDisposedException`.
