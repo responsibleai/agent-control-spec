@@ -6,11 +6,11 @@ import json
 import os
 import subprocess
 import sys
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-import tomllib
 from agent_control_spec import _native
 from agent_control_spec.authoring import REGORUS_AST_VERSION, parse_rego_ast
 
