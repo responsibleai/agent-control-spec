@@ -261,8 +261,6 @@ jobs:
           dotnet-version: "8.0.x"
       - run: dotnet restore --nologo
         working-directory: sdk/dotnet
-      # The end-to-end emitter test self-skips here: the agent-hooks
-      # native library is not available in this repository's CI.
       - run: dotnet test --nologo
         working-directory: sdk/dotnet
         env:
