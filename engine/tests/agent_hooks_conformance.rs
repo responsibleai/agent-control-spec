@@ -369,28 +369,66 @@ fn undeclared_capabilities(vector: &Value, declared: &[String]) -> Vec<String> {
 /// Recomputes the corpus digest the way `PROVENANCE.md` documents:
 /// `LC_ALL=C sha256sum AH-CTK-*.json | LC_ALL=C sort | sha256sum`
 /// from inside `vectors/`.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The SHA-256 of one vector as `sha256sum` reports it on the LF file
+/// the upstream repository holds. A checkout that converts text files
+/// to CRLF (Windows with `core.autocrlf`) would otherwise change every
+/// byte digest, so `\r\n` is normalised to `\n` before hashing; the
+/// vectors contain no bare `\r`, and `.gitattributes` pins them to LF.
+fn vector_digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut normalised = Vec::with_capacity(bytes.len());
+    let mut iter = bytes.iter().peekable();
+    while let Some(&byte) = iter.next() {
+        if byte == b'\r' && iter.peek() == Some(&&b'\n') {
+            continue;
+        }
+        normalised.push(byte);
+    }
+    hex(&Sha256::digest(&normalised))
+}
+
+/// The corpus digest over a list of `<sha256>  <name>` lines, the way
+/// `LC_ALL=C sort | sha256sum` computes it.
+fn corpus_digest(mut lines: Vec<String>) -> String {
+    use sha2::{Digest, Sha256};
+    // `LC_ALL=C sort` orders by byte value.
+    lines.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+    hex(&Sha256::digest(lines.concat().as_bytes()))
+}
+
+#[test]
+fn vector_digest_ignores_crlf_conversion_but_not_content_edits() {
+    let lf = b"{\n  \"id\": \"AH-CTK-000\"\n}\n";
+    let crlf = b"{\r\n  \"id\": \"AH-CTK-000\"\r\n}\r\n";
+    let edited = b"{\n  \"id\": \"AH-CTK-001\"\n}\n";
+    assert_eq!(vector_digest(lf), vector_digest(crlf));
+    assert_ne!(vector_digest(lf), vector_digest(edited));
+    // `printf '{\n  "id": "AH-CTK-000"\n}\n' | sha256sum`, so the recipe
+    // in PROVENANCE.md and this helper agree.
+    assert_eq!(
+        vector_digest(lf),
+        "9331bcc16ca1a4b006f38e4b859a596e06445696146010d851533b5b30fbb216"
+    );
+}
+
 #[test]
 fn vendored_vectors_match_the_provenance_digest() {
-    use sha2::{Digest, Sha256};
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
-
     let provenance = read_provenance();
     let dir = conformance_dir().join("vectors");
-    let mut lines: Vec<String> = std::fs::read_dir(&dir)
+    let lines: Vec<String> = std::fs::read_dir(&dir)
         .expect("list vendored vectors")
         .map(|entry| entry.expect("directory entry").file_name())
         .filter_map(|name| name.into_string().ok())
         .filter(|name| name.starts_with("AH-CTK-") && name.ends_with(".json"))
         .map(|name| {
             let bytes = std::fs::read(dir.join(&name)).expect("read vector");
-            format!("{}  {name}\n", hex(&Sha256::digest(&bytes)))
+            format!("{}  {name}\n", vector_digest(&bytes))
         })
         .collect();
-    // `LC_ALL=C sort` orders by byte value.
-    lines.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
     assert_eq!(
         lines.len(),
         provenance.files,
@@ -399,13 +437,14 @@ fn vendored_vectors_match_the_provenance_digest() {
         provenance.files,
         lines.len()
     );
-    let corpus_digest = hex(&Sha256::digest(lines.concat().as_bytes()));
     assert_eq!(
-        corpus_digest, provenance.digest,
+        corpus_digest(lines),
+        provenance.digest,
         "the vendored vectors do not match the digest in PROVENANCE.md; \
          a vector was edited or added in-tree. Re-vendor the corpus from \
          agent-hooks {} ({}) or update PROVENANCE.md per its refresh procedure",
-        provenance.tag, provenance.commit
+        provenance.tag,
+        provenance.commit
     );
 }
 
