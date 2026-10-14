@@ -1,7 +1,7 @@
-//! AGT D3 cedar dispatcher surface.
+//! Cedar dispatcher surface.
 //!
-//! See `policy-engine/spec/SPECIFICATION.md` §12.4 for the normative
-//! contract. This module provides three pieces:
+//! See `spec/SPECIFICATION.md` section 12.4 for the normative contract.
+//! This module provides three pieces:
 //!
 //! 1. [`CedarPolicyDispatcher`] is the trait a host implements to evaluate a
 //!    [`CedarPolicyInvocation`]. It is parallel to the rego dispatcher path
@@ -10,18 +10,18 @@
 //!    into either backend uniformly.
 //! 2. [`CedarTestDispatcher`] is a deterministic test double, always
 //!    compiled, that parses a small JSON pseudo-cedar policy set, builds a
-//!    cedar [`CedarRequest`] from the policy input per D3.2, and emits an
-//!    `allow`, `deny`, or advice-translated verdict per D3.3. It matches on
+//!    cedar [`CedarRequest`] from the policy input per section 12.4, and
+//!    emits an `allow`, `deny`, or advice-translated verdict. It matches on
 //!    principal, action and resource only; the context it builds is not
 //!    consulted.
-//! 3. [`CedarBuiltinDispatcher`] is the AGT M2.S5 D7 feature-gated bundled
-//!    dispatcher backed by the upstream `cedar-policy` crate. It evaluates
-//!    the full request, context included, and maps the answer to a verdict
-//!    per §12.4. It is gated behind the `cedar` Cargo feature so callers
+//! 3. [`CedarBuiltinDispatcher`] is the feature-gated bundled dispatcher
+//!    backed by the upstream `cedar-policy` crate. It evaluates the full
+//!    request, context included, and maps the answer to a verdict per
+//!    section 12.4. It is gated behind the `cedar` Cargo feature so callers
 //!    that do not want the heavyweight cedar dep can opt out at build time.
 //!
-//! [`build_cedar_request`] is the one place that implements the §12.4
-//! request mapping. Both dispatchers, and any host dispatcher that wants
+//! [`build_cedar_request`] is the one place that implements the section
+//! 12.4 request mapping. Both dispatchers, and any host dispatcher that wants
 //! the same request, go through it.
 //!
 //! The dispatcher returns a verdict-shaped `JsonValue` exactly like the OPA
@@ -62,8 +62,9 @@ pub struct CedarRequest {
 }
 
 /// Cedar entity reference of the form `Type::"id"`. The test dispatcher uses
-/// this string form directly; the builtin dispatcher parses it into the
-/// upstream cedar crate's `EntityUid` when evaluating.
+/// the display form directly; the builtin dispatcher builds the upstream
+/// cedar crate's `EntityUid` from the two parts, never by parsing the
+/// display form, so escapes in `id` stay literal.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CedarEntity {
     pub kind: String,
@@ -111,7 +112,9 @@ fn principal_id(snapshot: &serde_json::Map<String, JsonValue>) -> Option<&str> {
 /// top-level member is absent. The action is
 /// `Action::"<intervention point>"`, and the resource is
 /// `Tool::"<name>"` at tool intervention points or
-/// `PolicyTarget::"<kind>"` elsewhere. Returns
+/// `PolicyTarget::"<kind>"` elsewhere, where the kind is the point's
+/// `policy_target_kind` or [`UNSPECIFIED_POLICY_TARGET_KIND`] when the
+/// point declares none. Returns
 /// `runtime_error:policy_invocation_failed` when neither location holds
 /// a string id.
 ///
@@ -319,6 +322,16 @@ fn float_to_decimal(value: f64) -> Option<String> {
     ))
 }
 
+/// The `PolicyTarget` id used when the intervention point declares no
+/// `policy_target_kind` and the request is not a tool call. A policy
+/// that scopes on the resource never matches it unless it names the
+/// sentinel; set `policy_target_kind` to get a meaningful resource.
+pub const UNSPECIFIED_POLICY_TARGET_KIND: &str = "unspecified";
+
+/// The resource per specification 12.4: `Tool::"<name>"` when the
+/// policy input carries a projected tool, else
+/// `PolicyTarget::"<policy_target_kind>"`, with
+/// [`UNSPECIFIED_POLICY_TARGET_KIND`] when the point declares no kind.
 fn resource_entity(policy_input: &Map<String, JsonValue>) -> CedarEntity {
     if let Some(JsonValue::Object(tool)) = policy_input.get(pi_key::TOOL) {
         if let Some(name) = tool.get("name").and_then(JsonValue::as_str) {
@@ -330,7 +343,7 @@ fn resource_entity(policy_input: &Map<String, JsonValue>) -> CedarEntity {
         .and_then(JsonValue::as_object)
         .and_then(|target| target.get(pi_key::KIND))
         .and_then(JsonValue::as_str)
-        .unwrap_or("unspecified");
+        .unwrap_or(UNSPECIFIED_POLICY_TARGET_KIND);
     CedarEntity::new("PolicyTarget", kind)
 }
 
@@ -339,7 +352,7 @@ fn resource_entity(policy_input: &Map<String, JsonValue>) -> CedarEntity {
 /// document, builds a [`CedarRequest`] from the policy input per
 /// [`build_cedar_request`], and applies the rules with a simple equality
 /// match. This is the test double tests can drive without linking the
-/// upstream cedar crate. It satisfies the AGT M2.S2 D3.3 contract for
+/// upstream cedar crate. It satisfies the section 12.4 contract for
 /// allow / deny / advice translation.
 ///
 /// The pseudo-cedar JSON shape is:
@@ -357,7 +370,7 @@ fn resource_entity(policy_input: &Map<String, JsonValue>) -> CedarEntity {
 ///
 /// Rules are scanned in declared order; the first `forbid` match wins.
 /// Otherwise every matching `permit` contributes. A permit rule MAY carry
-/// an `advice` object, which is validated against the AGT D3.3 cedar
+/// an `advice` object, which is validated against the section 12.4 cedar
 /// advice shape and translated into the corresponding verdict; when
 /// several matching permits carry advice, [`most_restrictive_advice`]
 /// picks one the same way the builtin dispatcher does.
@@ -568,7 +581,7 @@ fn parse_entity_pattern(
 const ADVICE_MEMBERS: [&str; 4] = ["verdict", "reason", "message", "transform"];
 const ADVICE_TRANSFORM_MEMBERS: [&str; 2] = ["path", "value"];
 
-/// Translate AGT D3.3 cedar advice into a verdict-shaped `JsonValue` ready
+/// Translate cedar advice into a verdict-shaped `JsonValue` ready
 /// for [`crate::normalize_policy_output`]. Advice missing the `verdict`
 /// field, advice with an unknown verdict value, advice carrying a member
 /// the advice schema does not list, at the top level or inside
@@ -697,8 +710,7 @@ fn advice_rank(decision: Option<&str>) -> u8 {
     }
 }
 
-/// AGT M2.S5 D7 bundled cedar dispatcher backed by the upstream
-/// `cedar-policy` crate. Gated behind the `cedar` Cargo feature so that
+/// Bundled cedar dispatcher backed by the upstream `cedar-policy` crate. Gated behind the `cedar` Cargo feature so that
 /// hosts that never need real cedar evaluation do not have to compile the
 /// cedar runtime. The dispatcher parses the inline `policy_set` text (or
 /// the file pointed to by `policy_path`), builds a `cedar_policy::Request`
@@ -729,14 +741,35 @@ fn advice_rank(decision: Option<&str>) -> u8 {
 ///   with `runtime_error:policy_invocation_failed` whatever the decision.
 ///   No `@id` surfaces in that case. The detail names the policy and the
 ///   kind of error, not Cedar's message, which can quote snapshot values.
+///
+/// The policy set, the schema and the entities are parsed once and kept.
+/// [`PolicyDispatcher::warm`] fills the cache at activation and
+/// evaluation reuses the entry, so a decision reads no file and parses
+/// no policy. The cache is keyed by the policy text or `policy_path`,
+/// `entities_path` and `schema_path`; a file edited after activation
+/// does not change later decisions until a new dispatcher, or a new
+/// activation with a different path, parses it again. Clones share one
+/// cache. Past [`MAX_CACHED_POLICY_SETS`] distinct keys, evaluation
+/// still works, it just parses on every call.
 #[cfg(feature = "cedar")]
-#[derive(Debug, Clone, Default)]
-pub struct CedarBuiltinDispatcher;
+#[derive(Clone, Default)]
+pub struct CedarBuiltinDispatcher {
+    cache: builtin::PreparedCache,
+}
+
+#[cfg(feature = "cedar")]
+impl std::fmt::Debug for CedarBuiltinDispatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CedarBuiltinDispatcher")
+            .field("cached_policy_sets", &self.cache.len())
+            .finish()
+    }
+}
 
 #[cfg(feature = "cedar")]
 impl CedarBuiltinDispatcher {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 
@@ -746,7 +779,7 @@ impl CedarPolicyDispatcher for CedarBuiltinDispatcher {
         &self,
         invocation: &CedarPolicyInvocation,
     ) -> Result<JsonValue, RuntimeError> {
-        builtin::evaluate(invocation)
+        builtin::evaluate(&self.cache, invocation)
     }
 }
 
@@ -761,7 +794,28 @@ impl PolicyDispatcher for CedarBuiltinDispatcher {
             ))),
         }
     }
+
+    /// Parses the policy set, the schema and the entities and keeps them
+    /// for evaluation. A policy set that does not parse, or a path that
+    /// does not read, is reported here so activation fails instead of
+    /// the first decision.
+    fn warm(&self, invocation: &PreparedPolicyInvocation) -> Result<(), RuntimeError> {
+        match invocation {
+            PreparedPolicyInvocation::Cedar(invocation) => {
+                self.cache.prepared(invocation).map(|_| ())
+            }
+            // Another engine's policy is not this dispatcher's to prepare.
+            _ => Ok(()),
+        }
+    }
 }
+
+/// Upper bound on distinct prepared Cedar policy sets one
+/// [`CedarBuiltinDispatcher`] keeps. A manifest names a fixed set of
+/// policies, so this is headroom; it keeps a host that synthesizes
+/// policy text from growing the cache without bound.
+#[cfg(feature = "cedar")]
+pub const MAX_CACHED_POLICY_SETS: usize = 64;
 
 #[cfg(feature = "cedar")]
 mod builtin {
@@ -770,32 +824,120 @@ mod builtin {
     //! Kept in a private module so the cedar crate imports never leak into
     //! the public API surface even when the `cedar` feature is enabled.
 
-    use super::{build_cedar_request, CedarEntity, CedarRequest};
+    use super::{build_cedar_request, CedarEntity, CedarRequest, MAX_CACHED_POLICY_SETS};
     use crate::{CedarPolicyInvocation, JsonValue, RuntimeError};
     use cedar_policy::{
         entities_json_errors::JsonDeserializationError, AuthorizationError, Authorizer, Context,
-        ContextCreationError, ContextJsonError, Decision, Entities, EntityUid, EvaluationError,
-        Policy, PolicyId, PolicySet, Request, RequestValidationError, Response, Schema,
-        ValidationMode, Validator,
+        ContextCreationError, ContextJsonError, Decision, Entities, EntityId, EntityTypeName,
+        EntityUid, EvaluationError, Policy, PolicyId, PolicySet, Request, RequestValidationError,
+        Response, Schema, ValidationMode, Validator,
     };
     use serde_json::json;
-    use std::{fs, str::FromStr};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        str::FromStr,
+        sync::{Arc, Mutex},
+    };
 
-    pub(super) fn evaluate(invocation: &CedarPolicyInvocation) -> Result<JsonValue, RuntimeError> {
-        let policy_text = load_policy_text(invocation)?;
-        let policy_set = PolicySet::from_str(&policy_text).map_err(|err| {
-            RuntimeError::PolicyInvocationFailed(format!(
-                "cedar builtin dispatcher failed to parse policy_set: {err}"
-            ))
-        })?;
-        let schema = load_schema(invocation.schema_path.as_deref())?;
-        validate_policy_set(&policy_set, schema.as_ref())?;
-        let entities = load_entities(invocation.entities_path.as_deref(), schema.as_ref())?;
+    /// Identifies one prepared policy set: the same policy text or
+    /// path, the same entities file and the same schema file always
+    /// produce the same parsed state, so the parse is shared across
+    /// evaluations.
+    #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+    struct CacheKey {
+        policy_set: Option<String>,
+        policy_path: Option<String>,
+        entities_path: Option<String>,
+        schema_path: Option<String>,
+    }
+
+    impl CacheKey {
+        fn of(invocation: &CedarPolicyInvocation) -> Self {
+            Self {
+                policy_set: invocation.policy_set.clone(),
+                policy_path: invocation.policy_path.clone(),
+                entities_path: invocation.entities_path.clone(),
+                schema_path: invocation.schema_path.clone(),
+            }
+        }
+    }
+
+    /// The parsed, validated state one decision needs. Built once per
+    /// [`CacheKey`] and shared.
+    pub(super) struct Prepared {
+        policy_set: PolicySet,
+        schema: Option<Schema>,
+        entities: Entities,
+    }
+
+    impl Prepared {
+        fn load(invocation: &CedarPolicyInvocation) -> Result<Self, RuntimeError> {
+            let policy_text = load_policy_text(invocation)?;
+            let policy_set = PolicySet::from_str(&policy_text).map_err(|err| {
+                RuntimeError::PolicyInvocationFailed(format!(
+                    "cedar builtin dispatcher failed to parse policy_set: {err}"
+                ))
+            })?;
+            let schema = load_schema(invocation.schema_path.as_deref())?;
+            validate_policy_set(&policy_set, schema.as_ref())?;
+            let entities = load_entities(invocation.entities_path.as_deref(), schema.as_ref())?;
+            Ok(Self {
+                policy_set,
+                schema,
+                entities,
+            })
+        }
+    }
+
+    /// Prepared state shared by every clone of one
+    /// [`super::CedarBuiltinDispatcher`].
+    #[derive(Clone, Default)]
+    pub(super) struct PreparedCache(Arc<Mutex<BTreeMap<CacheKey, Arc<Prepared>>>>);
+
+    impl PreparedCache {
+        pub(super) fn len(&self) -> usize {
+            self.0.lock().map(|cache| cache.len()).unwrap_or(0)
+        }
+
+        /// The prepared state for `invocation`: the cached entry when
+        /// there is one, else a fresh parse that is kept while the cache
+        /// is under its cap.
+        pub(super) fn prepared(
+            &self,
+            invocation: &CedarPolicyInvocation,
+        ) -> Result<Arc<Prepared>, RuntimeError> {
+            let key = CacheKey::of(invocation);
+            if let Ok(cache) = self.0.lock() {
+                if let Some(prepared) = cache.get(&key) {
+                    return Ok(Arc::clone(prepared));
+                }
+            }
+            let prepared = Arc::new(Prepared::load(invocation)?);
+            if let Ok(mut cache) = self.0.lock() {
+                if cache.len() < MAX_CACHED_POLICY_SETS || cache.contains_key(&key) {
+                    cache.insert(key, Arc::clone(&prepared));
+                }
+            }
+            Ok(prepared)
+        }
+    }
+
+    pub(super) fn evaluate(
+        cache: &PreparedCache,
+        invocation: &CedarPolicyInvocation,
+    ) -> Result<JsonValue, RuntimeError> {
+        let prepared = cache.prepared(invocation)?;
+        let Prepared {
+            policy_set,
+            schema,
+            entities,
+        } = &*prepared;
         let request = build_cedar_request(&invocation.input)?;
         let cedar_request = build_authorizer_request(&request, schema.as_ref())?;
 
         let authorizer = Authorizer::new();
-        let answer = authorizer.is_authorized(&cedar_request, &policy_set, &entities);
+        let answer = authorizer.is_authorized(&cedar_request, policy_set, entities);
         let hard_errors = answer
             .diagnostics()
             .errors()
@@ -808,7 +950,7 @@ mod builtin {
             )));
         }
 
-        let contributing = contributing_policies(&answer, &policy_set);
+        let contributing = contributing_policies(&answer, policy_set);
         match answer.decision() {
             Decision::Allow => {
                 let verdicts = contributing
@@ -1081,13 +1223,23 @@ mod builtin {
         }
     }
 
+    /// The upstream uid for `entity`, built from its two parts. The id
+    /// is taken as is: it is a snapshot value (`agent.id`, a tool name),
+    /// and parsing `Type::"<id>"` as a Cedar literal would read escapes
+    /// in it, so `a\"b` and `a"b` would name one principal and an id
+    /// with a stray backslash would fail to parse at all. Only the type
+    /// name, which the runtime fixes, is parsed.
     fn entity_uid(entity: &CedarEntity, field: &str) -> Result<EntityUid, RuntimeError> {
-        EntityUid::from_str(&entity.as_display()).map_err(|err| {
+        let type_name = EntityTypeName::from_str(&entity.kind).map_err(|err| {
             RuntimeError::PolicyInvocationFailed(format!(
-                "cedar builtin dispatcher failed to parse {field} entity '{}': {err}",
-                entity.as_display()
+                "cedar builtin dispatcher failed to parse {field} entity type '{}': {err}",
+                entity.kind
             ))
-        })
+        })?;
+        Ok(EntityUid::from_type_name_and_id(
+            type_name,
+            EntityId::new(&entity.id),
+        ))
     }
 }
 
@@ -2126,6 +2278,228 @@ mod tests {
             .evaluate_cedar(&inv)
             .unwrap_err();
         assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+    }
+
+    /// An id is a snapshot value. The builtin dispatcher builds the uid
+    /// from the raw id, so a quote, a backslash, a `::` or a `\u{..}`
+    /// sequence in `agent.id` names exactly that principal: the forbid
+    /// on the escaped literal fires and nothing else matches.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_takes_entity_ids_literally() {
+        // (raw id, the same id spelled as a Cedar string literal)
+        let cases = [
+            ("a\"b", r#"a\"b"#),
+            ("a\\b", r#"a\\b"#),
+            ("a::b", "a::b"),
+            ("x\\u{41}", r#"x\\u{41}"#),
+            ("Agent::\"other\"", r#"Agent::\"other\""#),
+        ];
+        for (raw, literal) in cases {
+            let policy_set = format!(
+                "permit(principal, action, resource);\n\
+                 @id(\"literal_id\") forbid(principal == Agent::\"{literal}\", action, resource);"
+            );
+            let inv = invocation(&policy_set, tool_input(raw, "hello"));
+            let output = CedarBuiltinDispatcher::new()
+                .evaluate_cedar(&inv)
+                .unwrap_or_else(|err| panic!("{raw:?}: {err:?}"));
+            let verdict = normalize_policy_output(output).unwrap();
+            assert_eq!(verdict.decision, Decision::Deny, "{raw:?}");
+            assert_eq!(verdict.reason.as_deref(), Some("literal_id"), "{raw:?}");
+
+            let inv = invocation(&policy_set, tool_input(&format!("{raw}-other"), "hello"));
+            let output = CedarBuiltinDispatcher::new().evaluate_cedar(&inv).unwrap();
+            let verdict = normalize_policy_output(output).unwrap();
+            assert_eq!(verdict.decision, Decision::Allow, "{raw:?}-other");
+        }
+    }
+
+    /// Re-parsing `Agent::"<id>"` as a literal would read `\u{41}` as
+    /// `A`, so a forbid on `Agent::"xA"` would fire for the id `x\u{41}`.
+    /// It must not.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_does_not_decode_escapes_in_entity_ids() {
+        let policy_set = "permit(principal, action, resource);\n\
+                          @id(\"decoded\") forbid(principal == Agent::\"xA\", action, resource);";
+        let inv = invocation(policy_set, tool_input("x\\u{41}", "hello"));
+        let output = CedarBuiltinDispatcher::new().evaluate_cedar(&inv).unwrap();
+        assert_eq!(
+            normalize_policy_output(output).unwrap().decision,
+            Decision::Allow
+        );
+
+        let inv = invocation(policy_set, tool_input("xA", "hello"));
+        let output = CedarBuiltinDispatcher::new().evaluate_cedar(&inv).unwrap();
+        let verdict = normalize_policy_output(output).unwrap();
+        assert_eq!(verdict.decision, Decision::Deny);
+        assert_eq!(verdict.reason.as_deref(), Some("decoded"));
+    }
+
+    /// The same for the resource: a tool name with a quote in it names
+    /// that tool and no other.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_takes_tool_names_literally() {
+        let policy_set = "permit(principal, action, resource);\n\
+                          @id(\"quoted_tool\") forbid(principal, action, resource == Tool::\"sh\\\"ell\");";
+        let inv = invocation(policy_set, tool_input("agent-1", "sh\"ell"));
+        let output = CedarBuiltinDispatcher::new().evaluate_cedar(&inv).unwrap();
+        let verdict = normalize_policy_output(output).unwrap();
+        assert_eq!(verdict.decision, Decision::Deny);
+        assert_eq!(verdict.reason.as_deref(), Some("quoted_tool"));
+
+        let inv = invocation(policy_set, tool_input("agent-1", "shell"));
+        let output = CedarBuiltinDispatcher::new().evaluate_cedar(&inv).unwrap();
+        assert_eq!(
+            normalize_policy_output(output).unwrap().decision,
+            Decision::Allow
+        );
+    }
+
+    // ── prepared-state cache ──────────────────────────────────────────
+
+    #[cfg(feature = "cedar")]
+    fn file_backed_invocation(dir: &Path, policy: &str, entities: &str) -> CedarPolicyInvocation {
+        let mut inv = invocation("", tool_input("agent-1", "hello"));
+        inv.policy_set = None;
+        inv.policy_path = Some(write_cedar_test_file(dir, "policy.cedar", policy));
+        inv.entities_path = Some(write_cedar_test_file(dir, "entities.json", entities));
+        inv
+    }
+
+    /// Warming parses the policy set and reads the entities file once.
+    /// A file edited afterwards does not reach a later decision: the
+    /// activated version is the one the host activated.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_warm_pins_policy_and_entity_files() {
+        use crate::{PolicyDispatcher, PreparedPolicyInvocation};
+
+        let dir = cedar_test_dir("warm-pins-files");
+        let permit_all = "permit(principal, action, resource);";
+        let forbid_all = "forbid(principal, action, resource);";
+        let inv = file_backed_invocation(&dir, permit_all, "[]");
+
+        let dispatcher = CedarBuiltinDispatcher::new();
+        dispatcher
+            .warm(&PreparedPolicyInvocation::Cedar(inv.clone()))
+            .unwrap();
+        assert_eq!(dispatcher.cache.len(), 1);
+
+        fs::write(inv.policy_path.as_ref().unwrap(), forbid_all).unwrap();
+        fs::write(inv.entities_path.as_ref().unwrap(), "not json").unwrap();
+
+        let output = dispatcher.evaluate_cedar(&inv).unwrap();
+        assert_eq!(
+            normalize_policy_output(output).unwrap().decision,
+            Decision::Allow,
+            "the warmed dispatcher evaluates the files it read at activation"
+        );
+        // A clone shares the cache.
+        let output = dispatcher.clone().evaluate_cedar(&inv).unwrap();
+        assert_eq!(
+            normalize_policy_output(output).unwrap().decision,
+            Decision::Allow
+        );
+        // A new dispatcher reads the edited files.
+        let error = CedarBuiltinDispatcher::new()
+            .evaluate_cedar(&inv)
+            .unwrap_err();
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert!(error.detail().contains("entities"), "{}", error.detail());
+    }
+
+    /// Without a warm, the first decision parses and later decisions
+    /// reuse that parse.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_caches_on_first_evaluation() {
+        let dir = cedar_test_dir("caches-on-first-eval");
+        let inv = file_backed_invocation(&dir, "permit(principal, action, resource);", "[]");
+        let dispatcher = CedarBuiltinDispatcher::new();
+        assert_eq!(dispatcher.cache.len(), 0);
+        dispatcher.evaluate_cedar(&inv).unwrap();
+        assert_eq!(dispatcher.cache.len(), 1);
+
+        fs::write(
+            inv.policy_path.as_ref().unwrap(),
+            "forbid(principal, action, resource);",
+        )
+        .unwrap();
+        let output = dispatcher.evaluate_cedar(&inv).unwrap();
+        assert_eq!(
+            normalize_policy_output(output).unwrap().decision,
+            Decision::Allow
+        );
+        assert_eq!(dispatcher.cache.len(), 1);
+    }
+
+    /// Different inputs for one policy share one entry; a different
+    /// policy text is another entry.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_cache_is_keyed_by_policy_not_input() {
+        let dispatcher = CedarBuiltinDispatcher::new();
+        let permit_all = "permit(principal, action, resource);";
+        dispatcher
+            .evaluate_cedar(&invocation(permit_all, tool_input("a", "x")))
+            .unwrap();
+        dispatcher
+            .evaluate_cedar(&invocation(permit_all, tool_input("b", "y")))
+            .unwrap();
+        assert_eq!(dispatcher.cache.len(), 1);
+        dispatcher
+            .evaluate_cedar(&invocation(
+                "forbid(principal, action, resource);",
+                tool_input("a", "x"),
+            ))
+            .unwrap();
+        assert_eq!(dispatcher.cache.len(), 2);
+    }
+
+    /// A broken policy fails activation, not the first decision.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_warm_reports_a_policy_that_does_not_parse() {
+        use crate::{PolicyDispatcher, PreparedPolicyInvocation};
+
+        let dispatcher = CedarBuiltinDispatcher::new();
+        let inv = invocation("not cedar", tool_input("agent-1", "hello"));
+        let error = dispatcher
+            .warm(&PreparedPolicyInvocation::Cedar(inv))
+            .unwrap_err();
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert_eq!(dispatcher.cache.len(), 0);
+
+        let missing = cedar_test_dir("warm-missing-policy").join("missing.cedar");
+        let mut inv = invocation("", tool_input("agent-1", "hello"));
+        inv.policy_set = None;
+        inv.policy_path = Some(missing.display().to_string());
+        let error = dispatcher
+            .warm(&PreparedPolicyInvocation::Cedar(inv))
+            .unwrap_err();
+        assert!(error.detail().contains("policy_path"), "{}", error.detail());
+    }
+
+    /// Past the cap the dispatcher still evaluates; it just stops
+    /// keeping new entries.
+    #[cfg(feature = "cedar")]
+    #[test]
+    fn builtin_dispatcher_cache_stops_growing_at_the_cap() {
+        let dispatcher = CedarBuiltinDispatcher::new();
+        for i in 0..=MAX_CACHED_POLICY_SETS {
+            let policy_set = format!("@id(\"p{i}\") permit(principal, action, resource);");
+            let output = dispatcher
+                .evaluate_cedar(&invocation(&policy_set, tool_input("a", "x")))
+                .unwrap();
+            assert_eq!(
+                normalize_policy_output(output).unwrap().decision,
+                Decision::Allow
+            );
+        }
+        assert_eq!(dispatcher.cache.len(), MAX_CACHED_POLICY_SETS);
     }
 
     /// Most of Cedar's context parse errors quote the value they tripped

@@ -46,6 +46,14 @@
 //! activating per thread. Nothing here re-reads the manifest or the
 //! bundle, so a policy edit on disk needs a new activation, which is the
 //! point: the host controls when a version changes.
+//!
+//! That holds for the two bundled dispatchers. The Rego dispatcher reads
+//! and compiles each bundle once. The bundled Cedar dispatcher parses
+//! its policy set, and reads any `entities_path` or `schema_path` file,
+//! once per activation and keeps the result; a file edited afterwards is
+//! not read again until a new activation. A host-supplied
+//! [`PolicyDispatcher`] decides for itself what [`PolicyDispatcher::warm`]
+//! prepares.
 
 use crate::{
     manifest::Manifest,

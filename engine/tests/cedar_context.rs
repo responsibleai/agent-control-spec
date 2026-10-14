@@ -1775,16 +1775,23 @@ fn string_valued_args_fail_closed_on_has() {
     assert_fails_closed_naming(&outcome, "policy `policy0`: type error");
 }
 
-/// The principal id is spliced into `Agent::"<id>"`. A Cedar string
-/// escape in the snapshot id does not decode to another id:
-/// `EntityUid::from_str` wants a normalized uid and rejects it.
+/// The principal uid is built from the raw snapshot id, never by
+/// parsing `Agent::"<id>"`. A Cedar string escape in the id is part of
+/// the id: it does not decode to another principal and it does not
+/// fail the evaluation.
 #[test]
-fn principal_id_with_a_cedar_escape_fails_closed() {
+fn principal_id_with_a_cedar_escape_is_taken_literally() {
     let policy = r#"permit(principal == Agent::"alice", action, resource);"#;
     let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
     snapshot["envelope"]["agent"]["id"] = json!("\\u{61}lice");
     let outcome = evaluate(inline(policy), snapshot);
-    assert_fails_closed_naming(&outcome, "principal entity");
+    assert_plain_deny(&outcome, "no_matching_policy");
+
+    let literal = r#"permit(principal == Agent::"\\u{61}lice", action, resource);"#;
+    let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
+    snapshot["envelope"]["agent"]["id"] = json!("\\u{61}lice");
+    let outcome = evaluate(inline(literal), snapshot);
+    assert_plain_allow(&outcome);
 
     let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
     snapshot["envelope"]["agent"]["id"] = json!("bob");

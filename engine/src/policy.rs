@@ -52,8 +52,8 @@ fn resolve_adapter_config_paths(adapter_config: &mut BTreeMap<String, JsonValue>
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PolicyConfig {
     Rego(RegoPolicyConfig),
-    /// AGT D3.1 built-in Cedar policy type. See
-    /// `policy-engine/spec/SPECIFICATION.md` §12.4.
+    /// Built-in Cedar policy type. See `spec/SPECIFICATION.md`
+    /// section 12.4.
     Cedar(CedarPolicyConfig),
     Test(TestPolicyConfig),
     Custom(CustomPolicyConfig),
@@ -369,7 +369,7 @@ fn rego_bundle_url(
         .transpose()
 }
 
-/// AGT D3.1 Cedar policy definition. Either `policy_set` (inline Cedar text)
+/// Cedar policy definition. Either `policy_set` (inline Cedar text)
 /// or `policy_path` (filesystem location) MUST be provided; never both.
 /// Unknown fields are rejected per ACS schema strictness.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -409,7 +409,7 @@ pub struct CustomPolicyConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PreparedPolicyInvocation {
     Rego(RegoPolicyInvocation),
-    /// AGT D3 cedar invocation handed to a `CedarPolicyDispatcher`.
+    /// Cedar invocation handed to a `CedarPolicyDispatcher`.
     Cedar(CedarPolicyInvocation),
     Test(TestPolicyInvocation),
     Custom(CustomPolicyInvocation),
@@ -635,7 +635,7 @@ impl RegoPolicyInvocation {
     }
 }
 
-/// AGT D3 prepared cedar invocation. Carries the resolved cedar policy
+/// Prepared cedar invocation. Carries the resolved cedar policy
 /// source (inline `policy_set` text or a `policy_path` location), the
 /// optional `entities_path` / `schema_path` artefacts, and the final
 /// policy input the runtime built for this intervention point. The Cedar
