@@ -247,6 +247,9 @@ jobs:
           done
           npm pack --pack-destination pack
           ls -l pack
+          # Rehearse the publish of every tarball so a bad path or
+          # manifest fails here, on the dry run too, not at upload time.
+          for t in pack/*.tgz; do npm publish "./$t" --dry-run --access public; done
         working-directory: sdk/node
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
@@ -278,7 +281,9 @@ jobs:
             if npm view "$1@$V" version >/dev/null 2>&1; then
               echo "$1@$V already on npm, skipping"
             else
-              npm publish "$2" --access public --tag "$T"
+              # The ./ prefix matters: npm reads a bare "dir/file.tgz" as a
+            # GitHub "user/repo" shorthand and tries git ls-remote on it.
+            npm publish "./$2" --access public --tag "$T"
             fi
           }
           for d in npm/*/; do
