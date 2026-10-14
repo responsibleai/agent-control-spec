@@ -222,6 +222,7 @@ jobs:
           # loader always checks against the version it ships as.
           node scripts/stamp-binding-version.mjs binding.js
           npx tsc
+        working-directory: sdk/node
       - name: Pack the five tarballs exactly as they will publish
         # optionalDependencies are injected here rather than committed:
         # they cannot be resolved before the platform packages' first
