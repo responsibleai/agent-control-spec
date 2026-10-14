@@ -83,14 +83,37 @@ impl CedarEntity {
     }
 }
 
+/// The principal id of a policy input snapshot: `agent.id` at the top
+/// level (the wire shape), else `envelope.agent.id` (the AGT shape).
+/// `None` when neither is a string.
+fn principal_id(snapshot: &serde_json::Map<String, JsonValue>) -> Option<&str> {
+    fn agent_id(object: &serde_json::Map<String, JsonValue>) -> Option<&str> {
+        object
+            .get("agent")
+            .and_then(JsonValue::as_object)
+            .and_then(|agent| agent.get("id"))
+            .and_then(JsonValue::as_str)
+    }
+    agent_id(snapshot).or_else(|| {
+        snapshot
+            .get("envelope")
+            .and_then(JsonValue::as_object)
+            .and_then(agent_id)
+    })
+}
+
 /// Build the cedar request per `SPECIFICATION.md` §12.4.
 ///
-/// The principal is `Agent::"<snapshot.envelope.agent.id>"`, the action
-/// is `Action::"<intervention point>"`, and the resource is
+/// The principal is `Agent::"<id>"` where the id is
+/// `snapshot.agent.id` (the wire shape of
+/// `spec/schema/wire/snapshot.schema.json`), or
+/// `snapshot.envelope.agent.id` for AGT-shaped snapshots when the
+/// top-level member is absent. The action is
+/// `Action::"<intervention point>"`, and the resource is
 /// `Tool::"<name>"` at tool intervention points or
 /// `PolicyTarget::"<kind>"` elsewhere. Returns
-/// `runtime_error:policy_invocation_failed` when the input has no
-/// `snapshot.envelope.agent.id`.
+/// `runtime_error:policy_invocation_failed` when neither location holds
+/// a string id.
 ///
 /// The context is every member of the policy input snapshot, `envelope`
 /// included, plus the annotations as one nested `annotations` record, so
@@ -133,25 +156,11 @@ pub fn build_cedar_request(policy_input: &JsonValue) -> Result<CedarRequest, Run
             )
         })?;
 
-    let envelope = snapshot
-        .get("envelope")
-        .and_then(JsonValue::as_object)
-        .ok_or_else(|| {
-            RuntimeError::PolicyInvocationFailed(
-                "cedar policy input snapshot is missing the AGT envelope".to_string(),
-            )
-        })?;
-
-    let agent_id = envelope
-        .get("agent")
-        .and_then(JsonValue::as_object)
-        .and_then(|agent| agent.get("id"))
-        .and_then(JsonValue::as_str)
-        .ok_or_else(|| {
-            RuntimeError::PolicyInvocationFailed(
-                "cedar policy input envelope is missing agent.id".to_string(),
-            )
-        })?;
+    let agent_id = principal_id(snapshot).ok_or_else(|| {
+        RuntimeError::PolicyInvocationFailed(
+            "cedar policy input snapshot is missing agent.id (or envelope.agent.id)".to_string(),
+        )
+    })?;
 
     let intervention_point = object
         .get(pi_key::INTERVENTION_POINT)
@@ -1086,8 +1095,8 @@ mod builtin {
 mod tests {
     //! AGT M2.S2 D3.3 dispatcher behaviour tests. Each test drives the
     //! [`CedarTestDispatcher`] against a hand-crafted policy input whose
-    //! snapshot carries the `envelope` block [`build_cedar_request`] reads
-    //! and asserts the verdict the runtime would emit after normalizing the
+    //! snapshot carries the AGT `envelope` block [`build_cedar_request`]
+    //! accepts as the principal's fallback location, and asserts the verdict the runtime would emit after normalizing the
     //! dispatcher's JsonValue through [`crate::normalize_policy_output`].
 
     use super::*;
@@ -1531,6 +1540,53 @@ mod tests {
         });
         let error = build_cedar_request(&input).unwrap_err();
         assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+    }
+
+    /// The wire shape of `spec/schema/wire/snapshot.schema.json` carries
+    /// `agent` at the top level and no `envelope` block. See
+    /// https://github.com/responsibleai/agent-control-spec/issues/84.
+    #[test]
+    fn build_cedar_request_reads_principal_from_top_level_agent_id() {
+        let input = json!({
+            "intervention_point": "pre_tool_call",
+            "policy_target": {
+                "kind": "tool_args",
+                "path": "$snap.tool_call.args",
+                "value": {"q": "hello"}
+            },
+            "snapshot": {
+                "agent": {"id": "agent-1"},
+                "tool_call": {"name": "hello", "args": {"q": "hello"}, "id": "call-1"}
+            },
+            "annotations": {},
+            "tool": {"name": "hello"}
+        });
+        let request = build_cedar_request(&input).expect("request built");
+        assert_eq!(request.principal, CedarEntity::new("Agent", "agent-1"));
+        assert_eq!(request.action, CedarEntity::new("Action", "pre_tool_call"));
+        assert_eq!(request.resource, CedarEntity::new("Tool", "hello"));
+        let context = request.context.as_object().expect("context is a record");
+        assert_eq!(context["agent"]["id"], json!("agent-1"));
+        assert!(!context.contains_key("envelope"));
+    }
+
+    /// An AGT-shaped snapshot has no top-level `agent`; the principal
+    /// still comes from `envelope.agent.id`.
+    #[test]
+    fn build_cedar_request_falls_back_to_envelope_agent_id() {
+        let input = tool_input("agent-agt", "hello");
+        assert!(input["snapshot"].get("agent").is_none());
+        let request = build_cedar_request(&input).expect("request built");
+        assert_eq!(request.principal, CedarEntity::new("Agent", "agent-agt"));
+    }
+
+    /// When both locations hold an id, the top-level `agent.id` wins.
+    #[test]
+    fn build_cedar_request_prefers_top_level_agent_id_over_envelope() {
+        let mut input = tool_input("agent-agt", "hello");
+        input["snapshot"]["agent"] = json!({"id": "agent-wire"});
+        let request = build_cedar_request(&input).expect("request built");
+        assert_eq!(request.principal, CedarEntity::new("Agent", "agent-wire"));
     }
 
     // ── D3.3 allow / deny ─────────────────────────────────────────────

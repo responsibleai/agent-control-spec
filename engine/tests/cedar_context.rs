@@ -595,14 +595,12 @@ permit(principal, action, resource);
 
 /// A snapshot in the wire shape of `spec/schema/wire/snapshot.schema.json`
 /// carries `agent` at the top level and no `envelope` block. The
-/// dispatcher still reads the principal from `envelope.agent.id` (see
-/// https://github.com/responsibleai/agent-control-spec/issues/84), so
-/// the wire shape is tested with a minimal envelope added. The
-/// context-gated rule sees the same `tool_call` either way.
+/// dispatcher reads the principal from `agent.id` there, and from
+/// `envelope.agent.id` for AGT-shaped snapshots. The context-gated rule
+/// sees the same `tool_call` either way.
 #[test]
 fn wire_shaped_snapshot_reaches_the_same_context_gated_verdict() {
     let wire = json!({
-        "envelope": {"agent": {"id": "agent-1"}},
         "agent": {"id": "agent-1", "name": "agent-1", "version": "1.0"},
         "session": {"id": "sess-1"},
         "tool_call": {"name": "pay", "args": {"amount": 500}, "id": "call-1"}
@@ -615,6 +613,26 @@ fn wire_shaped_snapshot_reaches_the_same_context_gated_verdict() {
     assert_plain_deny(&from_wire, "amount_too_high");
     assert_eq!(from_wire.verdict.reason, from_envelope.verdict.reason);
     assert_eq!(from_wire.verdict.decision, from_envelope.verdict.decision);
+}
+
+/// The principal of a wire-shaped snapshot is `Agent::"<agent.id>"`, so
+/// a principal-gated policy fires on it without an `envelope` block.
+#[test]
+fn wire_shaped_snapshot_principal_is_the_top_level_agent_id() {
+    let outcome = evaluate(
+        inline(
+            r#"
+@id("agent_blocked")
+forbid(principal == Agent::"agent-1", action, resource);
+permit(principal, action, resource);
+"#,
+        ),
+        json!({
+            "agent": {"id": "agent-1"},
+            "tool_call": {"name": "pay", "args": {"amount": 1}, "id": "call-1"}
+        }),
+    );
+    assert_plain_deny(&outcome, "agent_blocked");
 }
 
 // ── deny reason ordering and fallback ────────────────────────────────

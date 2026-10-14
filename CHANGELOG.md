@@ -2,6 +2,13 @@
 
 ## 0.4.0-beta.1
 
+- The bundled Cedar dispatcher reads the principal from the snapshot's
+  top-level `agent.id`, the shape `spec/schema/wire/snapshot.schema.json`
+  defines, and falls back to `envelope.agent.id` for AGT-shaped
+  snapshots. A wire-shaped snapshot no longer fails every Cedar
+  evaluation with `runtime_error:policy_invocation_failed`. The
+  specification's 12.4 mapping and the verdict schema cite documents in
+  this repository. Closes #84.
 - Package and repository READMEs drop em dashes and bold-label bullets,
   name the crates.io and NuGet install commands, and the dry-run
   description says what the dry run does. Clippy runs on test targets

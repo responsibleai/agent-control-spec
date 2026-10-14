@@ -316,7 +316,7 @@ The Cedar runtime requires a `Request{principal, action, resource, context}`. Th
 
 | Cedar field | Policy input source | Type |
 | --- | --- | --- |
-| `principal` | `$pi.snapshot.envelope.agent.id` resolved to `Agent::"<id>"` | `Agent` entity |
+| `principal` | `$pi.snapshot.agent.id`, or `$pi.snapshot.envelope.agent.id` for AGT-shaped snapshots, resolved to `Agent::"<id>"`. The runtime MUST fail closed with `runtime_error:policy_invocation_failed` when neither is a string | `Agent` entity |
 | `action` | The intervention point name mapped as `Action::"<ip>"` | `Action` entity |
 | `resource` | `$pi.tool` projected as `Tool::"<name>"` at tool intervention points, otherwise `$pi.policy_target` projected as `PolicyTarget::"<kind>"` | entity |
 | `context` | Every member of `$pi.snapshot`, the `envelope` block included, plus `$pi.annotations` as one nested record under `annotations` | record |

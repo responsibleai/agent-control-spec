@@ -49,7 +49,7 @@
       "items": {
         "type": "string"
       },
-      "description": "Policy supplied information-flow labels for the data produced at this sink. The core returns them verbatim; the host persists them with the produced data and re-supplies them as input.ifc.source_labels (AGT-SNAPSHOT §2.2) on later evaluations. The core stores and propagates nothing."
+      "description": "Policy supplied information-flow labels for the data produced at this sink. The core returns them verbatim; the host persists them with the produced data and re-supplies them as snapshot.ifc.source_labels (the snapshot of spec/schema/wire/snapshot.schema.json; SPECIFICATION.md sections 11 and 13.2) on later evaluations. The core stores and propagates nothing."
     }
   },
   "allOf": [
