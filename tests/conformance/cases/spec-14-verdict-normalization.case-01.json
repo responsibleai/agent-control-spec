@@ -1,7 +1,7 @@
 {
   "$schema": "../cases.schema.json",
   "id": "spec-14-verdict-normalization.case-01",
-  "spec_section": "14",
+  "spec_section": "13",
   "title": "invalid policy decision fails closed",
   "claimable": true,
   "operation": "evaluate",

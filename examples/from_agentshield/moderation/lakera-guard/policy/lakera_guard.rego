@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/policies/lakera-guard.yaml
 package agent_control_specification.lakera_guard
 

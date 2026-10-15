@@ -1,7 +1,7 @@
 {
   "$schema": "../cases.schema.json",
   "id": "spec-08-intervention-points.case-07",
-  "spec_section": "8",
+  "spec_section": "4",
   "title": "unconfigured intervention point fails closed",
   "claimable": true,
   "operation": "evaluate",

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Policy evaluation benchmark for the Rust core.
 //!
 //! Reports what a host sizing this runtime needs to know: what

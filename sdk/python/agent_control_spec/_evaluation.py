@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Shared native evaluation of an immutable context snapshot."""
 
 import json

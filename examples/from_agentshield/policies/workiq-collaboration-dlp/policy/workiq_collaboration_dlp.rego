@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield examples/policies/workiq-collaboration-dlp.yaml
 #
 # Snapshot contract: ACS is stateless, so all AgentShield taint and delegate

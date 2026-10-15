@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::dispatchers::constants::{FIELD_FROM, FIELD_INPUT_FROM, POLICY_INPUT_SNAPSHOT};
 use crate::{AnnotatorInvocation, JsonPath, JsonValue, PathEnv, RuntimeError};
 

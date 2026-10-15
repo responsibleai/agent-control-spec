@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 /**
  * Agent Control Specification — Node wrapper.
  *
@@ -392,7 +394,8 @@ export class AcsInterceptor implements Interceptor {
    * surfaces as a fail-closed `runtime_error:*` deny rather than
    * reading as "no annotation". A `limits` mapping overrides only the
    * fields it names; the rest keep the engine's defaults, see
-   * {@link DEFAULT_LIMITS}.
+   * {@link DEFAULT_LIMITS}. The caps bound manifest loading (the
+   * `extends` chain), evaluation and the bundled dispatchers alike.
    */
   static fromPath(manifestPath: string, options: AcsInterceptorOptions = {}): AcsInterceptor {
     const name = options.name ?? "acs";

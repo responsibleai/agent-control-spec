@@ -1,6 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock confidence gate. Hosts attach a self-assessed confidence score
 # under `input.annotations.confidence.score` (range 0..1) and this library
 # denies the action with `confidence_below_threshold` when the score falls

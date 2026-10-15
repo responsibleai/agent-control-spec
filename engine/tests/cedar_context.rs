@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(feature = "cedar")]
 //! Bundled Cedar dispatcher driven through the public `Runtime` API.
 //!
@@ -16,6 +18,8 @@ use agent_control_spec::{
     JsonValue, Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError,
     Verdict,
 };
+
+mod common;
 use serde_json::json;
 use std::{
     fs,
@@ -77,8 +81,7 @@ fn write_fixture(name: &str, content: &str) -> String {
 }
 
 fn library_path() -> String {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
+    common::repo_root()
         .join("policy")
         .join("cedar-lib")
         .join("agt_default.cedar")
@@ -595,14 +598,12 @@ permit(principal, action, resource);
 
 /// A snapshot in the wire shape of `spec/schema/wire/snapshot.schema.json`
 /// carries `agent` at the top level and no `envelope` block. The
-/// dispatcher still reads the principal from `envelope.agent.id` (see
-/// https://github.com/responsibleai/agent-control-spec/issues/84), so
-/// the wire shape is tested with a minimal envelope added. The
-/// context-gated rule sees the same `tool_call` either way.
+/// dispatcher reads the principal from `agent.id` there, and from
+/// `envelope.agent.id` for AGT-shaped snapshots. The context-gated rule
+/// sees the same `tool_call` either way.
 #[test]
 fn wire_shaped_snapshot_reaches_the_same_context_gated_verdict() {
     let wire = json!({
-        "envelope": {"agent": {"id": "agent-1"}},
         "agent": {"id": "agent-1", "name": "agent-1", "version": "1.0"},
         "session": {"id": "sess-1"},
         "tool_call": {"name": "pay", "args": {"amount": 500}, "id": "call-1"}
@@ -615,6 +616,26 @@ fn wire_shaped_snapshot_reaches_the_same_context_gated_verdict() {
     assert_plain_deny(&from_wire, "amount_too_high");
     assert_eq!(from_wire.verdict.reason, from_envelope.verdict.reason);
     assert_eq!(from_wire.verdict.decision, from_envelope.verdict.decision);
+}
+
+/// The principal of a wire-shaped snapshot is `Agent::"<agent.id>"`, so
+/// a principal-gated policy fires on it without an `envelope` block.
+#[test]
+fn wire_shaped_snapshot_principal_is_the_top_level_agent_id() {
+    let outcome = evaluate(
+        inline(
+            r#"
+@id("agent_blocked")
+forbid(principal == Agent::"agent-1", action, resource);
+permit(principal, action, resource);
+"#,
+        ),
+        json!({
+            "agent": {"id": "agent-1"},
+            "tool_call": {"name": "pay", "args": {"amount": 1}, "id": "call-1"}
+        }),
+    );
+    assert_plain_deny(&outcome, "agent_blocked");
 }
 
 // ── deny reason ordering and fallback ────────────────────────────────
@@ -1756,16 +1777,23 @@ fn string_valued_args_fail_closed_on_has() {
     assert_fails_closed_naming(&outcome, "policy `policy0`: type error");
 }
 
-/// The principal id is spliced into `Agent::"<id>"`. A Cedar string
-/// escape in the snapshot id does not decode to another id:
-/// `EntityUid::from_str` wants a normalized uid and rejects it.
+/// The principal uid is built from the raw snapshot id, never by
+/// parsing `Agent::"<id>"`. A Cedar string escape in the id is part of
+/// the id: it does not decode to another principal and it does not
+/// fail the evaluation.
 #[test]
-fn principal_id_with_a_cedar_escape_fails_closed() {
+fn principal_id_with_a_cedar_escape_is_taken_literally() {
     let policy = r#"permit(principal == Agent::"alice", action, resource);"#;
     let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
     snapshot["envelope"]["agent"]["id"] = json!("\\u{61}lice");
     let outcome = evaluate(inline(policy), snapshot);
-    assert_fails_closed_naming(&outcome, "principal entity");
+    assert_plain_deny(&outcome, "no_matching_policy");
+
+    let literal = r#"permit(principal == Agent::"\\u{61}lice", action, resource);"#;
+    let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
+    snapshot["envelope"]["agent"]["id"] = json!("\\u{61}lice");
+    let outcome = evaluate(inline(literal), snapshot);
+    assert_plain_allow(&outcome);
 
     let mut snapshot = envelope_snapshot("pay", json!({"amount": 1}), 0);
     snapshot["envelope"]["agent"]["id"] = json!("bob");

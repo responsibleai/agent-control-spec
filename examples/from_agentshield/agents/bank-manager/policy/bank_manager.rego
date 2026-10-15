@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Consolidated port of AgentShield bank-manager guardrails.yaml,
 # bank-base.guardrails.yaml, and bank-mcp-template.guardrails.yaml.
 # ACS is stateless. Hosts must supply all AgentShield state as snapshot fields:

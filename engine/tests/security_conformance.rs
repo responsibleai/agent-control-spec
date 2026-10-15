@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint, JsonValue, Limits,
     Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError, TelemetryEvent,
@@ -11,6 +13,14 @@ use std::{
     str::FromStr,
     sync::{Arc, Mutex},
 };
+
+mod common;
+
+/// A file outside the engine package, read from the repository checkout.
+fn repo_file(relative: &str) -> String {
+    let path = common::repo_root().join(relative);
+    fs::read_to_string(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
 
 struct FixtureAnnotator {
     behavior: Option<String>,
@@ -168,8 +178,7 @@ fn core_runtime_produced_reasons() -> BTreeSet<&'static str> {
 
 #[test]
 fn reserved_reason_inventory_matches_producers() {
-    let inventory: Value =
-        serde_json::from_str(include_str!("../../spec/reserved-reasons.json")).unwrap();
+    let inventory: Value = serde_json::from_str(&repo_file("spec/reserved-reasons.json")).unwrap();
     let reasons = inventory["reasons"].as_array().unwrap();
 
     let core_runtime_inventory: BTreeSet<_> = reasons
@@ -248,9 +257,9 @@ fn spec_reason_table(spec: &str, header: &str) -> Vec<Vec<String>> {
 
 #[test]
 fn reserved_reason_tables_match_inventory() {
-    let spec = include_str!("../../spec/SPECIFICATION.md");
-    let inventory: Value =
-        serde_json::from_str(include_str!("../../spec/reserved-reasons.json")).unwrap();
+    let spec = repo_file("spec/SPECIFICATION.md");
+    let spec = spec.as_str();
+    let inventory: Value = serde_json::from_str(&repo_file("spec/reserved-reasons.json")).unwrap();
     let core_runtime_produced = core_runtime_produced_reasons();
 
     // reason -> (producer, cause). The two-column table has no producer
@@ -342,8 +351,8 @@ fn every_runtime_error_reason_maps_to_deny_without_effects() {
 
 #[test]
 fn executable_parity_fixture_fails_closed_for_build_and_evaluate_reasons() {
-    let fixture: Value = serde_json::from_str(include_str!(
-        "../../tests/conformance/fail_closed_error_parity.json"
+    let fixture: Value = serde_json::from_str(&repo_file(
+        "tests/conformance/fail_closed_error_parity.json",
     ))
     .unwrap();
     let reasons: BTreeSet<_> = fixture["reserved_reasons"]

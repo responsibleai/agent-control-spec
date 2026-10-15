@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::{constants::annotation as annotation_key, manifest::Manifest, JsonValue, RuntimeError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;

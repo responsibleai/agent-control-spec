@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Host extension points: annotator and policy dispatchers, telemetry
 sinks, perf-telemetry levels, manifest tooling, and structured
 validation diagnostics.
@@ -170,6 +170,25 @@ def test_host_annotator_dispatcher_that_raises_fails_closed_not_silent():
     verdict = policy.evaluate("input", _builder().input(content="hello"))
     assert verdict.decision.value == "deny"
     assert verdict.reason.startswith("runtime_error:"), verdict.reason
+
+
+def test_host_annotator_dispatcher_output_is_not_rewritten():
+    """A dispatcher result the engine cannot carry as JSON fails closed
+    instead of being quietly retyped: a lone surrogate is not replaced
+    with U+FFFD and an integer past 64 bits is not turned into a
+    string. Either would hand the policy a value the dispatcher never
+    returned."""
+    for bad in ({"blocked": False, "note": "\udcff"}, {"blocked": False, "n": 2**70}):
+        dispatcher = RecordingAnnotator(bad)
+        policy = ActivatedPolicy.from_memory(
+            ANNOTATOR_MANIFEST,
+            _bundles(),
+            annotator_dispatcher=dispatcher,
+        )
+        verdict = policy.evaluate("input", _builder().input(content="hello"))
+        assert dispatcher.calls, "dispatcher must run"
+        assert verdict.decision.value == "deny", bad
+        assert verdict.reason == "runtime_error:annotation_failed", verdict.reason
 
 
 def test_host_annotator_dispatcher_can_be_a_plain_callable():

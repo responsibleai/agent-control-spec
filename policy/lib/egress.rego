@@ -1,6 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock egress gate. Hosts use `input.tool.security_labels` to record the
 # domains a tool sink is permitted to reach. When the host annotates the
 # snapshot with the destination of a tool call, this library denies any

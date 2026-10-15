@@ -1,6 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock approval helpers. These rules produce `escalate` verdicts per
 # SPECIFICATION.md §13.1; the host approval path (§17.1) resolves
 # them through the resolver declared in the `approval` manifest section

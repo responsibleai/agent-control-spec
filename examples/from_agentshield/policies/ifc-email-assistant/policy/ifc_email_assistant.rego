@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield examples/policies/ifc-email-assistant.yaml
 #
 # Snapshot contract: ACS is stateless, so source exposure and destination

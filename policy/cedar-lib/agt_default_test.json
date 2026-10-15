@@ -140,6 +140,26 @@
     "num_errors": 0
   },
   {
+    "name": "ifc_input_without_labels_denies_over_baseline_permit",
+    "request": {
+      "principal": "Agent::\"a\"",
+      "action": "Action::\"input\"",
+      "resource": "PolicyTarget::\"user_input\"",
+      "context": {
+        "envelope": {"agent": {"id": "a"}, "budgets": {"tool_call_count": 0, "token_count": 0}},
+        "input": {"body": "hi"},
+        "annotations": {}
+      }
+    },
+    "entities": [
+      {"uid": {"type": "PolicyTarget", "id": "user_input"}, "attrs": {"clearance_dominated_labels": ["public", "internal"]}, "parents": []},
+      {"uid": {"type": "Agent", "id": "a"}, "attrs": {}, "parents": []}
+    ],
+    "decision": "deny",
+    "reason": ["ifc_source_labels_missing_input"],
+    "num_errors": 0
+  },
+  {
     "name": "approval_required_permits_with_escalate_advice_alongside_baseline",
     "request": {
       "principal": "Agent::\"a\"",

@@ -1,6 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock IFC label-flow library. This file replaces the upstream
 # `agent_control_specification.lib.ifc` library for AGT users authoring
 # manifests against the AGT snapshot shape. The function surface

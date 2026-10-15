@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::dispatchers::{
     bundled::{HttpTransport, TransportRequest, TransportResponse, UreqHttpTransport},
     constants::*,
@@ -335,11 +337,7 @@ impl TransportResponseExt for TransportResponse {
         } else {
             Err(resolve::failed(
                 annotator_name,
-                format!(
-                    "HTTP request failed with status {}: {}",
-                    self.status,
-                    self.body.trim()
-                ),
+                http::describe_http_failure(self.status, &self.body),
             ))
         }
     }

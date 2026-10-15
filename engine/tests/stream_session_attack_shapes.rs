@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Attack shapes ported from the MAF agent-hooks review.
 //!
 //! The MAF review rounds (see `analysis/streaming-acs-vs-maf.md`, R9) found

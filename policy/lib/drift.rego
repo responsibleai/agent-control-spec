@@ -1,6 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock drift gate. Hosts run a behaviour-drift detector outside the
 # policy engine and attach its score under `input.annotations.drift_score`
 # (a host annotator name agreed in the manifest). This library issues a

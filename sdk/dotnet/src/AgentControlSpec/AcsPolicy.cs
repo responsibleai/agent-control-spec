@@ -1,5 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
+// Copyright (c) Microsoft. All rights reserved.
+
 // One policy version, readied once and evaluated many times.
 //
 // AcsInterceptor answers "evaluate this agent context against a

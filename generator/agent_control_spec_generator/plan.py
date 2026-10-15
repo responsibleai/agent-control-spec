@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Parse the model's JSON plan without coercing or dropping policy fields."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/autogen_team_quickstart_azure.guardrails.yaml.
 # ACS is stateless. Host snapshots must supply prior AgentShield variables explicitly:
 #   snapshot.kyc_token, snapshot.account_tier, snapshot.business_account_authorized.

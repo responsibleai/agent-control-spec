@@ -1,7 +1,7 @@
 # Vendored conformance vectors
 
 The vectors under `vectors/` are the AGENT-HOOKS-0.1 Conformance Test
-Kit corpus, vendored verbatim from agent-hooks `0.1.0-alpha.5`
+Kit corpus, vendored verbatim from agent-hooks `0.1.0-beta.2`
 (https://github.com/responsibleai/agent-hooks). They are consumed by
 `engine/tests/agent_hooks_conformance.rs`, which runs the full corpus
 against this repository's reference host and is the source of the
@@ -13,10 +13,10 @@ corpus come from the same release.
 
 Source of the current copy:
 
-- Tag: `v0.1.0-alpha.5`
-- Commit: `61952932e52d5dab091a64677f19272daae619f8`
-- Files: 47 (`AH-CTK-001` through `AH-CTK-105`)
-- Digest: `ee86aadddb26ff1fd6f26318c68decc504c1020ae150f30ef075176af2558c6f`
+- Tag: `v0.1.0-beta.2`
+- Commit: `064173e31b02be4cdea1342dc16d739e451846bb`
+- Files: 73 (`AH-CTK-001` through `AH-CTK-141`)
+- Digest: `ace2c33cf5b0134ddd98200e19f1645b7745aa745f694186eaa8422d43a2eb8d`
 
 The digest is computed from inside `vectors/` with:
 

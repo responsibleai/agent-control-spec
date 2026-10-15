@@ -1,5 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
+// Copyright (c) Microsoft. All rights reserved.
+
 // Host extension points: the engine's own dispatchers, telemetry sink
 // and perf level, reachable from .NET.
 //
@@ -84,6 +84,43 @@ public sealed class HostHooksTests : IDisposable
         var denied = await harmful.InterceptAsync(Input("hello"));
         Assert.Equal(Decision.Deny, denied.Decision);
         Assert.Equal("unsafe_content", denied.Reason);
+    }
+
+    [Fact]
+    public async Task DisposeDuringAnInFlightCallLetsItsCallbacksFinish()
+    {
+        // The annotator blocks until Dispose has been called on another
+        // thread, then returns. The verdict must still come from the
+        // callback's answer: the delegate kept its target and the native
+        // interceptor was freed only after the call returned.
+        var manifest = WriteFixture();
+        using var disposeCalled = new ManualResetEventSlim();
+        using var inCallback = new ManualResetEventSlim();
+        var interceptor = AcsHostInterceptor.FromPath(
+            manifest,
+            annotator: (_, _, _) =>
+            {
+                inCallback.Set();
+                disposeCalled.Wait(TimeSpan.FromSeconds(10));
+                return """{"severity":7}""";
+            });
+
+        var call = Task.Run(async () => await interceptor.InterceptAsync(Input("hello")));
+        Assert.True(inCallback.Wait(TimeSpan.FromSeconds(10)), "the callback did not start");
+        var dispose = Task.Run(() =>
+        {
+            interceptor.Dispose();
+        });
+        // Dispose must not block: it marks the handle closed and leaves
+        // the free to the call in flight.
+        Assert.True(dispose.Wait(TimeSpan.FromSeconds(10)), "Dispose blocked on the in-flight call");
+        disposeCalled.Set();
+
+        var verdict = await call;
+        Assert.Equal(Decision.Deny, verdict.Decision);
+        Assert.Equal("unsafe_content", verdict.Reason);
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            async () => await interceptor.InterceptAsync(Input("hello")));
     }
 
     private string WriteChainedFixture()
@@ -479,6 +516,32 @@ public sealed class HostHooksTests : IDisposable
         var verdict = await capped.InterceptAsync(Input(big));
         Assert.Equal(Decision.Deny, verdict.Decision);
         Assert.StartsWith("runtime_error:", verdict.Reason);
+    }
+
+    [Fact]
+    public async Task TheConstructorResolvesExtendsUnderTheHostLoaderCaps()
+    {
+        // Same chain, loaded once with default caps and once with
+        // max_extends_depth 0. A host that lowered the cap on the
+        // interceptor and still got the chain loaded would believe it was
+        // protected when it was not.
+        var parent = WriteFixture();
+        var child = Path.Combine(_dir, "child.yaml");
+        File.WriteAllText(child, $"""
+            agent_control_specification_version: "0.4.0-alpha.1"
+            extends: ["{Path.GetFileName(parent)}"]
+            """);
+
+        using var permissive = AcsHostInterceptor.FromPath(
+            child, annotator: (_, _, _) => """{"severity":1}""");
+        Assert.Equal(Decision.Allow, (await permissive.InterceptAsync(Input("hi"))).Decision);
+
+        var error = Assert.Throws<AgentControlSpecNativeException>(() =>
+            AcsHostInterceptor.FromPath(
+                child,
+                annotator: (_, _, _) => """{"severity":1}""",
+                limits: """{"max_extends_depth": 0}"""));
+        Assert.Contains("depth", error.Message);
     }
 
     [Fact]

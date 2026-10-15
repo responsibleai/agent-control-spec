@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::dispatchers::{constants::*, http, resolve};
 use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, RuntimeError};
 

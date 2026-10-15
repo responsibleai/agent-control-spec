@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::dispatchers::{
     bundled::{self, HttpTransport, ResolvedClassifierConfig, UreqHttpTransport},
     constants::*,

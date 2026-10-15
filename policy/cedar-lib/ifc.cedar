@@ -1,6 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
+// Copyright (c) Microsoft. All rights reserved.
+
 // AGT stock IFC label flow library, Cedar mirror of
 // `policy/lib/agt_ifc.rego`. The Rego library implements the AGT no
 // write down rule against `input.snapshot.input.ifc.source_labels` at
@@ -32,6 +31,11 @@
 // include the sink clearance label itself when the lattice is
 // reflexive, which the default AGT lattice in
 // `policy/lib/agt_ifc.rego` is.
+//
+// A resource without `clearance_dominated_labels` is not an IFC sink.
+// None of the forbids below applies to it, including the two that fail
+// closed when the snapshot carries no labels. A host that wants a sink
+// checked gives its resource entity the attribute.
 
 @id("ifc_clearance_violation_input")
 forbid (
@@ -83,4 +87,34 @@ forbid (
   context.response has ifc &&
   context.response.ifc has result_labels &&
   context.response.ifc.result_labels.isEmpty()
+};
+
+// Fail closed when the sink is an IFC sink (the resource carries
+// `clearance_dominated_labels`) but the snapshot carries no labels
+// for it. Specification section 11 treats a missing label field as a
+// denial. A resource without the attribute is not an IFC sink and
+// these rules do not match it.
+
+@id("ifc_source_labels_missing_input")
+forbid (
+  principal,
+  action == Action::"input",
+  resource
+) when {
+  resource has clearance_dominated_labels &&
+  !(context has input &&
+    context.input has ifc &&
+    context.input.ifc has source_labels)
+};
+
+@id("ifc_result_labels_missing_output")
+forbid (
+  principal,
+  action == Action::"output",
+  resource
+) when {
+  resource has clearance_dominated_labels &&
+  !(context has response &&
+    context.response has ifc &&
+    context.response.ifc has result_labels)
 };

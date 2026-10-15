@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Keep numeric and boolean targets strict without discarding YAML locations
 //! or letting Serde's JSON-value adapter deserialize structs positionally.
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};

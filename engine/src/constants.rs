@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 pub(crate) mod annotation {
     pub(crate) const FROM: &str = "from";
     pub(crate) const INPUT_FROM: &str = "input_from";

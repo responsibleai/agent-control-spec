@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Release accounting for a host that emits model output before the whole
 //! response exists.
 //!

@@ -53,8 +53,9 @@ export declare function interceptorNew(manifestPath: string): ExternalObject<Han
  * cap does not restate the other nine. A host feeding large payloads
  * raises `max_snapshot_bytes`; one hardening against a hostile
  * manifest lowers `max_extends_depth` or `manifest_url_timeout_ms`.
- * A field present but not a non-negative integer is a hard ERROR, not
- * a silently-kept default.
+ * The caps bound manifest loading (the `extends` chain), evaluation
+ * and the bundled dispatchers alike. A field present but not a
+ * non-negative integer is a hard ERROR, not a silently-kept default.
  *
  * Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
  * engine's evaluation. A callback that throws surfaces as a fail-closed

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock Cedar library test runner. Invokes `cedar run-tests` against
 # every `.cedar` library file and its sibling `_test.json` in this
 # directory. Returns a non-zero exit code when any test fails so CI can

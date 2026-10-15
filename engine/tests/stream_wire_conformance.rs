@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Conformance against the external streaming contract's real drive pattern.
 //!
 //! These tests encode how the Azure content safety `Annotate` stream is

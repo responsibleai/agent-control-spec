@@ -1,6 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT-DELTA D1 regression tests. The previous policy emitted a v4
 # `effects: [redact ...]` payload from the redact_from factory across
 # post_tool_call and output. The Rust core hard-rejects any verdict

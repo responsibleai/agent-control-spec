@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield examples/policies/endpoint-governance.yaml
 #
 # Endpoint allowlist is represented as one synthetic ACS tool, http.request.

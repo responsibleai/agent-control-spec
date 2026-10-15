@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Evaluation releases the GIL while an annotator waits on the network.
 
 A manifest whose annotators are `llm`, `endpoint` or `classifier` performs a

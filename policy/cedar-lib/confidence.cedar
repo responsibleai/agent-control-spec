@@ -1,6 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
+// Copyright (c) Microsoft. All rights reserved.
+
 // AGT stock confidence gate, Cedar mirror of `policy/lib/confidence.rego`.
 // The Rego library denies the action with reason
 // `confidence_below_threshold` when the host annotator score

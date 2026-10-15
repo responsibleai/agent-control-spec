@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Property based testing of the release accounting invariants.
 //!
 //! A seeded generator drives random operation sequences at a session while a

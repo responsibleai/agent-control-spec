@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::dispatchers::{constants::*, host_env, http};
 use crate::JsonValue;
 use serde_json::json;

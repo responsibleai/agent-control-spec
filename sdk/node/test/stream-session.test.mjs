@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Streaming mediation surface (spec §18.1).
 //
 // The engine is stateless everywhere else, so a rune-addressable

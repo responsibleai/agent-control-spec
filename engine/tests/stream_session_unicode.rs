@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Rune counting under adversarial text.
 //!
 //! Offsets are Unicode scalar values. Every other length a host might reach for

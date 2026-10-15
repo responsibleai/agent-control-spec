@@ -289,10 +289,8 @@ adapter too. Limits default field by field; inspect `DEFAULT_LIMITS`.
 File activation applies loader limits while resolving `extends`.
 In-memory activation still requires already-composed manifest text
 and rejects unresolved relative bundle paths.
-The synchronous interceptor constructor does not yet apply configured
-limits while loading its manifest. The cross-binding correction and
-constructor coverage are tracked in
-[#82](https://github.com/responsibleai/agent-control-spec/issues/82).
+The `AcsInterceptor` constructor applies the same limits while loading
+its manifest.
 
 `evaluate()` and `AcsInterceptor.intercept()` are synchronous. GIL
 release is not an asyncio yield, and the emitter's timeout cannot
@@ -375,9 +373,8 @@ It is separate from the runtime API and intended for inspection rather than
 cross-SDK interchange or persistent artifacts. The generator uses it instead
 of an external OPA installation.
 
-This helper first ships in SDK `0.4.0a4`; it is not in the previously published
-0.4.0a3 wheel. Until alpha.4 is published, install the SDK from this checkout
-alongside the generator. Tests compare the compiled Regorus version marker with
+This helper first shipped in SDK `0.4.0a4` and remains available in
+`0.4.0b1`. Tests compare the compiled Regorus version marker with
 the exact Cargo requirement and resolved lockfile to catch dependency-pin drift.
 
 Trust model: a cooperative contract, not a security boundary. The host

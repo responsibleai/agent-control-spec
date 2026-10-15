@@ -1,0 +1,9 @@
+# EditorConfig for the .NET SDK (https://editorconfig.org).
+# Every C# file starts with the one-line Microsoft copyright header.
+# IDE0073 reports a file without it; Directory.Build.props runs the
+# code-style analyzers in the build and turns that report into an error.
+root = true
+
+[*.cs]
+file_header_template = Copyright (c) Microsoft. All rights reserved.
+dotnet_diagnostic.IDE0073.severity = warning

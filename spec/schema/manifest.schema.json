@@ -545,27 +545,9 @@
     "intervention_point": {
       "type": "object",
       "additionalProperties": false,
-      "anyOf": [
-        {
-          "required": [
-            "policy_target"
-          ]
-        },
-        {
-          "required": [
-            "policy"
-          ]
-        },
-        {
-          "required": [
-            "annotations"
-          ],
-          "properties": {
-            "annotations": {
-              "minProperties": 1
-            }
-          }
-        }
+      "required": [
+        "policy_target",
+        "policy"
       ],
       "properties": {
         "policy_target": {
@@ -573,7 +555,8 @@
         },
         "policy_target_kind": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "description": "Descriptive label recorded on the policy target as policy_target.kind. A cedar policy sees it as the resource PolicyTarget::\"<kind>\" at a point that is not a tool call; when it is absent there the resource is the sentinel PolicyTarget::\"unspecified\"."
         },
         "tool_name_from": {
           "$ref": "#/$defs/path"

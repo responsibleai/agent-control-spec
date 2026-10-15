@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_specification::{
     AnnotatorDispatcher, AnnotatorInvocation, Decision, EnforcementMode, InterventionPoint,
     InterventionPointRequest, JsonValue, Manifest, PolicyDispatcher, PreparedPolicyInvocation,

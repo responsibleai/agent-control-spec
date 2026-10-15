@@ -1,6 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT-DELTA D1 regression tests. The previous policy emitted an
 # `effects: [redact ...]` payload at post_tool_call / output for the
 # single secret_scan match. The Rust core hard-rejects any verdict

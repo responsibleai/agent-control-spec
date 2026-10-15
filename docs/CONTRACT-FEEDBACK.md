@@ -34,9 +34,10 @@ Resolved in agent-hooks `0.1.0-alpha.3` (surfaced against
    `runtime_error:*` vs `host_error:*` namespace split for
    engine-internal failures.
 
-Positive signal worth keeping: the vendored 47-vector corpus ran green
-against the emitter loop on the first complete attempt after the
-engine's native adoption — the §5 validation surface (`approval` only
-on deny, warnings shape, transform grammar parity via
-`parse_transform_path`) caught every malformed policy output in tests
-before it could reach a host.
+Positive signal worth keeping: the 47-vector corpus vendored at the
+time (73 vectors as of agent-hooks 0.1.0-beta.2) ran green against the
+emitter loop on the first complete attempt after the engine's native
+adoption. The section 5 validation surface (`approval` only on deny,
+warnings shape, transform grammar parity via `parse_transform_path`)
+caught every malformed policy output in tests before it could reach a
+host.

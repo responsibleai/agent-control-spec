@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agent_control_specification.medical_records_assistant_guardrails
 
 import rego.v1

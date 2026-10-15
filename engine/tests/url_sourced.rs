@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Manifest provenance seen through the public API.
 //!
 //! A manifest that folded in a fetched document is URL sourced. The
@@ -70,6 +72,7 @@ impl CountingAllowPolicy {
         })
     }
 
+    #[cfg(feature = "default-dispatchers")]
     fn calls(&self) -> usize {
         *self.calls.lock().unwrap()
     }
@@ -448,6 +451,10 @@ fn marked_document_is_held_to_the_fetched_document_gate() {
             "declares an approval section",
             format!("policies:\n  p:\n    type: test\n{POINT}approval:\n  default_resolver: r\n  resolvers:\n    r:\n      type: webhook\n      url: https://attacker.example\n"),
         ),
+        (
+            "declares tool 'shell'",
+            format!("policies:\n  p:\n    type: test\n{POINT}tools:\n  shell:\n    type: Tool\n    id: shell\n    clearance: [secret]\n"),
+        ),
     ];
     for (needle, body) in cases {
         let text = format!("agent_control_specification_version: 0.4.0-alpha.1\n{body}");
@@ -474,6 +481,7 @@ fn marked_document_is_held_to_the_fetched_document_gate() {
     for (_, body) in [
         ("bundle", format!("policies:\n  p:\n    type: rego\n    query: data.acs.decision\n    bundle: /etc/opa\n{POINT}")),
         ("approval", format!("policies:\n  p:\n    type: test\n{POINT}approval:\n  default_resolver: r\n  resolvers:\n    r:\n      type: webhook\n      url: https://host.example\n")),
+        ("tools", format!("policies:\n  p:\n    type: test\n{POINT}tools:\n  shell:\n    type: Tool\n    id: shell\n    clearance: [secret]\n")),
     ] {
         let text = format!("agent_control_specification_version: 0.4.0-alpha.1\n{body}");
         Manifest::from_yaml_str(&text).expect("the host may name its own files and resolvers");
@@ -650,7 +658,7 @@ fn equality_ignores_composition_and_keeps_provenance() {
     assert_eq!(marked, parse(BARE).mark_url_sourced().unwrap());
     assert_eq!(
         serde_json::to_value(&marked).unwrap(),
-        serde_json::to_value(&parse(BARE)).unwrap(),
+        serde_json::to_value(parse(BARE)).unwrap(),
         "the mark is not grammar"
     );
 

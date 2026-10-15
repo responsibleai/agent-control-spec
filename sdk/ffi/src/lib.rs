@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // C ABI over the Agent Control Specification runtime (language bindings).
 //
 // Conventions, shared with the .NET binding in `sdk/dotnet`:
@@ -872,16 +874,18 @@ pub unsafe extern "C" fn acs_policy_free(handle: *mut AcsActivatedPolicy) {
 // absent annotation: a classifier that could not be reached must not
 // read as "found nothing".
 //
-// Ownership: a string the host returns is freed by the host, through
-// the `free` callback registered alongside. The engine copies what it
-// needs first. It never calls `acs_free_string` on host memory.
+// Ownership: a string the host returns, the result and the `*err_out`
+// message alike, is freed by the host, through the `free` callback
+// registered alongside. The engine copies what it needs first. It never
+// calls `acs_free_string` on host memory.
 // ---------------------------------------------------------------------
 
 /// Free a string a host callback returned.
 pub type AcsHookFree = unsafe extern "C" fn(ctx: *mut c_void, value: *mut c_char);
 
 /// Classify one annotation. Returns the annotation value as JSON, or
-/// NULL with `*err_out` set.
+/// NULL with `*err_out` set. Both strings are host allocated; the engine
+/// copies each and hands it back through the registered `AcsHookFree`.
 ///
 /// With manifest contract `0.5.0-alpha.1`, `policy_input_json` is staged:
 /// `annotations` contains the full outputs of direct `needs` dependencies
@@ -901,7 +905,9 @@ pub type AcsAnnotatorFn = unsafe extern "C" fn(
 ) -> *mut c_char;
 
 /// Evaluate one prepared policy invocation. Returns the policy output as
-/// JSON, or NULL with `*err_out` set.
+/// JSON, or NULL with `*err_out` set. Both strings are host allocated;
+/// the engine copies each and hands it back through the registered
+/// `AcsHookFree`.
 pub type AcsPolicyFn = unsafe extern "C" fn(
     ctx: *mut c_void,
     invocation_json: *const c_char,
@@ -926,38 +932,49 @@ unsafe impl Sync for HostCtx {}
 
 impl HostCtx {
     /// Copy a string the host returned, then hand the original back to
-    /// the host's own allocator.
-    unsafe fn take(&self, raw: *mut c_char) -> Option<String> {
+    /// the host's own allocator. `Ok(None)` is a NULL return, which the
+    /// callback uses to report a failure through `*err_out`; a string
+    /// that is not UTF-8 is its own error, not a missing result.
+    unsafe fn take(&self, what: &str, raw: *mut c_char) -> Result<Option<String>, RuntimeError> {
         if raw.is_null() {
-            return None;
+            return Ok(None);
         }
         let copied = CStr::from_ptr(raw).to_str().ok().map(str::to_string);
+        self.release(raw);
+        copied.map(Some).ok_or_else(|| {
+            RuntimeError::PolicyInvocationFailed(format!(
+                "host {what} returned a string that is not valid UTF-8"
+            ))
+        })
+    }
+
+    /// Return a string the host allocated to the host's free callback.
+    /// Without one the string is left to the host: the engine never
+    /// frees host memory with its own allocator.
+    unsafe fn release(&self, raw: *mut c_char) {
         if let Some(free) = self.free {
             free(self.ctx, raw);
         }
-        copied
     }
-}
 
-fn host_error(what: &str, err_out: *mut *mut c_char) -> RuntimeError {
-    let detail = if err_out.is_null() {
-        None
-    } else {
-        let raw = unsafe { *err_out };
-        if raw.is_null() {
+    /// The error for a callback that returned NULL. `*err_out` is a
+    /// string the host allocated; it is copied, then released through
+    /// the host's free callback like every other host string.
+    unsafe fn error(&self, what: &str, err_out: *mut *mut c_char) -> RuntimeError {
+        let detail = if err_out.is_null() || (*err_out).is_null() {
             None
         } else {
-            let message = unsafe { CStr::from_ptr(raw) }
-                .to_string_lossy()
-                .into_owned();
-            unsafe { acs_free_string(raw) };
+            let raw = *err_out;
+            let message = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            self.release(raw);
+            *err_out = std::ptr::null_mut();
             Some(message)
-        }
-    };
-    RuntimeError::PolicyInvocationFailed(match detail {
-        Some(message) => format!("host {what} failed: {message}"),
-        None => format!("host {what} failed without a message"),
-    })
+        };
+        RuntimeError::PolicyInvocationFailed(match detail {
+            Some(message) => format!("host {what} failed: {message}"),
+            None => format!("host {what} failed without a message"),
+        })
+    }
 }
 
 struct HostAnnotatorDispatcher {
@@ -997,8 +1014,8 @@ impl AnnotatorDispatcher for HostAnnotatorDispatcher {
                 &mut err,
             )
         };
-        let Some(json) = (unsafe { self.host.take(raw) }) else {
-            return Err(host_error("annotator", &mut err));
+        let Some(json) = unsafe { self.host.take("annotator", raw) }? else {
+            return Err(unsafe { self.host.error("annotator", &mut err) });
         };
         serde_json::from_str(&json).map_err(|e| {
             RuntimeError::PolicyInvocationFailed(format!("host annotator returned non JSON: {e}"))
@@ -1020,8 +1037,8 @@ impl PolicyDispatcher for HostPolicyDispatcher {
 
         let mut err: *mut c_char = std::ptr::null_mut();
         let raw = unsafe { (self.call)(self.host.ctx, payload.as_ptr(), &mut err) };
-        let Some(json) = (unsafe { self.host.take(raw) }) else {
-            return Err(host_error("policy dispatcher", &mut err));
+        let Some(json) = unsafe { self.host.take("policy dispatcher", raw) }? else {
+            return Err(unsafe { self.host.error("policy dispatcher", &mut err) });
         };
         serde_json::from_str(&json).map_err(|e| {
             RuntimeError::PolicyInvocationFailed(format!("host policy returned non JSON: {e}"))
@@ -1053,6 +1070,12 @@ impl TelemetrySink for HostTelemetrySink {
 /// Any callback may be NULL, which keeps the bundled default for that
 /// slot, so a host overrides only what it needs. `perf_telemetry` is
 /// `off`, `external` or `full`, and NULL means `off`.
+///
+/// `limits_json` is a JSON object of resource caps overriding the
+/// engine's defaults field by field; NULL or empty keeps every default.
+/// The caps bound manifest loading (`max_extends_depth` and the URL
+/// caps apply while the `extends` chain is resolved), evaluation and
+/// the bundled dispatchers alike.
 ///
 /// `annotator_ctx`, `policy_ctx` and `telemetry_ctx` are opaque to the
 /// engine. Dispatch happens on whichever thread evaluates, so a context
@@ -1087,13 +1110,6 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
             Some(p) => p,
             None => return std::ptr::null_mut(),
         };
-        let manifest = match Manifest::from_path(path) {
-            Ok(m) => m,
-            Err(e) => {
-                set_err(err_out, format!("{e}"));
-                return std::ptr::null_mut();
-            }
-        };
         let perf = match read_optional(perf_telemetry, "perf_telemetry", err_out) {
             Ok(Some(raw)) => match wire::parse_perf_telemetry(raw) {
                 Ok(level) => level,
@@ -1124,6 +1140,15 @@ pub unsafe extern "C" fn acs_interceptor_new_with_hooks(
             }
             Ok(_) => Limits::default(),
             Err(()) => return std::ptr::null_mut(),
+        };
+        // The host's caps bound manifest loading too: `max_extends_depth`
+        // and the URL caps apply while the `extends` chain is resolved.
+        let manifest = match Manifest::from_path_with_limits(path, limits) {
+            Ok(m) => m,
+            Err(e) => {
+                set_err(err_out, format!("{e}"));
+                return std::ptr::null_mut();
+            }
         };
 
         let annotations: Arc<dyn AnnotatorDispatcher> = match annotator_fn {
@@ -2291,6 +2316,72 @@ intervention_points:
         }
     }
 
+    #[test]
+    fn hook_constructor_resolves_extends_under_the_host_loader_caps() {
+        // Same chain, loaded once with default caps and once with
+        // `max_extends_depth: 0`. A host that lowered the cap on the
+        // interceptor and still got the chain loaded would believe it
+        // was protected when it was not.
+        let dir = std::env::temp_dir().join(format!("acs-hook-depth-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("parent.yaml"), valid_manifest_source()).unwrap();
+        std::fs::write(
+            dir.join("child.yaml"),
+            "agent_control_specification_version: \"0.4.0-alpha.1\"\nextends:\n  - ./parent.yaml\n",
+        )
+        .unwrap();
+        let child = dir.join("child.yaml");
+        let path = child.to_str().unwrap().as_bytes();
+        let construct = |limits: Option<&CString>| {
+            let mut err: *mut c_char = std::ptr::null_mut();
+            let handle = unsafe {
+                acs_interceptor_new_with_hooks(
+                    path.as_ptr(),
+                    path.len(),
+                    None,
+                    std::ptr::null_mut(),
+                    None,
+                    std::ptr::null_mut(),
+                    None,
+                    std::ptr::null_mut(),
+                    None,
+                    std::ptr::null(),
+                    limits.map_or(std::ptr::null(), |l| l.as_ptr()),
+                    &mut err,
+                )
+            };
+            let message = if err.is_null() {
+                None
+            } else {
+                let m = unsafe { CStr::from_ptr(err) }.to_str().unwrap().to_owned();
+                unsafe { acs_free_string(err) };
+                Some(m)
+            };
+            (handle, message)
+        };
+
+        let (handle, message) = construct(None);
+        assert!(message.is_none(), "default caps failed: {message:?}");
+        assert!(!handle.is_null());
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hello","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+        assert_eq!(verdict["decision"], "allow");
+
+        let limits = CString::new(r#"{"max_extends_depth":0}"#).unwrap();
+        let (handle, message) = construct(Some(&limits));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            handle.is_null(),
+            "a breached loader cap must not yield a handle"
+        );
+        let message = message.expect("a breached loader cap sets err_out");
+        assert!(message.contains("depth"), "message was: {message}");
+    }
+
     fn validate(bytes: &[u8]) -> (i32, Option<String>) {
         let mut err: *mut c_char = std::ptr::null_mut();
         let code = unsafe { acs_validate_manifest(bytes.as_ptr(), bytes.len(), &mut err) };
@@ -2693,6 +2784,149 @@ intervention_points:
         if !value.is_null() {
             drop(CString::from_raw(value));
         }
+    }
+
+    unsafe extern "C" fn failing_policy(
+        _ctx: *mut c_void,
+        _invocation: *const c_char,
+        err_out: *mut *mut c_char,
+    ) -> *mut c_char {
+        *err_out = CString::new("host policy exploded").unwrap().into_raw();
+        std::ptr::null_mut()
+    }
+
+    /// Counts, in the `usize` the dispatcher context points at, the
+    /// strings the host's free callback is handed.
+    unsafe extern "C" fn counting_free(ctx: *mut c_void, value: *mut c_char) {
+        *(ctx as *mut usize) += 1;
+        drop(CString::from_raw(value));
+    }
+
+    /// `take` tells a NULL result (the callback failed and set
+    /// `*err_out`) from a result that is not UTF-8, and releases the
+    /// latter through the host's free callback.
+    #[test]
+    fn take_reports_a_non_utf8_result_as_its_own_error() {
+        let mut freed = 0_usize;
+        let host = HostCtx {
+            ctx: (&mut freed as *mut usize).cast(),
+            free: Some(counting_free),
+        };
+        let raw = CString::new(vec![b'{', 0xFF, b'}']).unwrap().into_raw();
+        let error = unsafe { host.take("policy dispatcher", raw) }.unwrap_err();
+        assert_eq!(error.reason(), "runtime_error:policy_invocation_failed");
+        assert_eq!(
+            error.detail(),
+            "host policy dispatcher returned a string that is not valid UTF-8"
+        );
+        assert_eq!(freed, 1);
+
+        assert!(matches!(
+            unsafe { host.take("policy dispatcher", std::ptr::null_mut()) },
+            Ok(None)
+        ));
+        let raw = CString::new("{}").unwrap().into_raw();
+        assert_eq!(
+            unsafe { host.take("policy dispatcher", raw) }
+                .unwrap()
+                .as_deref(),
+            Some("{}")
+        );
+        assert_eq!(freed, 2);
+    }
+
+    unsafe extern "C" fn non_utf8_policy(
+        _ctx: *mut c_void,
+        _invocation: *const c_char,
+        _err_out: *mut *mut c_char,
+    ) -> *mut c_char {
+        CString::new(vec![b'{', 0xFF, b'}']).unwrap().into_raw()
+    }
+
+    /// A result string that is not UTF-8 is reported as such, not as a
+    /// callback that failed without a message, and still goes back to
+    /// the host's free callback.
+    #[test]
+    fn non_utf8_host_result_is_named_in_the_verdict() {
+        let dir = std::env::temp_dir().join(format!("acs-ffi-utf8-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = manifest_file(&dir);
+        let path = manifest.to_bytes();
+        let mut freed = 0_usize;
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_interceptor_new_with_hooks(
+                path.as_ptr(),
+                path.len(),
+                None,
+                std::ptr::null_mut(),
+                Some(non_utf8_policy),
+                (&mut freed as *mut usize).cast(),
+                None,
+                std::ptr::null_mut(),
+                Some(counting_free),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        assert!(err.is_null(), "constructor failed");
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hi","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+
+        assert_eq!(verdict["decision"], "deny");
+        assert_eq!(verdict["reason"], "runtime_error:policy_invocation_failed");
+        assert_eq!(freed, 1, "the result string went back to the host once");
+    }
+
+    /// A host callback that fails sets `*err_out` to a string it
+    /// allocated. The engine copies the text into the verdict and gives
+    /// the string back through the host's free callback, never to its
+    /// own allocator.
+    #[test]
+    fn host_error_strings_are_released_through_the_host_free_callback() {
+        let dir = std::env::temp_dir().join(format!("acs-ffi-err-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = manifest_file(&dir);
+        let path = manifest.to_bytes();
+        let mut freed = 0_usize;
+
+        let mut err: *mut c_char = std::ptr::null_mut();
+        let handle = unsafe {
+            acs_interceptor_new_with_hooks(
+                path.as_ptr(),
+                path.len(),
+                None,
+                std::ptr::null_mut(),
+                Some(failing_policy),
+                (&mut freed as *mut usize).cast(),
+                None,
+                std::ptr::null_mut(),
+                Some(counting_free),
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut err,
+            )
+        };
+        assert!(err.is_null(), "constructor failed");
+        assert!(!handle.is_null());
+
+        let verdict = intercept(
+            handle,
+            r#"{"interception_point":"input","input":{"content":"hi","role":"user"}}"#,
+        );
+        unsafe { acs_interceptor_free(handle) };
+
+        assert_eq!(verdict["decision"], "deny");
+        assert_eq!(verdict["reason"], "runtime_error:policy_invocation_failed");
+        assert_eq!(
+            freed, 1,
+            "the error string went back to the host exactly once"
+        );
     }
 
     /// Manifest provenance stays inside the engine. A local manifest may

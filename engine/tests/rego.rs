@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(feature = "rego")]
 
 use agent_control_spec::{
@@ -367,6 +369,50 @@ verdict := {"decision": "allow"} if not deny
     );
 }
 
+/// A decision that reads the clock, randomness or the runtime cannot be
+/// replayed from its recorded input. Each such builtin is shadowed so a
+/// rule that calls it fails closed, whatever the rule would have decided.
+#[test]
+fn a_policy_reading_a_nondeterministic_builtin_fails_closed() {
+    let calls = [
+        ("time.now_ns", "time.now_ns() > 0"),
+        ("rand.intn", "rand.intn(\"seed\", 10) >= 0"),
+        ("uuid.rfc4122", "uuid.rfc4122(\"seed\") != \"\""),
+        ("opa.runtime", "opa.runtime().version != \"\""),
+    ];
+    for (name, call) in calls {
+        let dir = test_artifact_dir(&format!("rego-nondeterministic-{}", name.replace('.', "-")));
+        fs::write(
+            dir.join("clock.rego"),
+            format!(
+                "package clock\n\nfresh if {call}\n\nverdict := {{\"decision\": \"allow\"}} if fresh\n\nverdict := {{\"decision\": \"deny\"}} if not fresh\n"
+            ),
+        )
+        .unwrap();
+
+        let error = RegorusPolicyDispatcher::new()
+            .evaluate(&rego_invocation(
+                "data.clock.verdict",
+                Some(dir.display().to_string()),
+                BTreeMap::new(),
+                json!({"policy_target": {"value": {}}}),
+            ))
+            .unwrap_err();
+
+        assert_eq!(
+            error.reason(),
+            "runtime_error:policy_invocation_failed",
+            "{name}: {}",
+            error.detail()
+        );
+        assert!(
+            error.detail().contains(&format!("{name} is not available")),
+            "{name}: {}",
+            error.detail()
+        );
+    }
+}
+
 #[test]
 fn rego_dispatcher_rejects_malformed_adapter_data_paths() {
     let mut adapter_config = BTreeMap::new();
@@ -618,10 +664,16 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
     // want opposite things from a deadline and a single value cannot
     // serve both. The heavy query needs one it will overrun; the trivial
     // recoveries need one that scheduling delay cannot blow, and this
-    // suite runs hundreds of threads in parallel. Held together by a
-    // single value they fought: at 200ms the heavy query overran by only
-    // 1.6x and a Windows runner finished it inside the deadline, so the
-    // `unwrap_err` below panicked.
+    // suite runs hundreds of threads in parallel.
+    //
+    // The heavy deadline is fixed, not measured. An earlier version
+    // derived it from a timed control run, and under load the control
+    // ran slow, handed the heavy run a deadline it could meet, and the
+    // `unwrap_err` below panicked (#101 and the 0.4.0-beta.1 review).
+    // One millisecond cannot fit a six-million-element range on any
+    // machine, so the outcome no longer depends on how busy the host is:
+    // the sequence under test is a timeout, then successes on the same
+    // pool.
     //
     // `with_eval_timeout` copies the runner but keeps its worker pool,
     // so both dispatchers below still share one pool and the property
@@ -630,33 +682,10 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
         .with_policy_cache(true)
         .with_eval_timeout(Duration::from_secs(5));
     let dispatcher = RegorusPolicyDispatcher::with_runner(runner.clone());
-
-    // What the heavy query costs on this machine, measured rather than
-    // assumed, so the deadline below overruns however fast it is. Best of
-    // three for the same reason as the builtin deadline test above: a
-    // control inflated by a busy neighbour hands the heavy run a deadline
-    // it can meet, and a met deadline reads as a missed timeout (#101).
-    let uninterrupted = (0..3)
-        .map(|_| {
-            let started = Instant::now();
-            dispatcher
-                .evaluate(&rego_invocation(
-                    HEAVY,
-                    None,
-                    BTreeMap::new(),
-                    json!({"policy_target": {"value": {}}}),
-                ))
-                .expect("the control must complete, or it is not measuring the query");
-            started.elapsed()
-        })
-        .min()
-        .expect("three samples");
-
     let heavy = RegorusPolicyDispatcher::with_runner(
-        runner
-            .clone()
-            .with_eval_timeout((uninterrupted / 8).max(Duration::from_millis(20))),
+        runner.clone().with_eval_timeout(Duration::from_millis(1)),
     );
+
     let timed_out = heavy
         .evaluate(&rego_invocation(
             HEAVY,
@@ -665,14 +694,25 @@ fn rego_dispatcher_recovers_after_a_timed_out_evaluation() {
             json!({"policy_target": {"value": {}}}),
         ))
         .unwrap_err();
-    assert!(timed_out.detail().contains("Rego eval exceeded timeout"));
+    assert_eq!(timed_out.reason(), "runtime_error:policy_invocation_failed");
+    assert!(
+        timed_out.detail().contains("Rego eval exceeded timeout"),
+        "{}",
+        timed_out.detail()
+    );
+    assert_eq!(
+        runner.abandoned_evaluations(),
+        1,
+        "the timed out worker is charged against the abandoned budget"
+    );
 
     // Let the stranded worker finish before measuring recovery. It
     // cannot be killed, so until it ends it is burning a core, and on a
     // two-core CI runner that starved the trivial evaluations below.
     // The property under test is that the pool is not poisoned by a
     // timeout, not that a decision is fast while a runaway one is still
-    // running.
+    // running. The bound is a ceiling only; the loop ends as soon as the
+    // worker does.
     let drained = Instant::now() + Duration::from_secs(60);
     while runner.abandoned_evaluations() > 0 && Instant::now() < drained {
         std::thread::sleep(Duration::from_millis(10));

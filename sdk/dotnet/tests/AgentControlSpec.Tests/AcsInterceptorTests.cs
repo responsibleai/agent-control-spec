@@ -1,5 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
+// Copyright (c) Microsoft. All rights reserved.
+
 // The wrapper contract: manifest-bound evaluation surfaces as
 // agent-hooks verdicts, fail-closed on every failure path, and the
 // interceptor registers cleanly with an agent-hooks emitter.
@@ -48,6 +48,47 @@ public sealed class AcsInterceptorTests
     }
 
     [Fact]
+    public async Task DisposeIsIdempotentAndInterceptAfterItIsRejected()
+    {
+        var acs = AcsInterceptor.FromPath(Manifest);
+        acs.Dispose();
+        acs.Dispose();
+
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            async () => await acs.InterceptAsync(Builder().Input("hello")));
+        Assert.Throws<ObjectDisposedException>(() => acs.Name);
+    }
+
+    [Fact]
+    public async Task DisposeDuringConcurrentInterceptDoesNotFreeUnderACallInFlight()
+    {
+        // The failure this would catch is a use-after-free, which shows
+        // up as a crashed test host rather than a failed assertion.
+        var acs = AcsInterceptor.FromPath(Manifest);
+        using var started = new CountdownEvent(8);
+
+        var readers = Enumerable.Range(0, 8).Select(_ => Task.Run(async () =>
+        {
+            started.Signal();
+            for (var i = 0; i < 500; i++)
+            {
+                try
+                {
+                    await acs.InterceptAsync(Builder().Input("hello"));
+                }
+                catch (ObjectDisposedException)
+                {
+                    return;
+                }
+            }
+        })).ToArray();
+
+        started.Wait();
+        acs.Dispose();
+        await Task.WhenAll(readers);
+    }
+
+    [Fact]
     public async Task EngineFailureFailsClosedAsRuntimeErrorDeny()
     {
         using var acs = AcsInterceptor.FromPath(Manifest);
@@ -71,14 +112,11 @@ public sealed class AcsInterceptorTests
     public async Task RegistersWithAnAgentHooksEmitterEndToEnd()
     {
         // The agent-hooks emitter needs its own native library
-        // (agent_hooks_ffi), which the NuGet package intentionally does
-        // not ship. Run the end-to-end only where a host provides it on
-        // the loader path; the remaining tests cover the full wrapper
-        // surface without it.
-        if (!System.Runtime.InteropServices.NativeLibrary.TryLoad(
-                "agent_hooks_ffi", out _))
-            return;
-
+        // (agent_hooks_ffi). The ResponsibleAI.AgentHooks package ships
+        // it under runtimes/<rid>/native and the test host resolves it
+        // through the package's deps.json, so the test runs wherever the
+        // package restores. A missing library fails here with
+        // DllNotFoundException instead of passing with the body skipped.
         using var acs = AcsInterceptor.FromPath(Manifest, name: "acs");
         var emitter = new InterceptionEmitter(EnforcementMode.Enforce);
         emitter.Register(acs, "acs");

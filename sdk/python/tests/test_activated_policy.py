@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Activation contract: one policy version readied once and evaluated
 many times; engine failures fail closed; boundary errors raise."""
 

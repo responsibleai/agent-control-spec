@@ -1,4 +1,4 @@
-# Agent Control Specification — Node wrapper
+# Agent Control Specification Node wrapper
 
 `@responsibleai/agent-control-spec` wraps the ACS policy decision
 engine as an [agent-hooks](https://github.com/responsibleai/agent-hooks)
@@ -8,13 +8,13 @@ emitter; every failure path is fail-closed (`runtime_error:*` deny).
 ## Install
 
 ```bash
-npm install @responsibleai/agent-control-spec@alpha
+npm install @responsibleai/agent-control-spec
 ```
 
-Keep the `@alpha` tag (or pin an exact published version such as
-`@0.4.0-alpha.4`) while the package is pre-release: npm's `latest` tag
-can lag the newest pre-release, so a plain `npm install` may fetch an
-older build. Check what the tags resolve to with
+A plain install gets the newest release, pre-releases included. The
+channel tags `alpha`, `beta` and `rc` exist for pinning to one line
+(`@responsibleai/agent-control-spec@beta`); or pin an exact published
+version such as `@0.4.0-beta.1`. Check what the tags resolve to with
 `npm view @responsibleai/agent-control-spec dist-tags`. The package
 pulls in `@responsibleai/agent-hooks` as a dependency.
 
@@ -31,7 +31,10 @@ emitter.register(AcsInterceptor.fromPath("manifest.yaml"), "acs");
 Zero-config construction: bundled annotators; Rego policies through the
 in-process Rego evaluator, Cedar through the built-in evaluator, `test`
 policies through their embedded verdict. Custom policies require a host
-dispatcher and fail closed under this construction.
+dispatcher and fail closed under this construction. The bundled
+annotators make HTTPS calls during evaluation when the manifest declares
+annotators, and evaluation blocks for the annotator budget. A manifest
+with no annotators makes no network call.
 
 ## Activating a policy version
 
@@ -43,7 +46,9 @@ queries; every later `evaluate` costs no I/O and no compile.
 
 Compiling is bounded by the eval timeout. A policy too slow to compile in
 that window activates anyway, not necessarily fully readied, and pays compilation
-on its first decision instead.
+on its first decision instead. The bundled Rego runner reads the timeout from
+`ACS_OPA_TIMEOUT_MS` (default 5000 ms) once, when it starts, and applies it to
+every policy in the process; there is no per-policy setting.
 
 
 ```ts
@@ -110,8 +115,8 @@ validateManifestFile("manifest.yaml");
 `supportedManifestVersions()` reports the grammar versions this engine
 accepts. Read it rather than hardcoding the set.
 
-Build/test: `npm ci && npm test` (compiles the native engine binding —
-Rust toolchain required).
+Build/test: `npm ci && npm test` (compiles the native engine binding; a
+Rust toolchain is required).
 
 Benchmark: `npm run bench` runs `bench/activation.bench.mjs` against
 `examples/bank_agent`, reporting activation cost, first-evaluate cost,

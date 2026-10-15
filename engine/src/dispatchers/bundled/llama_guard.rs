@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use super::{
     BundledClassifierProvider, ClassifierVerdict, HttpTransport, ResolvedClassifierConfig,
     TransportRequest,
@@ -49,8 +51,9 @@ impl BundledClassifierProvider for LlamaGuardProvider {
         let response = transport.send(request)?;
         if !(200..300).contains(&response.status) {
             return Err(format!(
-                "llama_guard HTTP {} {}",
-                response.status, response.body
+                "llama_guard HTTP {} ({})",
+                response.status,
+                crate::dispatchers::http::describe_error_body(&response.body)
             ));
         }
         parse_response(cfg, &response.body)
@@ -175,7 +178,8 @@ mod tests {
         let error = LlamaGuardProvider
             .classify(&cfg(), "hello", &transport)
             .unwrap_err();
-        assert!(error.contains("llama_guard HTTP 500 server error"));
+        assert!(error.contains("llama_guard HTTP 500 ("), "{error}");
+        assert!(!error.contains("server error"), "{error}");
     }
 
     #[test]

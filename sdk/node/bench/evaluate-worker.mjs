@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // One thread of the concurrency-32 leg of activation.bench.mjs.
 //
 // Each worker activates its own policy version: a native handle is not

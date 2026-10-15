@@ -1,6 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
+// Copyright (c) Microsoft. All rights reserved.
+
 // AGT stock approval helpers, Cedar mirror of `policy/lib/approval.rego`.
 // The Rego library produces `escalate` verdicts per
 // SPECIFICATION.md §13.1. The host approval path

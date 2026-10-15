@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Conformance for the language bindings.
 
 The case corpus under `tests/conformance/cases` checks what the engine

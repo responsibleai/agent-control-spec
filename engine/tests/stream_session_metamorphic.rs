@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Metamorphic testing of the release accounting.
 //!
 //! A streaming mediator is only useful when its verdict does not depend on how

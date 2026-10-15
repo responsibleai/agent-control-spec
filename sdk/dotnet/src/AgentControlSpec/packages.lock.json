@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0": {
+      "ResponsibleAI.AgentHooks": {
+        "type": "Direct",
+        "requested": "[0.1.0-beta.2, )",
+        "resolved": "0.1.0-beta.2",
+        "contentHash": "S2+FftaPAErb1wss5FJBTpa+vl2f4AiSpen4thW0rOICdGoup71hPVTQqifsgBpzfmcLrE254fi/HtpASqL4Rw=="
+      }
+    }
+  }
+}

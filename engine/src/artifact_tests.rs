@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Real loopback HTTPS tests. Only this test thread trusts the fixture CA;
 //! certificate/hostname verification and the production HTTP path stay enabled.
 

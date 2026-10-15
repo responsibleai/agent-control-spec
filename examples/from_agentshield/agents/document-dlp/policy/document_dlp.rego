@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/agents/document-dlp/guardrails.yaml.
 # ACS is stateless. Hosts must supply AgentShield variables and lifetimes as
 # snapshot fields: data_sensitivity, data_jurisdictions, user_clearance,

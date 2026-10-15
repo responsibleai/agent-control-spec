@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+// Copyright (c) Microsoft. All rights reserved.
+
 // Stamp the loader version into the napi-generated version checks of a
 // binding.js file (argument, default ../binding.js).
 //

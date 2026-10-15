@@ -1,5 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
+// Copyright (c) Microsoft. All rights reserved.
+
 // Incremental stream mediation (specification section 18.1).
 //
 // This is a binding, not an implementation. Every decision about what

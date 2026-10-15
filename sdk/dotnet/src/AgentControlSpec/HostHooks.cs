@@ -1,5 +1,5 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
+// Copyright (c) Microsoft. All rights reserved.
+
 // Host extension points and manifest tooling.
 //
 // The engine takes an annotator dispatcher, a policy dispatcher, a
@@ -170,15 +170,13 @@ public static class AcsManifestTools
 /// </example>
 public sealed class AcsHostInterceptor : IInterceptor, IDisposable
 {
-    // The delegates are held so the GC cannot collect them while native
-    // code still holds their function pointers. Dropping this field is
-    // the classic way to turn a working callback into an intermittent
-    // crash under load.
-    private readonly List<Delegate> _pinned = [];
-    private readonly IntPtr _handle;
-    private bool _disposed;
+    // The callback delegates are rooted by the handle, which releases
+    // them only after the native interceptor is freed. Dropping them
+    // earlier is the classic way to turn a working callback into an
+    // intermittent crash under load.
+    private readonly InterceptorHandle _handle;
 
-    private AcsHostInterceptor(IntPtr handle) => _handle = handle;
+    private AcsHostInterceptor(InterceptorHandle handle) => _handle = handle;
 
     private delegate IntPtr NativeAnnotator(
         IntPtr ctx, IntPtr name, IntPtr invocation, IntPtr input, out IntPtr errOut);
@@ -202,7 +200,9 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     /// field. Null keeps every default. A host feeding large payloads
     /// raises <c>max_snapshot_bytes</c>; one hardening against a hostile
     /// manifest lowers <c>max_extends_depth</c> or
-    /// <c>manifest_url_timeout_ms</c>.
+    /// <c>manifest_url_timeout_ms</c>. The caps bound manifest loading
+    /// (the <c>extends</c> chain), evaluation and the bundled
+    /// dispatchers alike.
     /// </param>
     public static AcsHostInterceptor FromPath(
         string manifestPath,
@@ -290,28 +290,25 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
             perfTelemetry.ToString().ToLowerInvariant(),
             limits);
 
-        var interceptor = new AcsHostInterceptor(handle);
-        interceptor._pinned.AddRange(pinned);
-        return interceptor;
+        handle.Pin(pinned);
+        return new AcsHostInterceptor(handle);
     }
 
     /// <summary>Evaluate one agent context.</summary>
     public ValueTask<Verdict> InterceptAsync(AgentContext context, CancellationToken ct = default)
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
         var wire = Native.Intercept(_handle, context.Json.ToJsonString());
         var parsed = System.Text.Json.Nodes.JsonNode.Parse(wire) as System.Text.Json.Nodes.JsonObject
             ?? throw new AgentControlSpecNativeException("engine returned a non-object verdict");
         return ValueTask.FromResult(Verdict.FromWire(parsed));
     }
 
-    /// <summary>Release the native interceptor.</summary>
-    public void Dispose()
-    {
-        if (_disposed)
-            return;
-        _disposed = true;
-        Native.Free(_handle);
-        _pinned.Clear();
-    }
+    /// <summary>
+    /// Marks the interceptor closed. A call already in flight on another
+    /// thread finishes first; the native free runs when the last such call
+    /// returns, and the callback delegates are released after it. Later
+    /// calls throw <see cref="ObjectDisposedException"/>.
+    /// </summary>
+    public void Dispose() => _handle.Dispose();
 }

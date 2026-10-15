@@ -1,0 +1,17 @@
+# Ruff settings for every Python tree in the repository. CI runs
+# `ruff format --check` and `ruff check` over sdk/python, scripts and
+# generator from this directory, and ruff resolves this file for all
+# of them because no pyproject.toml below carries a [tool.ruff] section.
+# Keep it that way: a [tool.ruff] section in a package pyproject.toml
+# would shadow this file for that package and move its import-sorting
+# root, unless it starts with `extend = "<path to this file>"`.
+
+[lint]
+# Every Python file starts with the one-line Microsoft copyright header
+# (CPY001); scripts/check-file-headers.py checks the other languages.
+extend-select = ["CPY"]
+
+[lint.flake8-copyright]
+# Anchored to a line start, not the file start, so a script keeps its
+# shebang on line 1 and carries the header on line 2.
+notice-rgx = "(?m)^# Copyright \\(c\\) Microsoft\\. All rights reserved\\."

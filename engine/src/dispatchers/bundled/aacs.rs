@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use super::{
     fold_score_verdict, BundledClassifierProvider, ClassifierVerdict, HttpTransport,
     ResolvedClassifierConfig, TransportRequest,
@@ -51,7 +53,11 @@ impl BundledClassifierProvider for AacsProvider {
 
         let response = transport.send(request)?;
         if !(200..300).contains(&response.status) {
-            return Err(format!("aacs HTTP {} {}", response.status, response.body));
+            return Err(format!(
+                "aacs HTTP {} ({})",
+                response.status,
+                crate::dispatchers::http::describe_error_body(&response.body)
+            ));
         }
         parse_response(cfg, &response.body, &categories)
     }

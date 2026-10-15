@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Host extension surface: annotator dispatcher, policy dispatcher,
 // telemetry sink, perf telemetry level; and manifest tooling (parse,
 // chain, structured diagnostics).
@@ -677,6 +679,26 @@ test("a lowered snapshot cap flips the verdict from allow to fail-closed deny", 
   assert.ok(
     verdict.reason.startsWith("runtime_error:"),
     `expected runtime_error:*, got ${verdict.reason}`,
+  );
+});
+
+test("the interceptor constructor resolves `extends` under the host's loader caps", () => {
+  // Same chain, loaded once with default caps and once with
+  // `max_extends_depth: 0`. A host that lowered the cap on the
+  // interceptor and still got the chain loaded would believe it was
+  // protected when it was not.
+  const parent = path.join(workdir, "limits-parent.yaml");
+  fs.copyFileSync(fixtureManifestPath, parent);
+  const child = path.join(workdir, "limits-child.yaml");
+  fs.writeFileSync(
+    child,
+    `agent_control_specification_version: "0.4.0-alpha.1"\nextends: ["limits-parent.yaml"]\n`,
+    "utf8",
+  );
+  assert.equal(AcsInterceptor.fromPath(child).intercept(builder().input("hi")).decision, "allow");
+  assert.throws(
+    () => AcsInterceptor.fromPath(child, { limits: { max_extends_depth: 0 } }),
+    /depth/,
   );
 });
 

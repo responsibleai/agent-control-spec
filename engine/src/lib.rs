@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Agent Control Specification: a stateless policy decision runtime
 //! implementing the agent-hooks interceptor contract.
 //!

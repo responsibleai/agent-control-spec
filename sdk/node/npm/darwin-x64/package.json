@@ -1,12 +1,13 @@
 {
   "name": "@responsibleai/agent-control-spec-darwin-x64",
-  "version": "0.4.0-alpha.4",
+  "version": "0.4.0-beta.1",
   "cpu": [
     "x64"
   ],
   "main": "agent-control-spec.darwin-x64.node",
   "files": [
-    "agent-control-spec.darwin-x64.node"
+    "agent-control-spec.darwin-x64.node",
+    "LICENSE"
   ],
   "description": "Prebuilt darwin-x64 native binary for @responsibleai/agent-control-spec.",
   "license": "MIT",

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/policies/llama-guard.yaml
 package agent_control_specification.llama_guard
 

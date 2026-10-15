@@ -1,0 +1,15 @@
+<Project>
+
+  <PropertyGroup>
+    <!--
+      .editorconfig sets IDE0073 (file header) to warning, as the
+      Microsoft open source pattern does. The code-style analyzers run
+      in the build only with EnforceCodeStyleInBuild, and WarningsAsErrors
+      makes a missing header fail the build without turning every other
+      warning into an error.
+    -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <WarningsAsErrors>$(WarningsAsErrors);IDE0073</WarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

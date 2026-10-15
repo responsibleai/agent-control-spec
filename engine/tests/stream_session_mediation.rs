@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! End to end mediation of a streamed completion.
 //!
 //! These tests wire the release accounting in section 18.1 of the

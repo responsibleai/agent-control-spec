@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Every read of the host process environment by a bundled dispatcher
 //! goes through this module. Review invariant:
 //! `rg -n 'env::var' engine/src/dispatchers` hits only this file.

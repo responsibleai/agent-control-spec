@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_specification::{
     AgentControl, AgentControlInterruption, AnnotatorDispatcher, AnnotatorInvocation,
     ApprovalResolution, ApprovalResolver, Decision, EnforcementMode, InterventionPoint,

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Static "writable as ACS" gate for every ported AgentShield example.
 
 For each port directory (one containing a manifest.yaml) under this tree it:

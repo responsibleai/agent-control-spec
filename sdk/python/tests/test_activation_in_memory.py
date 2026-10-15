@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Activating a policy whose manifest and Rego are held in memory.
 
 A service that keeps both in a database has no directory to point a

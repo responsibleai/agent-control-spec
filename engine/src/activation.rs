@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! One policy version, readied once and evaluated many times.
 //!
 //! A host that governs an agent evaluates the same policy version at
@@ -46,6 +48,15 @@
 //! activating per thread. Nothing here re-reads the manifest or the
 //! bundle, so a policy edit on disk needs a new activation, which is the
 //! point: the host controls when a version changes.
+//!
+//! That holds for the two bundled dispatchers. The Rego dispatcher reads
+//! and compiles each bundle once. The bundled Cedar dispatcher parses
+//! its policy set, and reads any `entities_path` or `schema_path` file,
+//! when it is warmed here and keeps the result; a file edited afterwards
+//! is read again at the next activation, so a host that reuses one
+//! dispatcher across activations gets the current file at each
+//! activation. A host-supplied [`PolicyDispatcher`] decides for itself
+//! what [`PolicyDispatcher::warm`] prepares.
 
 use crate::{
     manifest::Manifest,

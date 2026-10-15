@@ -1,7 +1,7 @@
 {
   "$schema": "../cases.schema.json",
   "id": "spec-08-intervention-points.case-01",
-  "spec_section": "8",
+  "spec_section": "4",
   "title": "input dispatches to input policy target",
   "claimable": true,
   "operation": "evaluate",
@@ -25,7 +25,6 @@
     "decision": "allow",
     "policy_target": {
       "text": "hello"
-    },
-    "action_identity": "present"
+    }
   }
 }

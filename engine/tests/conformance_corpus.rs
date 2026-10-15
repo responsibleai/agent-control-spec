@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint, JsonValue, Limits,
     Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError,
@@ -5,7 +7,7 @@ use agent_control_spec::{
 use jsonschema::Validator;
 use serde_json::Value;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::PathBuf,
     str::FromStr,
@@ -91,11 +93,10 @@ fn builtin_available(manifest: &Manifest) -> bool {
         .all(|policy| policy.engine_type() != "cedar" || cfg!(feature = "cedar"))
 }
 
+mod common;
+
 fn conformance_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .join("tests/conformance")
+    common::repo_root().join("tests/conformance")
 }
 
 fn case_paths() -> Vec<PathBuf> {
@@ -224,12 +225,7 @@ fn coverage_claims_reference_existing_cases() {
 
     // The reverse direction: every case id and every repository path that
     // coverage.md cites in backticks must resolve.
-    let repo_root = conformance_dir()
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let repo_root = common::repo_root();
     let path_prefixes = [
         "engine/",
         "tests/",
@@ -264,6 +260,86 @@ fn coverage_claims_reference_existing_cases() {
         dangling.is_empty(),
         "coverage.md cites anchors that do not exist: {dangling:?}"
     );
+}
+
+/// The section numbers a `spec_section` value may cite: `## N. Title`
+/// and `### N.M Title` headings of the current specification.
+fn specification_section_numbers() -> BTreeSet<String> {
+    let spec = fs::read_to_string(common::repo_root().join("spec/SPECIFICATION.md")).unwrap();
+    spec.lines()
+        .filter_map(|line| {
+            line.strip_prefix("## ")
+                .or_else(|| line.strip_prefix("### "))
+                .and_then(|heading| heading.split_whitespace().next())
+        })
+        .map(|number| number.trim_end_matches('.').to_string())
+        .filter(|number| number.starts_with(|ch: char| ch.is_ascii_digit()))
+        .collect()
+}
+
+/// Coverage row section number -> the case ids that row cites.
+fn coverage_rows() -> BTreeMap<String, Vec<String>> {
+    let coverage = fs::read_to_string(conformance_dir().join("coverage.md")).unwrap();
+    let mut rows = BTreeMap::new();
+    for line in coverage.lines() {
+        if !line.starts_with('|') || line.starts_with("| ---") || line.contains("Spec section") {
+            continue;
+        }
+        let cells = line
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect::<Vec<_>>();
+        let Some(section) = cells
+            .first()
+            .and_then(|cell| cell.split_whitespace().next())
+        else {
+            continue;
+        };
+        if !section.starts_with(|ch: char| ch.is_ascii_digit()) {
+            continue;
+        }
+        let cited = cells
+            .get(3)
+            .map(|anchors| {
+                anchors
+                    .split('`')
+                    .skip(1)
+                    .step_by(2)
+                    .filter(|anchor| anchor.starts_with("spec-") && anchor.contains(".case-"))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        rows.insert(section.to_string(), cited);
+    }
+    rows
+}
+
+/// `spec_section` is the pointer a corpus reader follows to the
+/// normative text. It must name a heading of the current specification,
+/// and the coverage row for that section must cite the case, so the two
+/// sources cannot drift apart again.
+#[test]
+fn case_spec_sections_name_current_headings_cited_by_coverage() {
+    let headings = specification_section_numbers();
+    let rows = coverage_rows();
+    for path in case_paths() {
+        let case: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let id = case["id"].as_str().unwrap();
+        let section = case["spec_section"].as_str().unwrap();
+        assert!(
+            headings.contains(section),
+            "{id}: spec_section {section:?} is not a heading of spec/SPECIFICATION.md"
+        );
+        let cited = rows
+            .get(section)
+            .unwrap_or_else(|| panic!("{id}: coverage.md has no row for section {section}"));
+        assert!(
+            cited.iter().any(|cited| cited == id),
+            "{id}: coverage.md row {section} does not cite this case;              fix spec_section or the coverage row"
+        );
+    }
 }
 
 #[test]
@@ -332,6 +408,35 @@ fn assert_expected(
     annotator_order: &[String],
 ) {
     let expected = &case["expected"];
+    // Every expectation key must be one this runner asserts. A key the
+    // runner ignores would make a case claim coverage it does not have
+    // (the retired `action_identity` expectation was such a key).
+    const ASSERTED_KEYS: &[&str] = &[
+        "decision",
+        "reason",
+        "message",
+        "transformed_policy_target",
+        "approval",
+        "warnings",
+        "policy_target",
+        "tool_name",
+        "annotations",
+        "annotator_order",
+    ];
+    let unknown = expected
+        .as_object()
+        .map(|members| {
+            members
+                .keys()
+                .filter(|key| !ASSERTED_KEYS.contains(&key.as_str()))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    assert!(
+        unknown.is_empty(),
+        "{id}: expectation keys {unknown:?} are not asserted by this runner"
+    );
     assert_eq!(
         result.verdict.decision,
         serde_json::from_value::<Decision>(expected["decision"].clone()).unwrap(),

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package refund_limits
 
 import rego.v1

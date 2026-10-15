@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Agent Control Specification: a policy decision runtime behind the
 agent-hooks interceptor contract.
 
@@ -217,11 +217,11 @@ class AcsInterceptor:
       defaults field by field. Absent means keep every default; each
       field is individually optional, so a host raising one cap does
       not restate the other nine. A host feeding large payloads raises
-      ``max_snapshot_bytes``. This synchronous constructor applies the
-      overrides to evaluation and bundled dispatchers, not manifest
-      loading. Use :class:`ActivatedPolicy` when loader caps such as
-      ``max_extends_depth`` must also apply. Read :data:`DEFAULT_LIMITS`
-      to see the shipped values.
+      ``max_snapshot_bytes``; one hardening against a hostile manifest
+      lowers ``max_extends_depth`` or ``max_manifest_url_bytes``. The
+      overrides apply to manifest loading (the ``extends`` chain), to
+      evaluation and to the bundled dispatchers alike. Read
+      :data:`DEFAULT_LIMITS` to see the shipped values.
 
     A dispatcher that raises does not silently no-op: the engine
     normalizes the failure into a fail-closed ``deny`` verdict with a

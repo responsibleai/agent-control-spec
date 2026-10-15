@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Deterministic ACS runtime demo for endpoint-governance."""
 
 from __future__ import annotations

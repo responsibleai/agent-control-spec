@@ -1,9 +1,13 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(feature = "rego")]
 
 use agent_control_spec::{
     canonical_json, AnnotatorDispatcher, AnnotatorInvocation, EvaluationResult, InterceptionPoint,
     JsonValue, Manifest, RegorusPolicyDispatcher, RegorusRegoRunner, Runtime, RuntimeError,
 };
+
+mod common;
 use serde_json::json;
 use std::{
     env, fs,
@@ -295,10 +299,7 @@ fn read_json(path: &Path) -> JsonValue {
 }
 
 fn bank_agent_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("examples")
-        .join("bank_agent")
+    common::repo_root().join("examples").join("bank_agent")
 }
 
 struct WorkingDir {

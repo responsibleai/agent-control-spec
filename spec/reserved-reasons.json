@@ -54,7 +54,7 @@
     {
       "reason": "runtime_error:transform_invalid",
       "producer": "core-runtime",
-      "cause": "A `transform` was malformed, its path did not resolve, or its value could not be set."
+      "cause": "A `transform` path under `$target` could not be parsed."
     },
     {
       "reason": "runtime_error:transform_target_forbidden",

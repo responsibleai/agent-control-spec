@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/policies/channel-governance/popular-channels.yaml
 package agent_control_specification.cg_popular_channels
 

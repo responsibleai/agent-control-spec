@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Activation benchmark for the Node binding.
 //
 //   cd sdk/node && npm run bench

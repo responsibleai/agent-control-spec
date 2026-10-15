@@ -1,12 +1,13 @@
 {
   "name": "@responsibleai/agent-control-spec-linux-x64-gnu",
-  "version": "0.4.0-alpha.4",
+  "version": "0.4.0-beta.1",
   "cpu": [
     "x64"
   ],
   "main": "agent-control-spec.linux-x64-gnu.node",
   "files": [
-    "agent-control-spec.linux-x64-gnu.node"
+    "agent-control-spec.linux-x64-gnu.node",
+    "LICENSE"
   ],
   "description": "Prebuilt linux-x64-gnu native binary for @responsibleai/agent-control-spec.",
   "license": "MIT",

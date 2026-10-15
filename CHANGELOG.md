@@ -8,6 +8,50 @@
   Opaque approval metadata, transform values and evidence pointer names remain
   unchanged, as do the `warn` and `escalate` policy intents.
 
+- Release workflow: every npm package publishes under `latest`,
+  pre-releases included, and a pre-release also gets a channel tag
+  (`alpha`, `beta`, `rc` or `next`) from the workflow. The by-hand
+  `latest` move is gone; the channel tag needs "Allow npm dist-tag"
+  on each package's trusted publisher once (RELEASING.md). Install
+  docs drop `@alpha`.
+- The repository adopts the Microsoft open source license and header
+  pattern: LICENSE names Microsoft Corporation as the copyright holder,
+  every source file starts with `Copyright (c) Microsoft. All rights
+  reserved.` in the language's comment style, and CI enforces the
+  header (ruff `CPY001` for Python, `IDE0073` in the .NET build and
+  `scripts/check-file-headers.py` for every other language). The root
+  gains the Microsoft CODE_OF_CONDUCT.md and SUPPORT.md.
+
+## 0.4.0-beta.1
+
+- The bundled Cedar dispatcher reads the principal from the snapshot's
+  top-level `agent.id`, the shape `spec/schema/wire/snapshot.schema.json`
+  defines, and falls back to `envelope.agent.id` for AGT-shaped
+  snapshots. A wire-shaped snapshot no longer fails every Cedar
+  evaluation with `runtime_error:policy_invocation_failed`. The
+  specification's 12.4 mapping and the verdict schema cite documents in
+  this repository. Closes #84.
+- The interceptor constructors in the FFI, Python, Node and .NET SDKs
+  load the manifest under the host's `limits`, so `max_extends_depth`
+  and the URL caps bound the `extends` chain the same way they do for
+  `ActivatedPolicy`. Closes #82.
+- Package and repository READMEs drop em dashes and bold-label bullets,
+  name the crates.io and NuGet install commands, and the dry-run
+  description says what the dry run does. Clippy runs on test targets
+  in CI.
+- Promote the runtime SDKs and generator metadata from
+  `0.4.0-alpha.4` to `0.4.0-beta.1`.
+- Keep the package version independent from manifest contract
+  identifiers. Existing `0.4.0-alpha.1` and `0.5.0-alpha.1`
+  manifests remain supported with unchanged semantics.
+- The Rust engine, the Python, Node and .NET SDKs and the generator
+  depend on agent-hooks `0.1.0-beta.2`.
+- The vendored conformance corpus moves to the 73-vector `v0.1.0-beta.2`
+  kit; the reference host passes 46, fails none and skips 27 as
+  capability-gated (22 host declaration, 4 incremental output,
+  1 big-integer JSON). The harness fills runner-owned `RunRecord` fields from
+  the default, so new kit fields no longer break the build.
+  `EVIDENCE_MAX_BYTES` re-exports the SDK constant instead of restating it.
 - The specification names only reasons and documents that exist. Sections 17.1
   and 24 route the approval path through the AGENT-HOOKS-0.1 section 9 seam and
   its `host_error:*` reasons instead of two reasons no inventory or code
@@ -19,6 +63,144 @@
   validates the transform body and returns it unapplied in both modes; the host
   applies it per AGENT-HOOKS-0.1 section 6. No sentence still describes a
   transformed policy target the runtime does not return.
+- Add `SECURITY.md` with the trust model, the private reporting
+  channel and the supported versions, and `.github/CODEOWNERS` so the
+  code owner review rule names a reviewer.
+- Ship the LICENSE text in every published artifact: the crate, the
+  wheel and sdist, the npm loader and platform packages. The NuGet
+  package carries the .NET README. The PyPI classifier moves from
+  Alpha to Beta.
+- Pin the release toolchain: Rust 1.99.0 for release builds, maturin
+  1.15.0 by hash (the same version the sdist and the dev lock declare),
+  npm 11.21.0 for the publish step, and a locked NuGet restore against a
+  committed `packages.lock.json`. `check-version-consistency.py` fails
+  when the maturin pins drift apart.
+- The release workflow refuses a manual run that asks to publish, fails
+  when the tag name does not match the version surfaces, attests the
+  exact npm tarballs it publishes, and creates a GitHub Release with
+  the SBOMs attached and notes taken from this file. RELEASING.md
+  covers partial failure, re-runs and yank.
+- CI runs cargo-deny against the workspace and Python binding lockfiles
+  with `deny.toml`, and the cross-platform leg installs OPA so the OPA
+  suites run there instead of skipping.
+
+- The README states what ACS guarantees and what it does not. Determinism
+  is conditioned on dispatcher results, with the builtins the bundled Rego
+  dispatcher blocks named; a scope paragraph says ACS computes verdicts and
+  leaves enforcement to the agent-hooks emitter and the host; a Security
+  line points at SECURITY.md; a Rust example goes from a manifest to a
+  registered interceptor.
+- The specification matches the engine. Section 1 says the SDKs expose an
+  interceptor and the host's emitter applies verdicts; no SDK adapter
+  enforces. Section 13 lists the `warnings` and `approval` members, rejects
+  `host_error:` reasons alongside `runtime_error:` ones, and section 16 and
+  `spec/reserved-reasons.json` give `transform_invalid` its real cause: an
+  unparseable path under `$target`. Section 12.4 says malformed Cedar advice
+  surfaces as `policy_invocation_failed` and names the
+  `PolicyTarget::"unspecified"` resource sentinel. Section 11 requires the
+  Cedar IFC library to deny when `ifc` or `source_labels` is absent. The
+  manifest schema requires `policy_target` and `policy` on every
+  intervention point entry; the verdict and Cedar advice schemas reject
+  both reserved reason prefixes. The unreferenced `effect.schema.json` and
+  the remaining effect-era text in `spec/README.md` and the fixture README
+  are gone; `spec/README.md` lists the `approval` property.
+- SDK READMEs: the Python README no longer says the interceptor constructor
+  ignores loader limits; the Node and .NET READMEs say the bundled
+  annotators make HTTPS calls during evaluation; the .NET README says the
+  NuGet package ships the native library and scopes `LD_LIBRARY_PATH` to
+  source builds.
+- `sdk/python/requirements-dev.lock` carries hashes, so `uv pip install -r`
+  verifies every artifact. The pins are unchanged.
+- The specification records the rules the pre-release engine fixes
+  enforce: identical intervention point fields across `extends` documents
+  and no `tools` from a fetched document (2.2); `$policy_target` as an
+  invalid transform root (3.2, 14); no redirects and no response body in
+  annotator error detail (10.3, 21); the IFC missing-label gate (11); the
+  Rego builtins the bundled dispatcher shadows (12.3); the Cedar parse-once
+  cache (12.4); bounded runtime error messages (13); wire names in
+  telemetry (19).
+- The conformance report `conformance/agent-hooks/REPORT.md` carries the
+  AGENT-HOOKS-0.1 section 13.3 claim tuple (framework, adapter version,
+  spec version, capabilities, profiles, identity provider and whether it
+  is content-derived, SDK version, posture, buffered output, kit tag and
+  commit), a Skipped column per part and the list of skipped vectors
+  with the capability each is gated on. The harness pins the result
+  (46 passed, 0 failed, 27 skipped by capability) and fails when a pass
+  turns into a skip or the corpus shrinks.
+- A test recomputes the digest of the vendored agent-hooks vectors the
+  way `PROVENANCE.md` documents and fails when the two disagree.
+- The conformance corpus drops the `action_identity` expectation, which
+  no runner asserted and the runtime does not produce (identity is a
+  host obligation under AGENT-HOOKS-0.1 section 10); the runner now
+  rejects expectation keys it does not assert. Case `spec_section`
+  values follow the current section numbering and a test checks each
+  against the specification headings and the coverage row that cites
+  the case. The unused `verify_release_claims.py` is removed; the Rust
+  coverage test already covers its checks.
+- The engine fixture README describes the current transform contract.
+  The scratch `probe.rs` test is gone. Tests that read files outside the
+  engine package resolve them through one helper that explains why they
+  cannot run from a packaged crate.
+- The .NET end-to-end emitter test no longer returns early when the
+  bare-name probe for the agent-hooks native library fails; the package
+  ships the library and the test runs.
+- The bundled Cedar dispatcher builds the principal, action and resource
+  uids from their two parts instead of parsing `Type::"<id>"` as a Cedar
+  literal. A quote, a backslash or a `\u{..}` sequence in `agent.id` or a
+  tool name is now part of the id, so a forbid on the literal id fires and
+  an escape no longer names another principal or fails the evaluation.
+- The bundled Cedar dispatcher parses its policy set, and reads any
+  `entities_path` or `schema_path` file, when it is warmed at activation,
+  in Rust and over every binding. A decision reads no file and parses no
+  policy. A host that reuses one dispatcher across activations gets the
+  current file at each activation. A policy set that does not parse now
+  fails activation instead of the first decision.
+- Annotator HTTP error bodies stay out of verdicts. A non-2xx response is
+  reported as its status code, canonical reason, body size and a digest
+  prefix; the body text, which can echo the policy target, never reaches
+  `verdict.message`. The runtime also strips control characters from an
+  annotation failure detail and cuts it at 256 bytes.
+- The annotator HTTP client no longer follows redirects. A 3xx from the
+  configured endpoint fails the dispatch closed, so an API key under a
+  custom header such as `api-key` is sent to the configured origin only.
+- The Cedar IFC library fails closed when the resource carries
+  `clearance_dominated_labels` but the snapshot carries no labels:
+  `ifc_source_labels_missing_input` at `input` and
+  `ifc_result_labels_missing_output` at `output`, in `ifc.cedar` and
+  `agt_default.cedar`.
+- `extends` merging follows specification 2.2 for intervention points: a
+  point named in more than one document must carry the same
+  `policy_target`, `policy_target_kind`, `tool_name_from` and `policy` in
+  each, and only its annotations are unioned. A document can no longer add
+  `tool_name_from` or `policy_target_kind` to a point another document
+  defined, and an overlay that adds a binding restates the point's
+  `policy_target` and `policy`. A fetched document may not declare
+  `tools`; the catalog is host configuration.
+- The bundled Rego dispatcher shadows `time.now_ns`, `rand.intn`,
+  `uuid.rfc4122` and `opa.runtime` the way it shadows `http.send`: a rule
+  that calls one fails closed with `runtime_error:policy_invocation_failed`.
+  The opt-in `opa` CLI dispatcher does not shadow these builtins.
+- The FFI releases a host callback's `*err_out` string through the
+  registered free callback instead of the engine allocator, and reports a
+  result string that is not valid UTF-8 as such instead of as a missing
+  message. The Node binding decodes dispatcher results strictly: an
+  unpaired surrogate fails the dispatch closed instead of becoming U+FFFD.
+- The .NET `AcsInterceptor` and `AcsHostInterceptor` hold the native
+  handle in a reference-counted `SafeHandle`, so `Dispose` waits for a
+  call in flight and a later call throws `ObjectDisposedException`.
+  `AcsHostInterceptor` rejects a manifest path that is not encodable as
+  UTF-8 instead of encoding it lossily.
+- Telemetry JSON writes `intervention_point`, `decision` and
+  `enforcement_mode` with their wire names (`pre_tool_call`,
+  `evaluate_only`), not lowercased Rust names.
+- `transform.path` must be rooted at `$target`. The pre-0.4
+  `$policy_target` root is `runtime_error:transform_invalid`; a path rooted
+  elsewhere is `runtime_error:transform_target_forbidden`, and a malformed
+  `$target` path is no longer misreported as forbidden.
+- The Python binding fails closed when a host dispatcher returns a string
+  that is not encodable as UTF-8 or an integer outside the 64-bit range,
+  instead of rewriting the value.
+- CI runs the stock Rego library tests under `policy/lib`.
 
 ## 0.4.0-alpha.4
 

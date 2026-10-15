@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Local extensions over `agent_hooks::InterceptionPoint`.
 //!
 //! The upstream type carries `Ord` (lifecycle declaration order) and

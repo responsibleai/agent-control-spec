@@ -1,5 +1,5 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Generate ACS policy artifacts from natural-language guardrails.
 
 A caller describes an agent, through a system prompt, a plain description,

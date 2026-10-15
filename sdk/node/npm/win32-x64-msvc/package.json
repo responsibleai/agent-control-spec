@@ -1,12 +1,13 @@
 {
   "name": "@responsibleai/agent-control-spec-win32-x64-msvc",
-  "version": "0.4.0-alpha.4",
+  "version": "0.4.0-beta.1",
   "cpu": [
     "x64"
   ],
   "main": "agent-control-spec.win32-x64-msvc.node",
   "files": [
-    "agent-control-spec.win32-x64-msvc.node"
+    "agent-control-spec.win32-x64-msvc.node",
+    "LICENSE"
   ],
   "description": "Prebuilt win32-x64-msvc native binary for @responsibleai/agent-control-spec.",
   "license": "MIT",

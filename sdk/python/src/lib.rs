@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Python native binding over the Agent Control Specification runtime.
 //
 // Deliberately thin, mirroring the Node binding: construct a runtime
@@ -100,10 +102,12 @@ fn py_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
         if let Ok(v) = i.extract::<u64>() {
             return Ok(Value::from(v));
         }
-        // Fall through for oversized integers: represent as string, which
-        // is the same fallback `json_to_py` uses for arbitrary-precision
-        // numbers.
-        return Ok(Value::String(i.str()?.to_string_lossy().into_owned()));
+        // An integer outside i64 and u64 has no JSON number the engine
+        // accepts. Retyping it as a string would hand the policy a value
+        // the dispatcher never returned, so it is an error instead.
+        return Err(PyValueError::new_err(
+            "dispatcher returned an integer outside the 64-bit range",
+        ));
     }
     if let Ok(f) = value.cast::<PyFloat>() {
         let v = f.value();
@@ -114,7 +118,14 @@ fn py_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
             .ok_or_else(|| PyValueError::new_err("dispatcher returned a non-finite float"));
     }
     if let Ok(s) = value.cast::<PyString>() {
-        return Ok(Value::String(s.to_string_lossy().into_owned()));
+        // Strict: a lone surrogate is not encodable, and replacing it
+        // with U+FFFD would rewrite what the dispatcher returned.
+        return s
+            .to_str()
+            .map(|text| Value::String(text.to_owned()))
+            .map_err(|_| {
+                PyValueError::new_err("dispatcher returned a string that is not encodable as UTF-8")
+            });
     }
     if let Ok(list) = value.cast::<PyList>() {
         let mut out = Vec::with_capacity(list.len());
@@ -131,8 +142,13 @@ fn py_to_json(value: &Bound<'_, PyAny>) -> PyResult<Value> {
                 .map_err(|_| {
                     PyValueError::new_err("dispatcher returned a dict with a non-string key")
                 })?
-                .to_string_lossy()
-                .into_owned();
+                .to_str()
+                .map_err(|_| {
+                    PyValueError::new_err(
+                        "dispatcher returned a dict key that is not encodable as UTF-8",
+                    )
+                })?
+                .to_owned();
             out.insert(key_str, py_to_json(&val)?);
         }
         return Ok(Value::Object(out));
@@ -472,7 +488,7 @@ fn interceptor_new(
     // stalled interpreter, and the sibling `policy_activate` already
     // drops the GIL for the same reason.
     let runtime = py.detach(move || {
-        let manifest = Manifest::from_path(&manifest_path)
+        let manifest = Manifest::from_path_with_limits(&manifest_path, limits)
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Runtime::with_telemetry_perf_and_limits(
             manifest,

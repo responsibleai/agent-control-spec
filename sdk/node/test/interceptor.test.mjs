@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // The wrapper contract: manifest-bound evaluation surfaces as
 // agent-hooks verdicts, fail-closed on every failure path, and the
 // interceptor registers cleanly with an agent-hooks emitter.

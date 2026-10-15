@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::{
     annotation::{AnnotatorDispatcher, AnnotatorInvocation},
     constants::{annotation as annotation_key, policy_input as pi_key},
@@ -835,8 +837,8 @@ pub struct EvaluationRequest {
 
 /// Result of evaluating a single intervention point.
 ///
-/// Per AGT D1.4 the engine produces two SHA-256 identities for every
-/// successful evaluation:
+/// The engine produces two SHA-256 identities for every successful
+/// evaluation (`spec/SPECIFICATION.md` section 19):
 ///
 /// - `input_identity` pins what the policy actually saw.
 /// - `enforced_identity` pins what the host will carry out. It differs
@@ -844,10 +846,9 @@ pub struct EvaluationRequest {
 ///   in `EnforcementMode::Enforce`; in every other case the two are equal.
 ///
 /// `action_identity` is retained as a backwards-compatible alias that
-/// always equals `enforced_identity`, satisfying the AGT-EVIDENCE-1.0
-/// note that single-identity telemetry consumers MAY default to
-/// `enforced_identity`. New callers should reach for the bisected fields
-/// directly.
+/// always equals `enforced_identity`, so a telemetry consumer that
+/// records one identity gets the enforced one. New callers should reach
+/// for the two fields directly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvaluationResult {
     /// The agent-hooks verdict the host must honour. Always present:

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::point_ext::InterceptionPointExt;
 use crate::{
     annotation::{AnnotationConfig, AnnotatorConfig, AnnotatorInvocation},
@@ -38,11 +40,11 @@ pub struct Manifest {
     pub tools: BTreeMap<String, ToolConfig>,
     #[serde(default)]
     pub annotators: BTreeMap<String, AnnotatorConfig>,
-    /// AGT D5: optional top-level `approval` section that configures the
+    /// Optional top-level `approval` section that configures the
     /// escalation backend used for `escalate` verdicts. The runtime
-    /// validates the shape per AGT-MANIFEST-1.0 §1 and SPECIFICATION.md
-    /// §24 but does not consult resolver configuration; that plumbing lives
-    /// in host SDKs.
+    /// validates the shape per `spec/SPECIFICATION.md` section 24 but
+    /// does not consult resolver configuration; that plumbing lives in
+    /// host SDKs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalSection>,
     /// Runtime provenance, not manifest grammar. Every HTTPS URL the
@@ -121,7 +123,8 @@ pub(crate) enum Composition {
     Merged,
 }
 
-/// AGT D5: parsed shape of the manifest's optional `approval` block.
+/// Parsed shape of the manifest's optional `approval` block
+/// (`spec/SPECIFICATION.md` section 24).
 ///
 /// The runtime treats this section as opaque host configuration. It is
 /// validated for structural well-formedness during manifest validation and
@@ -153,7 +156,7 @@ pub struct ApprovalSection {
     pub resolvers: BTreeMap<String, ApprovalResolverConfig>,
 }
 
-/// AGT D5: timeout behaviour enum for the `approval.on_timeout` field.
+/// Timeout behaviour for the `approval.on_timeout` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ApprovalOnTimeout {
@@ -162,7 +165,7 @@ pub enum ApprovalOnTimeout {
     Suspend,
 }
 
-/// AGT D5: a single entry under `approval.resolvers`.
+/// A single entry under `approval.resolvers`.
 ///
 /// `type` is a discriminator preserved verbatim. All remaining keys are
 /// captured under `additional_properties` so host-defined resolver
@@ -618,7 +621,7 @@ impl Manifest {
         }
     }
 
-    /// AGT D5: accessor for the optional top-level `approval` section.
+    /// The optional top-level `approval` section.
     pub fn approval(&self) -> Option<&ApprovalSection> {
         self.approval.as_ref()
     }
@@ -1052,6 +1055,18 @@ impl Manifest {
             return Err(RuntimeError::ManifestInvalid(format!(
                 "{document} declares an approval section; approval resolver configuration is \
                  host configuration and a {} must not supply it",
+                crate::constants::provenance::MARKER
+            )));
+        }
+
+        // The tool catalog is the host's allowlist (specification 9) and
+        // carries the sink clearance the IFC rules read (section 11).
+        // Merging is additive, so a fetched entry would widen the
+        // allowlist and could set a clearance the host never granted.
+        if let Some(name) = self.tools.keys().next() {
+            return Err(RuntimeError::ManifestInvalid(format!(
+                "{document} declares tool '{name}'; the tool catalog is host configuration and a \
+                 {} must not supply it",
                 crate::constants::provenance::MARKER
             )));
         }
@@ -2784,42 +2799,34 @@ fn merge_point_config(
         return Ok(());
     }
     let point_path = format!("intervention_points.{}", intervention_point);
-    if !incoming.policy_target.is_empty() {
-        if existing.policy_target.is_empty() {
-            existing.policy_target = incoming.policy_target;
-        } else if existing.policy_target != incoming.policy_target {
-            return manifest_merge_conflict(&format!("{point_path}.policy_target"), source);
-        }
-    }
-    if let Some(policy_target_kind) = incoming.policy_target_kind {
-        match &existing.policy_target_kind {
-            Some(existing_policy_target_kind)
-                if existing_policy_target_kind != &policy_target_kind =>
-            {
-                return manifest_merge_conflict(
-                    &format!("{point_path}.policy_target_kind"),
-                    source,
-                );
-            }
-            None => existing.policy_target_kind = Some(policy_target_kind),
-            _ => {}
-        }
-    }
-    if let Some(tool_name_from) = incoming.tool_name_from {
-        match &existing.tool_name_from {
-            Some(existing_tool_name_from) if existing_tool_name_from != &tool_name_from => {
-                return manifest_merge_conflict(&format!("{point_path}.tool_name_from"), source);
-            }
-            None => existing.tool_name_from = Some(tool_name_from),
-            _ => {}
-        }
-    }
-    if !is_empty_policy_binding(&incoming.policy) {
-        if is_empty_policy_binding(&existing.policy) {
-            existing.policy = incoming.policy;
-        } else if existing.policy != incoming.policy {
-            return manifest_merge_conflict(&format!("{point_path}.policy"), source);
-        }
+    // Specification 2.2: for an intervention point, only its annotations
+    // may differ between documents. Every other field must be identical
+    // in each document that names the point, absence included. A
+    // document may not fill a field another omitted: `policy_target_kind`
+    // and `tool_name_from` change the tool projection and the Cedar
+    // resource the point's policy evaluates against, and `policy_target`
+    // and `policy` are what the point is.
+    let differing = [
+        (
+            "policy_target",
+            existing.policy_target != incoming.policy_target,
+        ),
+        (
+            "policy_target_kind",
+            existing.policy_target_kind != incoming.policy_target_kind,
+        ),
+        (
+            "tool_name_from",
+            existing.tool_name_from != incoming.tool_name_from,
+        ),
+        ("policy", existing.policy != incoming.policy),
+    ];
+    if let Some((field, _)) = differing.iter().find(|(_, differs)| *differs) {
+        return Err(RuntimeError::ManifestInvalid(format!(
+            "manifest extends conflict for {point_path}.{field} from '{}': only annotations may \
+             differ for an intervention point defined in more than one document",
+            source.label()
+        )));
     }
     merge_string_keyed_map(
         &mut existing.annotations,
@@ -3172,8 +3179,12 @@ intervention_points:
             .collect()
     }
 
+    /// Specification 2.2: for an intervention point only the annotations
+    /// may differ. An overlay that adds a binding restates the point's
+    /// `policy_target` and `policy`; one that omits them, or adds a field
+    /// the base omitted, is a conflict.
     #[test]
-    fn extends_allows_annotation_only_point_overlay() {
+    fn extends_annotation_overlay_restates_the_point_it_extends() {
         let base = root_path(
             "annotation-only-base.yaml",
             r#"agent_control_specification_version: 0.4.0-alpha.1
@@ -3206,6 +3217,9 @@ annotators:
     type: classifier
 intervention_points:
   input:
+    policy_target: $snap.input
+    policy:
+      id: p
     annotations:
       overlay_classifier:
         from: $target.text
@@ -3225,6 +3239,53 @@ intervention_points:
         assert!(input.annotations.contains_key("overlay_classifier"));
         assert!(manifest.annotators.contains_key("base_classifier"));
         assert!(manifest.annotators.contains_key("overlay_classifier"));
+
+        // (overlay point body, field named in the conflict)
+        let conflicts = [
+            (
+                "    annotations:\n      overlay_classifier:\n        from: $target.text\n",
+                "policy_target",
+            ),
+            (
+                "    policy_target: $snap.input\n    annotations:\n      overlay_classifier:\n        from: $target.text\n",
+                "policy",
+            ),
+            (
+                "    policy_target: $snap.input\n    policy_target_kind: user_input\n    policy:\n      id: p\n",
+                "policy_target_kind",
+            ),
+            (
+                "    policy_target: $snap.input\n    tool_name_from: $snap.tool_call.name\n    policy:\n      id: p\n",
+                "tool_name_from",
+            ),
+            (
+                "    policy_target: $snap.input\n    policy:\n      id: p\n      query: data.other\n",
+                "policy",
+            ),
+        ];
+        for (index, (body, field)) in conflicts.iter().enumerate() {
+            let overlay = root_path(
+                &format!("annotation-only-overlay-conflict-{index}.yaml"),
+                &format!(
+                    "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {}\nannotators:\n  overlay_classifier:\n    type: classifier\nintervention_points:\n  input:\n{body}",
+                    base.file_name().unwrap().to_string_lossy()
+                ),
+            );
+            let error = Manifest::from_path(&overlay).expect_err(field);
+            assert_eq!(error.reason(), "runtime_error:manifest_invalid", "{field}");
+            assert!(
+                error.detail().contains(&format!(
+                    "manifest extends conflict for intervention_points.input.{field}"
+                )),
+                "{field}: {}",
+                error.detail()
+            );
+            assert!(
+                error.detail().contains("only annotations may differ"),
+                "{field}: {}",
+                error.detail()
+            );
+        }
     }
 
     fn http_response(status: &str, headers: &[(&str, String)], body: &[u8]) -> Vec<u8> {
@@ -4182,9 +4243,7 @@ intervention_points:
     /// a host declared annotator may set only `from`.
     #[test]
     fn remote_binding_cannot_add_needs_to_host_declared_annotator() {
-        let remote = format!(
-            "agent_control_specification_version: 0.4.0-alpha.1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n"
-        );
+        let remote = "agent_control_specification_version: 0.4.0-alpha.1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n".to_string();
         let path = root_extending_url(
             "url-remote-needs-on-host-annotator.yaml",
             REMOTE,
@@ -4204,9 +4263,7 @@ intervention_points:
     /// result is not something reading the snapshot alone would reach.
     #[test]
     fn remote_declared_annotator_cannot_need_a_host_declared_one() {
-        let remote = format!(
-            "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n"
-        );
+        let remote = "agent_control_specification_version: 0.4.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n      judge:\n        needs: [scanner]\n        from: $target.text\n".to_string();
         let path = root_extending_url(
             "url-remote-needs-host-result.yaml",
             REMOTE,
@@ -4255,13 +4312,66 @@ intervention_points:
         );
     }
 
+    /// The tool catalog is the host's allowlist. A fetched document that
+    /// declares a tool, with or without a clearance, is refused, so no
+    /// document the host did not write can widen the catalog or grant a
+    /// sink clearance.
+    #[test]
+    fn fetched_document_cannot_declare_tools() {
+        for (label, tools) in [
+            (
+                "with clearance",
+                "tools:\n  shell:\n    type: Tool\n    id: shell\n    clearance: [secret]\n",
+            ),
+            (
+                "without clearance",
+                "tools:\n  shell:\n    type: Tool\n    id: shell\n",
+            ),
+        ] {
+            let remote = format!("agent_control_specification_version: 0.4.0-alpha.1\n{tools}");
+            let path = root_path(
+                &format!("url-fetched-tools-{}.yaml", label.replace(' ', "-")),
+                &format!(
+                    "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {REMOTE}\n{TEST_POLICY_INPUT_POINT}tools:\n  safe:\n    type: Tool\n    id: safe\n    clearance: [public]\n"
+                ),
+            );
+            let fetcher = fetcher_with(REMOTE, &remote);
+
+            let error =
+                load_with_fetcher(&path, fetcher.clone(), Limits::default()).expect_err(label);
+
+            assert_eq!(fetcher.calls(REMOTE), 1);
+            assert_url_sourced_refusal(
+                &error,
+                &[
+                    "declares tool 'shell'",
+                    "tool catalog is host configuration",
+                ],
+            );
+        }
+
+        // The host's own catalog is untouched by the rule.
+        let path = root_path(
+            "url-host-tools.yaml",
+            &format!(
+                "agent_control_specification_version: 0.4.0-alpha.1\nextends:\n  - {REMOTE}\n{TEST_POLICY_INPUT_POINT}tools:\n  safe:\n    type: Tool\n    id: safe\n    clearance: [public]\n"
+            ),
+        );
+        let fetcher = fetcher_with(
+            REMOTE,
+            "agent_control_specification_version: 0.4.0-alpha.1\nmetadata:\n  name: remote\n",
+        );
+        let manifest = load_with_fetcher(&path, fetcher, Limits::default()).unwrap();
+        assert_eq!(manifest.tools.keys().collect::<Vec<_>>(), ["safe"]);
+    }
+
     /// Two fetched documents may chain each other, the same way they may
     /// overlay each other. Nothing of the host's crosses the boundary.
     #[test]
     fn two_fetched_documents_may_chain_their_own_annotators() {
         let scanner_url = "https://a.example/scanner.yaml";
         let judge_url = "https://b.example/judge.yaml";
-        let scanner = "agent_control_specification_version: 0.5.0-alpha.1\nannotators:\n  scanner:\n    type: classifier\nintervention_points:\n  output:\n    annotations:\n      scanner:\n        from: $target.text\n";
+        let scanner = "agent_control_specification_version: 0.5.0-alpha.1\nannotators:\n  scanner:\n    type: classifier\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      scanner:\n        from: $target.text\n";
         let judge = "agent_control_specification_version: 0.5.0-alpha.1\nannotators:\n  judge:\n    type: llm\n    endpoint: https://judge.remote.example/v1\nintervention_points:\n  output:\n    policy_target: $snap.output\n    policy:\n      id: p\n    annotations:\n      judge:\n        needs: [scanner]\n        from: $pi.annotations.scanner.label\n";
         let path = root_path(
             "url-two-fetched-chain.yaml",

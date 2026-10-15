@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(all(feature = "rego", feature = "default-dispatchers"))]
 
 use agent_control_spec::{
@@ -5,6 +7,8 @@ use agent_control_spec::{
     Manifest, PolicyDispatcher, PreparedPolicyInvocation, RegoPolicyInvocation, RegorusRegoRunner,
     RuntimeError,
 };
+
+mod common;
 use serde_json::json;
 use std::{
     fs,
@@ -17,10 +21,7 @@ use std::{
 };
 
 fn bank_agent_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("examples")
-        .join("bank_agent")
+    common::repo_root().join("examples").join("bank_agent")
 }
 
 fn test_artifact_dir(name: &str) -> PathBuf {
@@ -207,8 +208,7 @@ fn activation_tolerates_a_dispatcher_that_cannot_warm() {
 /// would send hosts chdir-ing around a process they do not own.
 #[test]
 fn activation_resolves_bundles_relative_to_the_manifest_not_the_process() {
-    let smoke = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
+    let smoke = common::repo_root()
         .join("fixtures")
         .join("smoke")
         .canonicalize()
@@ -335,13 +335,8 @@ fn activation_is_usable_through_the_interceptor_surface() {
 /// Minimal executor: this crate has no async runtime dependency and the
 /// interceptor trait is the only async surface here.
 fn futures_lite_block_on<F: std::future::Future>(future: F) -> F::Output {
-    use std::task::{Context, Poll, Wake, Waker};
-    struct NoopWake;
-    impl Wake for NoopWake {
-        fn wake(self: Arc<Self>) {}
-    }
-    let waker = Waker::from(Arc::new(NoopWake));
-    let mut context = Context::from_waker(&waker);
+    use std::task::{Context, Poll, Waker};
+    let mut context = Context::from_waker(Waker::noop());
     let mut future = Box::pin(future);
     loop {
         match future.as_mut().poll(&mut context) {

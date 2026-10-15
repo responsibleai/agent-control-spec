@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
+# Copyright (c) Microsoft. All rights reserved.
+
 """Build every published artifact and exercise it from a clean install.
 
 The suites and the parity check import from this checkout, where the

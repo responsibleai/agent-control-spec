@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/policies/perspective-api.yaml
 package agent_control_specification.perspective_api
 

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Deterministic ACS runtime demo for sql-protect-with-delegate."""
 
 from __future__ import annotations
