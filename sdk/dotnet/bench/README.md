@@ -33,10 +33,10 @@ real evaluation. The Node and Python benches use the same variant.
 
 | Section | Question it answers |
 | --- | --- |
-| Cold start | What activation costs once the process is warm — `Activate()` on its own, then the first `Evaluate` per point? |
+| Cold start | What activation costs once the process is warm: `Activate()` on its own, then the first `Evaluate` per point? |
 | Warm latency | p50/p95/p99/max/mean per `Evaluate`, per intervention point and pooled. |
 | Throughput at concurrency 32 | Does one shared handle hold up under contention? |
-| Cold vs warm cache hit | What a host saves by keying activated handles on policy version — acquisition and first evaluation, separately. |
+| Cold vs warm cache hit | What a host saves by keying activated handles on policy version: acquisition and first evaluation, separately. |
 
 The last section is measured after the .NET side is already warm, so it
 reports engine cost rather than JIT. Its "cold: first Evaluate" row is
@@ -53,5 +53,5 @@ timed and discarded, never folded into a reported number. Percentiles
 are nearest-rank with no interpolation, so every printed latency is one
 a call actually saw.
 
-Absolute numbers are machine-specific — treat the ratios between rows as
-the durable result, not the microseconds.
+Absolute numbers are machine-specific, so treat the ratios between rows
+as the durable result, not the microseconds.

@@ -4,8 +4,8 @@ This directory is a cross-language-ready fixture corpus for Agent Control Specif
 
 Additional frozen contract artifacts:
 
-- `manifests/*.yaml` — canonical example manifests for the refactored stateless model.
-- `extends/` — path-loader fixtures for ordered, relative, duplicate-identical, conflict, cycle, missing-file, and unsupported URL scheme `extends` behavior.
+- `manifests/*.yaml`: canonical example manifests for the stateless model.
+- `extends/`: path-loader fixtures for ordered, relative, duplicate-identical, conflict, cycle, missing-file, and unsupported URL scheme `extends` behavior.
 
 The Rust integration test `tests/fixture_cases.rs` loads every case and validates it against the current core so future SDK fixtures cannot drift. The schema in `fixture-case.schema.json` documents the case shape.
 

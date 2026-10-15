@@ -27,7 +27,7 @@ The package is pre-release, so `--prerelease` is required until a
 stable version ships.
 
 Manifests can also be checked on their own, without building a runtime
-or having `opa` on PATH. Useful when generating or migrating manifests:
+or resolving a policy bundle. Useful when generating or migrating manifests:
 
 ```csharp
 try
