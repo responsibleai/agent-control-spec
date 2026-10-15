@@ -55,6 +55,7 @@ report a vulnerability.
 | `spec/` | The ACS specification (policy plane) and schemas |
 | `policy/` | Cedar and Rego policy libraries |
 | `fixtures/` | Evaluation fixtures |
+| `examples/` | Example manifests and hosts; `python_composition/` runs in CI and `bank_agent/` feeds the engine tests and the benchmark |
 | `docs/EXTRACTION.md` | Provenance map from the previous tree |
 
 ## Status

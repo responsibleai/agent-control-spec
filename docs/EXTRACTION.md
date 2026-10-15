@@ -26,7 +26,7 @@ policies and returns agent-hooks verdicts.
 | `core/src/effects.rs` | — | Removed (already sunset in the source; `transform` is the only value-changing decision). |
 | `core/src/ffi.rs` | `sdk/ffi` | C ABI over the engine, built as the workspace crate `agent-control-spec-ffi` (cdylib and rlib, `publish = false`, not on crates.io). The .NET binding loads it. |
 | `spec/SPECIFICATION.md` | `spec/SPECIFICATION.md` | Interception-layer sections replaced by references to AGENT-HOOKS-0.1; policy-plane sections retained. |
-| `spec/schema/` | `spec/schema/` | Manifest/advice schemas kept; wire verdict schema superseded by the agent-hooks verdict schema. |
+| `spec/schema/` | `spec/schema/` | Manifest and advice schemas kept. The wire schemas stay under `spec/schema/wire/`; `verdict.schema.json` describes the normalized policy output, and the verdict a host receives is the agent-hooks verdict. |
 | `policy/` | `policy/` | Cedar/Rego policy libraries. |
 | `tests/fixtures` | `fixtures/` | Evaluation fixtures. |
 | `sdk/python` | `sdk/python` | PyO3 binding; re-exports agent-hooks types and wraps the engine as an `agent_hooks` interceptor. |
@@ -35,7 +35,7 @@ policies and returns agent-hooks verdicts.
 | `sdk/rust` | — | Not reintroduced. Rust consumers use the `engine` crate directly. |
 | `core/tests/` | `engine/tests/` | Ported; assertions updated to the native verdict shapes (advisory → `allow`+`warnings`, escalation → `deny`+`approval`). Not ported: `ffi_*.rs` (the C ABI was rebuilt in `sdk/ffi`, which carries its own unit tests in `sdk/ffi/src/lib.rs`), `frozen_contract.rs` (pinned the superseded wire), `parity_canonical.rs` (identity parity is owned by the agent-hooks golden vectors). |
 | `tests/conformance/` | `tests/conformance/` | Executable corpus ported, minus the approval-seam and evaluate-only cases (host obligations under AGENT-HOOKS-0.1 §8–§9, covered by that contract's kit). |
-| `examples/` | `examples/` | Imported for the end-to-end suites; `basic_host.rs` still speaks the superseded API and is pending a rewrite as an emitter-based host. |
+| `examples/` | `examples/` | Imported for the end-to-end suites. `python_composition/` and the `bank_agent/` assets are on the current contract. `basic_host.rs`, `ifc_agent/demo.rs`, `coding_agent/app`, `support_agent/app`, `records_agent/app`, `research_agent/app` and everything under `from_agentshield/` still speak the superseded API and are pending a rewrite as emitter-based hosts or removal. |
 | — | `conformance/agent-hooks/` | New: vendored AGENT-HOOKS-0.1 vector corpus, provenance, and the per-part conformance report produced by `engine/tests/agent_hooks_conformance.rs`. |
 | `integrations/`, `benchmarks/`, `deploy/` | — | Out of scope for the runtime repository. |
 | `generator/` | `generator/` | The natural-language path is ported as `agent-control-spec-generator`; guided `acs-generate init` remains in AGT. Regorus parses authoring conditions through the Python native binding, without an OPA executable. ACS `validate_artifacts` and `ActivatedPolicy.from_memory` compile and smoke-evaluate the rendered policy. Generated targets use `$.target`, including at model-call points whose old L1 paths no longer exist. See `generator/README.md` for the source revision and port boundaries. |

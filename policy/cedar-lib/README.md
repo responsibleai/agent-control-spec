@@ -1,13 +1,13 @@
-# AGT stock Cedar policy library
+# Stock Cedar policy library
 
-This directory ships the AGT stock policy library written in Cedar, the
-sibling of the Rego library at `policy-engine/policy/lib/`. Each file
+This directory ships the stock policy library written in Cedar, the
+sibling of the Rego library at [`../lib/`](../lib/). Each file
 mirrors the same named Rego library so a manifest author can pick the
 engine that fits the host environment and reuse the same gate semantics.
-The Cedar library realises the AGT verdict surface described in
-`policy-engine/spec/SPECIFICATION.md` §14 and §12.4 and
+The Cedar library realises the policy output surface described in
+[`../../spec/SPECIFICATION.md`](../../spec/SPECIFICATION.md) §14 and §12.4 and
 the cedar advice schema at
-`policy-engine/spec/schema/cedar_advice.schema.json`.
+[`../../spec/schema/cedar_advice.schema.json`](../../spec/schema/cedar_advice.schema.json).
 
 ## File catalogue
 
@@ -61,9 +61,9 @@ snapshot member named `annotations` fails the evaluation closed with
 overridden: a cedar policy that sets `query`, or a cedar binding with any
 field other than `id`, is rejected when the manifest loads.
 
-## How the Cedar verdict shape maps to AGT verdicts
+## How Cedar results become policy output
 
-| Cedar evaluation result | AGT verdict |
+| Cedar evaluation result | Policy output |
 | --- | --- |
 | `Deny`, one or more `forbid` matched | `{decision: "deny", reason: <@id of the first contributing forbid, in file order>}` |
 | `Deny`, nothing matched | `{decision: "deny", reason: "no_matching_policy"}` |
@@ -71,7 +71,13 @@ field other than `id`, is rejected when the manifest loads.
 | `Allow` with no advice | `{decision: "allow"}` |
 | `Allow`, one or more contributing permits carry `@advice` | The most restrictive advice, `escalate` over `transform` over `warn`, first in file order among equals, validated against `cedar_advice.schema.json` and translated to `{decision: "warn"|"escalate"|"transform", ...}` |
 
-The `@id` annotation on each `forbid` policy is the AGT deny reason
+That table is the dispatcher's policy output, not the verdict a host
+receives. The runtime then normalizes it per
+[`../../spec/SPECIFICATION.md`](../../spec/SPECIFICATION.md) section 13:
+`warn` becomes `allow` with one `warnings[]` entry and `escalate`
+becomes `deny` with an `approval` block.
+
+The `@id` annotation on each `forbid` policy is the deny reason
 that surfaces on the verdict; a `forbid` without one, or with an empty
 or blank `@id`, surfaces its Cedar policy id, `policy<n>` for the n-th
 policy in the file. An unguarded read of a missing attribute is an
@@ -129,9 +135,10 @@ the egress and budget gates:
 This library ships without a schema because tool `args` differ per
 host.
 
-## Binding a Cedar policy from an AGT manifest
+## Binding a Cedar policy from a manifest
 
-The manifest binds a Cedar policy through the `cedar` type per D3.1.
+The manifest binds a Cedar policy through the `cedar` type per
+`spec/SPECIFICATION.md` section 12.4.
 Example.
 
 ```yaml
@@ -151,14 +158,14 @@ intervention_points:
 The host loads the resource entity attributes that parameterise the
 policy (thresholds, allowlists, clearance closures, content hashes)
 through the `entities_path` field. The entity UIDs MUST match the
-resource UIDs that the dispatcher constructs from the AGT snapshot per
-D3.2, namely `Tool::"<name>"` for tool intervention points and
+resource UIDs that the dispatcher constructs from the snapshot per
+section 12.4, namely `Tool::"<name>"` for tool intervention points and
 `PolicyTarget::"<kind>"` for other intervention points.
 
 ## Cedar limits compared to the Rego library
 
 Cedar is purposely a smaller language than Rego and lacks several
-operations the AGT Rego library uses. Authors who hit a limit stay on
+operations the Rego library uses. Authors who hit a limit stay on
 the Rego library which exposes the full strength surface. The limits
 worth knowing.
 
@@ -166,8 +173,7 @@ worth knowing.
   wildcards. The `patterns.cedar` library detects PII structural
   signatures (email substring, dash separated SSN, dash separated
   credit card) only. The Rego library `data.agt.patterns` runs the
-  canonical RE2 patterns from
-  `agent-os/src/agent_os/integrations/base.py::PII_PATTERNS`.
+  RE2 patterns defined in [`../lib/patterns.rego`](../lib/patterns.rego).
 - **No URL parser.** Cedar has no host extractor, no string
   `.contains`, no `.split`. The `egress.cedar` library compares a
   bare host or domain that the host SDK or an annotator has already
@@ -203,11 +209,11 @@ worth knowing.
 
 ## Test runner
 
-Install the Cedar CLI once. CI pins 4.12.0, the version of the
-`cedar-policy` crate the engine links.
+Install the Cedar CLI once. CI pins 4.13.0, the version of the
+`cedar-policy` crate the engine links (`Cargo.lock`).
 
 ```sh
-cargo install cedar-policy-cli --version 4.12.0 --locked
+cargo install cedar-policy-cli --version 4.13.0 --locked
 ```
 
 Run the suite.

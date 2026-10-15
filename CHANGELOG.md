@@ -23,6 +23,11 @@
   header (ruff `CPY001` for Python, `IDE0073` in the .NET build and
   `scripts/check-file-headers.py` for every other language). The root
   gains the Microsoft CODE_OF_CONDUCT.md and SUPPORT.md.
+- Stale references left from the extraction are gone. Docs, READMEs,
+  CI and release comments, package metadata, conformance case ids and
+  code comments now name files, versions and sections that exist in
+  this repository; the documentation example pins the published
+  `0.4.0b1` packages.
 
 ## 0.4.0-beta.1
 
