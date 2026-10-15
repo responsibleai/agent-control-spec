@@ -185,6 +185,8 @@ jobs:
           ./actionlint -color
       - name: Version surfaces agree
         run: python3 scripts/check-version-consistency.py
+      - name: Source files carry the copyright header
+        run: python3 scripts/check-file-headers.py
       # The parity harness proves the bindings agree about the calls it
       # makes. It cannot notice a capability none of them expose, because
       # a surface absent everywhere is consistent everywhere. That blind

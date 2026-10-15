@@ -8,8 +8,13 @@
   `latest` move is gone; the channel tag needs "Allow npm dist-tag"
   on each package's trusted publisher once (RELEASING.md). Install
   docs drop `@alpha`.
-- Source files no longer carry a Microsoft copyright header; the
-  repository is MIT licensed under LICENSE.
+- The repository adopts the Microsoft open source license and header
+  pattern: LICENSE names Microsoft Corporation as the copyright holder,
+  every source file starts with `Copyright (c) Microsoft. All rights
+  reserved.` in the language's comment style, and CI enforces the
+  header (ruff `CPY001` for Python, `IDE0073` in the .NET build and
+  `scripts/check-file-headers.py` for every other language). The root
+  gains the Microsoft CODE_OF_CONDUCT.md and SUPPORT.md.
 
 ## 0.4.0-beta.1
 
