@@ -22,8 +22,8 @@
 
 set -euo pipefail
 
-FEED="${1:?usage: verify-dotnet-package.sh <feed-directory> <package-version>}"
-VERSION="${2:?usage: verify-dotnet-package.sh <feed-directory> <package-version>}"
+FEED="${1:?usage: dotnet_package.sh <feed-directory> <package-version>}"
+VERSION="${2:?usage: dotnet_package.sh <feed-directory> <package-version>}"
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

@@ -7,7 +7,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <PackageId>ResponsibleAI.AgentControlSpec</PackageId>
     <Version>0.4.0-beta.1</Version>
-    <Description>Agent Control Specification: a policy decision runtime plugging into agent-hooks as an interceptor. .NET wrapper over the Rust engine (native library agent_control_spec_ffi resolved from the loader path).</Description>
+    <Description>Agent Control Specification: a policy decision runtime plugging into agent-hooks as an interceptor. .NET wrapper over the Rust engine; ships the native library agent_control_spec_ffi for linux-x64, linux-arm64, osx-x64, osx-arm64 and win-x64 under runtimes/.</Description>
     <Authors>Microsoft</Authors>
     <Company>Microsoft</Company>
     <Copyright>© Microsoft Corporation. All rights reserved.</Copyright>

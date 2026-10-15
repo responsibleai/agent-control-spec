@@ -62,8 +62,8 @@ jobs:
   # not read it as a member of this workspace. The version matches the
   # cedar-policy crate the engine links (Cargo.lock).
   # Advisory: the job is not yet in the branch-protection required-check
-  # set, so a red run does not block a merge. Adding it there is a
-  # repo-admin step once the job has reported on main.
+  # set, so a red run does not block a merge. It has reported green on
+  # main, so adding it to the required set is a pending repo-admin step.
   cedar-lib:
     runs-on: ubuntu-latest
     steps:
@@ -158,11 +158,13 @@ jobs:
         with: { python-version: "3.12" }
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Install and test the Python binding and generator
-        # requirements-dev.lock is compiled on Linux and is not portable;
-        # this advisory job installs the package (Rust side still pinned
-        # via [tool.maturin] locked=true) plus pytest. agent-hooks-sdk
-        # ships only a manylinux wheel at 0.1.0a3, so macOS and Windows
-        # build it from the sdist with the toolchain installed above.
+        # This advisory job installs the package and the generator with
+        # freshly resolved Python dependencies rather than from
+        # requirements-dev.lock (which is compiled --universal and would
+        # install here too); the Rust side stays pinned via
+        # [tool.maturin] locked=true. The toolchain installed above builds
+        # sdk/python itself. agent-hooks-sdk 0.1.0b2 ships wheels for
+        # Linux, macOS and Windows, so nothing builds it from the sdist.
         shell: bash
         run: |
           uv pip install --system ./sdk/python ./generator pytest==9.1.1

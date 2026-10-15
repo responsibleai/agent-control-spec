@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright (c) Microsoft. All rights reserved.
 
-# AGT stock Cedar library test runner. Invokes `cedar run-tests` against
+# ACS stock Cedar library test runner. Invokes `cedar run-tests` against
 # every `.cedar` library file and its sibling `_test.json` in this
 # directory. Returns a non-zero exit code when any test fails so CI can
 # gate on the result. Mirrors the shape of the sibling Rego runner
@@ -18,7 +18,7 @@ if ! command -v "$CEDAR_BIN" >/dev/null 2>&1; then
     CEDAR_BIN="$HOME/.cargo/bin/cedar"
   else
     echo "error: cedar executable not found on PATH" >&2
-    echo "install with: cargo install cedar-policy-cli --version 4.12.0 --locked" >&2
+    echo "install with: cargo install cedar-policy-cli --version 4.13.0 --locked" >&2
     exit 127
   fi
 fi
