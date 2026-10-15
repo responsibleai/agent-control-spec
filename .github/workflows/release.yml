@@ -23,7 +23,12 @@
 #            four platform packages) have publishers configured (repo
 #            responsibleai/agent-control-spec, workflow release.yml,
 #            environment release). No token; provenance attaches
-#            automatically.
+#            automatically. Every version publishes under `latest`; a
+#            pre-release also gets a channel tag (alpha, beta, rc or
+#            next) through `npm dist-tag add`, which trusted publishing
+#            allows only once "Allow npm dist-tag" is on for the
+#            package's publisher. Until then that step warns and the
+#            tag is added by hand (RELEASING.md).
 #   NuGet  — trusted publishing (OIDC): policies are user-scoped and
 #            pattern-based, so configure BEFORE the first publish
 #            (pattern ResponsibleAI.AgentControlSpec*); the NuGet/login
@@ -247,11 +252,27 @@ jobs:
           done
           npm pack --pack-destination pack
           ls -l pack
+          # Every version publishes under `latest`. A pre-release also
+          # gets a channel tag from its label: alpha, beta, rc, or next
+          # for any other label. A stable version gets no channel tag.
+          # The publish step reads both from the environment. No
+          # dist-tag call here, so the dry run stays read-only.
+          V=$(node -p "require('./package.json').version")
+          case "$V" in
+            *-alpha.*) CHANNEL=alpha ;;
+            *-beta.*)  CHANNEL=beta ;;
+            *-rc.*)    CHANNEL=rc ;;
+            *-*)       CHANNEL=next ;;
+            *)         CHANNEL= ;;
+          esac
+          echo "version $V: publish tag latest, channel tag ${CHANNEL:-none (stable)}"
+          {
+            echo "NPM_VERSION=$V"
+            echo "NPM_CHANNEL=$CHANNEL"
+          } >> "$GITHUB_ENV"
           # Rehearse the publish of every tarball so a bad path or
           # manifest fails here, on the dry run too, not at upload time.
-          V=$(node -p "require('./package.json').version")
-          case "$V" in *-*) T=alpha;; *) T=latest;; esac
-          for t in pack/*.tgz; do npm publish "./$t" --dry-run --access public --tag "$T"; done
+          for t in pack/*.tgz; do npm publish "./$t" --dry-run --access public --tag latest; done
         working-directory: sdk/node
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
@@ -268,16 +289,17 @@ jobs:
       - name: Publish to npm (platform packages, then the loader package)
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         # Publishes the attested tarballs from pack/, never the working
-        # tree. Prerelease versions publish under the `alpha` dist-tag.
-        # Idempotent: versions that already exist are skipped.
+        # tree. Every version publishes under `latest`; a pre-release
+        # then gets its channel tag (NPM_CHANNEL, from the pack step).
+        # Idempotent: versions that already exist are skipped, and
+        # `npm dist-tag add` on an already-tagged version is a no-op.
         run: |
           # The npm bundled with Node 22 predates trusted publishing
           # (npm >= 11.5.1). Pin the exact version; bump it on purpose,
           # never with @latest, from a job that holds the OIDC token.
           npm install -g npm@11.21.0
           npm --version
-          V=$(node -p "require('./package.json').version")
-          case "$V" in *-*) T=alpha;; *) T=latest;; esac
+          V=$NPM_VERSION
           publish() {
             # $1 package name, $2 tarball produced by npm pack
             if npm view "$1@$V" version >/dev/null 2>&1; then
@@ -285,8 +307,17 @@ jobs:
             else
               # The ./ prefix matters: npm reads a bare "dir/file.tgz" as a
             # GitHub "user/repo" shorthand and tries git ls-remote on it.
-            npm publish "./$2" --access public --tag "$T"
+            npm publish "./$2" --access public --tag latest
             fi
+          }
+          tag_channel() {
+            # $1 package name. Skipped for a stable version (no channel).
+            [ -n "$NPM_CHANNEL" ] || return 0
+            # TODO: drop the `|| echo` fallback once "Allow npm dist-tag"
+            # is enabled on the trusted publisher of every package; the
+            # command must then fail the job.
+            npm dist-tag add "$1@$V" "$NPM_CHANNEL" \
+              || echo "::warning::dist-tag add failed; enable 'Allow npm dist-tag' on the trusted publisher for $1"
           }
           for d in npm/*/; do
             P=$(node -p "require('./$d/package.json').name")
@@ -294,6 +325,10 @@ jobs:
             publish "$P" "pack/${base//\//-}-$V.tgz"
           done
           publish "@responsibleai/agent-control-spec" "pack/responsibleai-agent-control-spec-$V.tgz"
+          for d in npm/*/; do
+            tag_channel "$(node -p "require('./$d/package.json').name")"
+          done
+          tag_channel "@responsibleai/agent-control-spec"
         working-directory: sdk/node
 
   # The managed assembly calls the engine through agent_control_spec_ffi,

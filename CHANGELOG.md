@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Release workflow: every npm package publishes under `latest`,
+  pre-releases included, and a pre-release also gets a channel tag
+  (`alpha`, `beta`, `rc` or `next`) from the workflow. The by-hand
+  `latest` move is gone; the channel tag needs "Allow npm dist-tag"
+  on each package's trusted publisher once (RELEASING.md). Install
+  docs drop `@alpha`.
+
 ## 0.4.0-beta.1
 
 - The bundled Cedar dispatcher reads the principal from the snapshot's

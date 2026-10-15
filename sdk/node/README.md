@@ -8,13 +8,13 @@ emitter; every failure path is fail-closed (`runtime_error:*` deny).
 ## Install
 
 ```bash
-npm install @responsibleai/agent-control-spec@alpha
+npm install @responsibleai/agent-control-spec
 ```
 
-Keep the `@alpha` tag (or pin an exact published version such as
-`@0.4.0-beta.1`) while the package is pre-release: npm's `latest` tag
-can lag the newest pre-release, so a plain `npm install` may fetch an
-older build. Check what the tags resolve to with
+A plain install gets the newest release, pre-releases included. The
+channel tags `alpha`, `beta` and `rc` exist for pinning to one line
+(`@responsibleai/agent-control-spec@beta`); or pin an exact published
+version such as `@0.4.0-beta.1`. Check what the tags resolve to with
 `npm view @responsibleai/agent-control-spec dist-tags`. The package
 pulls in `@responsibleai/agent-hooks` as a dependency.
 

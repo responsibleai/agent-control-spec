@@ -115,10 +115,10 @@ annotators. A host that wants its own dispatchers uses
 Python: [SDK quickstart](sdk/python/README.md) and
 [composing ACS controls through Agent Hooks](docs/ACS-AND-AGENT-HOOKS.md).
 
-Node: `npm install @responsibleai/agent-control-spec@alpha`, see the
-[Node wrapper](sdk/node/README.md). Keep the `@alpha` tag while the
-package is pre-release: npm's `latest` tag can lag the newest
-pre-release, so a plain `npm install` may fetch an older build.
+Node: `npm install @responsibleai/agent-control-spec`, see the
+[Node wrapper](sdk/node/README.md). A plain install gets the newest
+release, pre-releases included; the channel tags `alpha`, `beta` and
+`rc` exist for pinning to one line.
 
 .NET: `dotnet add package ResponsibleAI.AgentControlSpec --prerelease`,
 see the [.NET wrapper](sdk/dotnet/README.md).

@@ -50,28 +50,39 @@ the tag's publication set. The tag workflow does not publish the generator.
    skipped and an existing release gets its SBOMs re-uploaded, so a
    re-run after a partial failure is safe.
 
-5. Pre-release only: move the npm `latest` dist-tag. Skip this step
-   for a stable release, which the workflow publishes under `latest`
-   itself. The workflow publishes pre-release versions under the
-   `alpha` tag and leaves `latest` alone, so `latest` can lag and a
-   plain `npm install` may fetch an older build. The workflow does not
-   move `latest` for a pre-release today (npm trusted publishing can
-   run `npm dist-tag` once "Allow npm dist-tag" is enabled on each
-   publisher; wiring that in is still to do). Until then, when the
-   version you just published should be the default install, move the
-   tag by hand on the loader and every platform package. Run this from
-   an interactive npm login with 2FA, not a stored automation token:
+5. npm dist-tags. The workflow publishes every version under
+   `latest`, pre-releases included, so a plain `npm install` gets the
+   newest release. For a pre-release it also adds a channel tag from
+   the label: `alpha` for `-alpha.N`, `beta` for `-beta.N`, `rc` for
+   `-rc.N`, `next` for any other label. Stable versions carry only
+   `latest`. The channel tag needs one setting per package, once:
+   "Allow npm dist-tag" on the trusted publisher configuration at
+   npmjs.com > package > Settings > Trusted Publisher, for
+
+   - `@responsibleai/agent-control-spec`
+   - `@responsibleai/agent-control-spec-linux-x64-gnu`
+   - `@responsibleai/agent-control-spec-darwin-x64`
+   - `@responsibleai/agent-control-spec-darwin-arm64`
+   - `@responsibleai/agent-control-spec-win32-x64-msvc`
+
+   Until that is on, the workflow prints a warning for each package
+   and the channel tag must be added by hand on the loader and every
+   platform package. Run this from an interactive npm login with 2FA,
+   not a stored automation token:
 
    ```bash
    V=<version>
+   TAG=<alpha|beta|rc|next>
    for p in agent-control-spec agent-control-spec-linux-x64-gnu \
             agent-control-spec-darwin-x64 agent-control-spec-darwin-arm64 \
             agent-control-spec-win32-x64-msvc; do
-     npm dist-tag add "@responsibleai/$p@$V" latest
+     npm dist-tag add "@responsibleai/$p@$V" "$TAG"
    done
    ```
 
-   Check with `npm view @responsibleai/agent-control-spec dist-tags`.
+   The same loop with `latest` moves `latest` back after a withdrawal
+   (see below). Check with
+   `npm view @responsibleai/agent-control-spec dist-tags`.
 
 ## Pinned tooling
 
@@ -121,7 +132,8 @@ done
 
 Then publish the fixed version under a new tag, add a CHANGELOG entry
 that names the withdrawn version and the reason, and move the npm
-`latest` dist-tag if the withdrawn version held it (step 5 above).
+`latest` dist-tag back if the withdrawn version held it (the loop in
+step 5 with `latest`; `npm deprecate` does not move tags).
 `cargo yank --undo` and the PyPI and NuGet listing toggles reverse a
 mistaken withdrawal; `npm deprecate` with an empty message clears the
 deprecation.
@@ -166,7 +178,8 @@ The parser remains Python-only authoring tooling; the binding-coverage script
 records that decision separately from the runtime's cross-language contract.
 
 Registry credentials: OIDC trusted publishing everywhere; the only
-by-hand action is the pre-release dist-tag move in step 5. The one-time
+by-hand actions are the one-time "Allow npm dist-tag" setting in step 5
+and moving `latest` back after a withdrawal. The one-time
 first-publish bootstraps for crates.io and npm are described in the
 `release.yml` header. Publish jobs run in the `release` environment.
 
