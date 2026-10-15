@@ -52,6 +52,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # The files that pin the maturin build backend besides pyproject.toml.
 MATURIN_PIN_FILES = (
+    "sdk/python/requirements-dev.in",
     "sdk/python/requirements-dev.lock",
     ".github/requirements/maturin.txt",
 )
