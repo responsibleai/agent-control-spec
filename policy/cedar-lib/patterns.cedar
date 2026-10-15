@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
 // AGT stock pattern gate, Cedar mirror of `policy/lib/patterns.rego`. The
 // Rego library uses RE2 to detect PII tokens (SSN, email, credit card,
 // phone, secrets) anywhere in a string. Cedar has no regex engine and only

@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Local, event-gated fixtures shared by async integration tests."""
 
 import asyncio

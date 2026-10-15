@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Generation end to end, with a scripted model.
 
 The assertions that matter are the ones made through `agent_control_spec`

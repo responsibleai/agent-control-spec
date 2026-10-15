@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Real emitter and native evaluation, with event-gated local dispatchers."""
 
 import asyncio

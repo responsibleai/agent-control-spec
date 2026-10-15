@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 // Agent Control Specification — .NET wrapper.
 //
 // ACS is a stateless policy decision runtime that plugs into

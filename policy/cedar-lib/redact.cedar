@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
 // AGT stock redaction transform, Cedar mirror of `policy/lib/redact.rego`.
 // The Rego library performs in place regex substitution with
 // `regex.replace` and surfaces the rewritten text in the AGT transform

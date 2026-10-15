@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 // Host extension points: the engine's own dispatchers, telemetry sink
 // and perf level, reachable from .NET.
 //

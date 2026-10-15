@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Regressions from the source-level review, including failure injection."""
 
 import io

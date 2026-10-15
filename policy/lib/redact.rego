@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
 # AGT stock redaction transform. Combines `agt.patterns` regex matching with
 # the AGT transform verdict shape (SPECIFICATION.md §14). The
 # returned verdict carries `transform.path = "$target"` and a fully

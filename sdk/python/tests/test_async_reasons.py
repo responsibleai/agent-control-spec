@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Adapter failures are registered and cannot be manufactured by a policy."""
 
 import ast

@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Release metadata gates include the separate, unpublished generator."""
 
 import importlib.util

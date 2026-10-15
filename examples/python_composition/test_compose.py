@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Run with python -m unittest discover -s examples/python_composition -v."""
 
 from __future__ import annotations

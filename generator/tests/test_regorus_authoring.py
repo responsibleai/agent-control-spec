@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Keep the authoring checks intact while removing the external parser."""
 
 import json

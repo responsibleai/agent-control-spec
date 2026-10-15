@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 // Manifest grammar checks that do not require a runtime.
 
 using System.Text.Json;

@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
 # AGT stock budget helpers. These rules read the
 # `input.snapshot.envelope.budgets` block per AGT-SNAPSHOT-1.0.md §1 and emit
 # AGT verdicts per SPECIFICATION.md §13.1. A budget is exceeded when

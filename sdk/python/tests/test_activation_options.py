@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Activation carries resource caps and telemetry into async evaluation."""
 
 import asyncio

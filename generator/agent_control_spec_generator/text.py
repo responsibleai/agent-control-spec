@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Render untrusted text without terminal controls or Markdown structure."""
 
 import json

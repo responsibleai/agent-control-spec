@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 //! The JSON shapes every binding answers with.
 //!
 //! None of the streaming or telemetry types derives `Serialize`, so

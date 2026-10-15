@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """``__version__`` reports what was installed.
 
 It used to be a literal in ``__init__.py``. That made it a seventh version

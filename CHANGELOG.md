@@ -8,6 +8,8 @@
   `latest` move is gone; the channel tag needs "Allow npm dist-tag"
   on each package's trusted publisher once (RELEASING.md). Install
   docs drop `@alpha`.
+- Source files no longer carry a Microsoft copyright header; the
+  repository is MIT licensed under LICENSE.
 
 ## 0.4.0-beta.1
 

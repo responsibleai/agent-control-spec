@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 // Grammar checks are reachable without building a runtime.
 
 using Xunit;

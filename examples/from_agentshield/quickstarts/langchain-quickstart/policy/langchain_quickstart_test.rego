@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
 # AGT-DELTA D1 regression tests. The Rust core rejects any verdict with
 # an `effects` key, so the two output redact sites now ship an AGT D1.1
 # Transform verdict.

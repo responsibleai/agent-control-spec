@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Run the whole public surface in every supported language and diff.
 
 ACS reaches Rust, Python, Node and .NET through four different binding

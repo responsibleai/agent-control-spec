@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Runnable regressions for the PR review, using local data and loopback only."""
 
 import builtins

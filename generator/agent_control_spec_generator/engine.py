@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Generate reviewable policy artifacts using a bounded model repair loop."""
 
 from __future__ import annotations

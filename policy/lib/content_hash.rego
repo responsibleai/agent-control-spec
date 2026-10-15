@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
 # AGT stock tool content-hash gate. The manifest tool catalog MAY declare a
 # `content_hash` per AGT-MANIFEST §9. AGT-SNAPSHOT-1.0.md §2.5 lets the host
 # attach `tool_call.content_hash` to the snapshot. This library denies the

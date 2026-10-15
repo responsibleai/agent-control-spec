@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """ACS policy vocabulary and standard agent-hooks target shapes."""
 
 from dataclasses import dataclass

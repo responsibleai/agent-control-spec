@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
 // AGT stock drift gate, Cedar mirror of `policy/lib/drift.rego`. The Rego
 // library issues a `warn` verdict when the host annotator score
 // `context.annotations.drift_score` crosses the configured threshold.

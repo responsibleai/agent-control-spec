@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-
 use agent_control_spec::{Limits, Manifest, RuntimeError};
 use serde_json::json;
 

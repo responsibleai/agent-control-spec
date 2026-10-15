@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Publish complete artifact directories without deleting an earlier version."""
 
 from __future__ import annotations

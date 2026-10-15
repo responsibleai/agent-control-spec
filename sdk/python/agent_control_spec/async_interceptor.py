@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Bounded asyncio integration over an already-activated policy."""
 
 from __future__ import annotations

@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Build manifest bindings from the plan and parsed condition dependencies."""
 
 from __future__ import annotations

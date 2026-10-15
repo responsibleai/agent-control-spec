@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
 # AGT default policy. Hosts that do not author Rego of their own bind their
 # manifest's `rego` policy to `data.agt.defaults.verdict`. The library
 # imports every AGT stock helper and consults each one in priority order:

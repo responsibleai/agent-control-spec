@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-#
 # AGT-DELTA D1 regression tests. The previous policy emitted a v4
 # `effects` array carrying three pattern-based redacts (email, phone,
 # card). The Rust core hard-rejects any verdict with an `effects` key,

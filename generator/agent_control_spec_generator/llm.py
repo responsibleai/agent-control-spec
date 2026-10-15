@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Chat-completion transport and the injectable model protocol."""
 
 from __future__ import annotations

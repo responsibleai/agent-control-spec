@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 // P/Invoke bindings for agent_control_spec_ffi (sdk/ffi).
 //
 // Boundary conventions mirror the library: fallible functions take an

@@ -1,6 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
-
 package agt.content_hash_test
 
 import data.agt.content_hash

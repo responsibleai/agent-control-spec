@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Fail when SDK package version surfaces disagree.
 
 Manifest contract versions are separate. The engine's artifact tests compare

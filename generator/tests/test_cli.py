@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """The command surface a partner actually runs.
 
 The model is replaced with a scripted one, so these exercise argument

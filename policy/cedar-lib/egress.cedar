@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
 // AGT stock egress gate, Cedar mirror of `policy/lib/egress.rego`. The
 // Rego library parses a URL out of `snapshot.tool_call.args.url` and
 // compares the extracted host against `tool.security_labels` with

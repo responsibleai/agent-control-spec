@@ -1,6 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
-//
 // AGT stock IFC label flow library, Cedar mirror of
 // `policy/lib/agt_ifc.rego`. The Rego library implements the AGT no
 // write down rule against `input.snapshot.input.ifc.source_labels` at

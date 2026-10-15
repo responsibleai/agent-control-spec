@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Agent Control Specification: a policy decision runtime behind the
 agent-hooks interceptor contract.
 

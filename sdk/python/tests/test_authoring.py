@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """The authoring parser uses Regorus without evaluating the supplied source."""
 
 import json

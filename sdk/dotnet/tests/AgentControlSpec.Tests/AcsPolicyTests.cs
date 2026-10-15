@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 // The activated-policy contract: a policy version readied once, then
 // evaluated by name, concurrently, until the host releases it.
 

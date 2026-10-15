@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Two ACS policies guarding one inert tool invocation."""
 
 from __future__ import annotations

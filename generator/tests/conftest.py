@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Shared fixtures. Every test runs against a scripted model, so the suite
 performs no network input or output and needs no provider credential."""
 

@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Host extension points: annotator and policy dispatchers, telemetry
 sinks, perf-telemetry levels, manifest tooling, and structured
 validation diagnostics.

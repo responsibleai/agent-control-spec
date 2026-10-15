@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """The `acs-policy-gen` command."""
 
 from __future__ import annotations

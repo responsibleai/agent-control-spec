@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Wrapper contract: manifest-bound evaluation surfaces as agent-hooks
 verdicts; engine failures fail closed; boundary errors raise."""
 

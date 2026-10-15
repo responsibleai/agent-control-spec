@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Generate a payments policy from a scripted response and evaluate it with ACS.
 
 Run it:

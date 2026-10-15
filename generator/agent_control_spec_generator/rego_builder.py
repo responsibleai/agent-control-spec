@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Compile a validated plan into one Rego module.
 
 One entrypoint per guarded intervention point, plus a dispatching `verdict`

@@ -1,5 +1,3 @@
-# Copyright (c) Microsoft Corporation.
-# Licensed under the MIT License.
 """Render the human review report shipped beside each generated policy."""
 
 from __future__ import annotations

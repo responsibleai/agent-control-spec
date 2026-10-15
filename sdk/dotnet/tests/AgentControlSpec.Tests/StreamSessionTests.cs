@@ -1,5 +1,3 @@
-// Copyright (c) Microsoft Corporation.
-// Licensed under the MIT License.
 // Streaming reaches .NET through the C ABI, so these run the real engine.
 // They are the .NET half of a suite that asserts the same scenarios in
 // every supported language.
