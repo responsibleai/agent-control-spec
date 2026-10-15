@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Regressions from the source-level review, including failure injection."""
 
 import io

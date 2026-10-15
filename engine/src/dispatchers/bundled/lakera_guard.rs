@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use super::{
     fold_score_verdict, BundledClassifierProvider, ClassifierVerdict, HttpTransport,
     ResolvedClassifierConfig, TransportRequest,

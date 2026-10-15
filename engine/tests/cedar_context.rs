@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(feature = "cedar")]
 //! Bundled Cedar dispatcher driven through the public `Runtime` API.
 //!

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use std::{error::Error, fmt};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Real emitter and native evaluation, with event-gated local dispatchers."""
 
 import asyncio

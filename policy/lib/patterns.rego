@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock pattern helpers. The PII regex set tracks the canonical Python
 # source list in agent-os/src/agent_os/integrations/base.py::PII_PATTERNS.
 # Helpers expose the first match span and an AGT deny verdict per

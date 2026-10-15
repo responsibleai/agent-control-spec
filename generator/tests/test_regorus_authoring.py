@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Keep the authoring checks intact while removing the external parser."""
 
 import json

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Activation carries resource caps and telemetry into async evaluation."""
 
 import asyncio

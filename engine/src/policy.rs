@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::{
     canonical_json,
     constants::{cedar_field, engine},

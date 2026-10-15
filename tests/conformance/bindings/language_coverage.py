@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Fail when an engine capability is reachable from fewer than four bindings.
 
 Cross-language comparison proves the bindings agree about the calls it

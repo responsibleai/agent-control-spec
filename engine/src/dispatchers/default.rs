@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use super::constants::{ANNOTATOR_TYPE, TYPE_CLASSIFIER, TYPE_ENDPOINT, TYPE_LLM};
 use super::{resolve, ClassifierAnnotator, EndpointAnnotator, LlmAnnotator};
 use crate::{AnnotatorDispatcher, AnnotatorInvocation, JsonValue, Limits, RuntimeError};

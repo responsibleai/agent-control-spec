@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Print the CHANGELOG.md section for one version.
 
 The release workflow feeds the output to `gh release create --notes-file`.

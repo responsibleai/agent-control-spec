@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT-DELTA D1 regression tests. The Rust core rejects any verdict
 # that carries an `effects` key with `runtime_error:policy_output_invalid`,
 # so the three PHI redaction sites in

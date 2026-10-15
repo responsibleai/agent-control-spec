@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Legacy Rego policy dispatcher that shells out to the `opa` CLI.
 //!
 //! Gated behind the opt-in `opa` feature. The bundled default is

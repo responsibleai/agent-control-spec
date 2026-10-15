@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::{policy_input::canonical_json, JsonValue, RuntimeError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

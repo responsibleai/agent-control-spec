@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! The agent-hooks interceptor: ACS's integration surface.
 //!
 //! A host registers [`AcsInterceptor`] with its agent-hooks emitter.

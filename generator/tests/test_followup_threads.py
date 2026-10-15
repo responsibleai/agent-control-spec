@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Regressions for the three reopened review threads."""
 
 import pytest

@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Fail when SDK package version surfaces disagree.
 
 Manifest contract versions are separate. The engine's artifact tests compare

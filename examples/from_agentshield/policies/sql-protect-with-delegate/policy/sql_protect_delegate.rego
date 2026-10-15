@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield examples/policies/sql-protect-with-delegate.yaml
 #
 # Snapshot contract: AgentShield delegate variables are host-supplied ACS state.

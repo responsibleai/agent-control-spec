@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Generate a payments policy from a scripted response and evaluate it with ACS.
 
 Run it:

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // AGT stock tool content-hash gate, Cedar mirror of
 // `policy/lib/content_hash.rego`. The Rego library forbids the tool
 // invocation when the manifest declared `tool.content_hash` and the

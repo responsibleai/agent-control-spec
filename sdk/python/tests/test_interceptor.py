@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Wrapper contract: manifest-bound evaluation surfaces as agent-hooks
 verdicts; engine failures fail closed; boundary errors raise."""
 

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Release metadata gates include the separate, unpublished generator."""
 
 import importlib.util

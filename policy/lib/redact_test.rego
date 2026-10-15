@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agt.redact_test
 
 import data.agt.patterns

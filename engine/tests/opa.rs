@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(feature = "opa")]
 
 use agent_control_spec::{

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Cedar dispatcher surface.
 //!
 //! See `spec/SPECIFICATION.md` section 12.4 for the normative contract.

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Bounded asyncio integration over an already-activated policy."""
 
 from __future__ import annotations

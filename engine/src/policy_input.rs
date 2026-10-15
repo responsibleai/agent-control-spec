@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::{constants::policy_input as pi_key, JsonValue};
 use agent_hooks::InterceptionPoint;
 use serde_json::Map;

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::{Decision, EnforcementMode, InterceptionPoint};
 use std::collections::BTreeMap;
 

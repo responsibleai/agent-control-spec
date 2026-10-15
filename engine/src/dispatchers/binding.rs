@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Zero-config policy dispatcher for the language bindings.
 //!
 //! A host wiring the runtime through a native binding (Node, .NET)

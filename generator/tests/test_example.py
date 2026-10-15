@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """The example in `examples/` must keep working.
 
 A documented example that has drifted is worse than none, because a reader

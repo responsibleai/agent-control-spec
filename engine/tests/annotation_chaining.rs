@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Spec section 10: an annotation may consume the results of the
 //! annotations it names in `needs`.
 //!

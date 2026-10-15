@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Pool cleanup remains possible after the owning event loop has closed."""
 
 import asyncio

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agt.drift_test
 
 import data.agt.drift

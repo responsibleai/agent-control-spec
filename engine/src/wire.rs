@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! The JSON shapes every binding answers with.
 //!
 //! None of the streaming or telemetry types derives `Serialize`, so

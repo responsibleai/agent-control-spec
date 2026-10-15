@@ -9,7 +9,7 @@ description = "Generate Agent Control Specification manifests and Rego policy fr
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "Responsible AI" }]
+authors = [{ name = "Microsoft" }]
 keywords = ["agents", "policy", "security", "agent-hooks", "rego"]
 classifiers = [
   "Development Status :: 3 - Alpha",

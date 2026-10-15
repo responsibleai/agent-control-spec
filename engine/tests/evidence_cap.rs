@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Evidence over the AGENT-HOOKS-0.1 section 5.3 cap degrades the
 //! evidence, not the verdict (specification section 13.3).
 //!

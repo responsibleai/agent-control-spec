@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // The activation contract: one policy version readied once, evaluated
 // many times, fail-closed on every failure path, and boundary problems
 // thrown rather than returned as verdicts.

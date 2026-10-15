@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT stock Rego library test runner. Invokes `opa test` against every
 # library file and its sibling _test.rego in this directory. Returns a
 # non-zero exit code when any test fails so CI can gate on the result.

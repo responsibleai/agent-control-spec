@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agt.defaults_test
 
 import data.agt.defaults

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 pub const ANNOTATOR_TYPE: &str = "type";
 pub const TYPE_CLASSIFIER: &str = "classifier";
 pub const TYPE_LLM: &str = "llm";

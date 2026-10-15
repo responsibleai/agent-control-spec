@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Activation contract: one policy version readied once and evaluated
 many times; engine failures fail closed; boundary errors raise."""
 

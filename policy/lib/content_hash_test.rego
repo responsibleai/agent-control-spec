@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agt.content_hash_test
 
 import data.agt.content_hash

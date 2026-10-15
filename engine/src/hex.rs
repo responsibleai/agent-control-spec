@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Lowercase hex encoding shared by the digest call sites.
 //!
 //! `digest` 0.11 (pulled in by sha2 0.11) moved its output type from

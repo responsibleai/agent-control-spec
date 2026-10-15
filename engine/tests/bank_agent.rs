@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(feature = "rego")]
 
 use agent_control_spec::{

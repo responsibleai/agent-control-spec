@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT-DELTA D1 regression tests. The previous policy emitted a v4
 # `effects: [redact ...]` payload at post_tool_call / output when the
 # secret_scan annotator flagged the content. The Rust core hard-rejects

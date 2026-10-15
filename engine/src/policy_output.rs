@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Policy-output normalization: the boundary between the policy plane
 //! and the agent-hooks verdict contract.
 //!

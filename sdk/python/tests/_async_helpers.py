@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Local, event-gated fixtures shared by async integration tests."""
 
 import asyncio

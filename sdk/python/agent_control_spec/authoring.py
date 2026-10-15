@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Python authoring helpers, separate from the ACS runtime/wire contract.
 
 The AST is Regorus-specific and versioned by the native binding. It is intended

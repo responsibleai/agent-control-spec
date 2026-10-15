@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield examples/policies/sql-protect-with-regex.yaml
 #
 # Blocks destructive writes to production tables via the SQL MCP server using

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Shared helpers for integration tests that read files outside the
 //! `engine/` package directory (the specification, the conformance
 //! corpora, the examples). Those files are not part of the published

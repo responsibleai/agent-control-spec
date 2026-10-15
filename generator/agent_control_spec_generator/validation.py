@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Compile generated artifacts and run limited smoke cases through ACS.
 
 Condition parsing happens before this module runs. Smoke success establishes

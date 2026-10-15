@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Node native binding over the Agent Control Specification runtime.
 //
 // The binding is deliberately thin: construct a runtime from a

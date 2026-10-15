@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Streaming session contract: incremental release accounting for a
 policy target the host holds as a stream (specification section 18.1).
 The session gates, the host emits. Every engine rejection surfaces as a

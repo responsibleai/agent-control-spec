@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_specification::{AgentControl, Decision, EnforcementMode, InterventionPoint};
 use serde_json::json;
 use std::{env, path::Path};

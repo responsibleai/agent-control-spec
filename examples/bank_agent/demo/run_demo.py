@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Stdlib-only mock host flow for bank-agent.
 
 This demo does not execute Rego. It mirrors the bundled policy template in

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // AGT stock budget gate, Cedar mirror of `policy/lib/budgets.rego`. Each
 // `forbid` policy reads a host-tracked counter from
 // `context.envelope.budgets.*` per AGT-SNAPSHOT-1.0.md section 1 and forbids

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // AGT default Cedar policy. Cedar mirror of `policy/lib/agt_default.rego`.
 // Hosts that do not author Cedar of their own bind their manifest's
 // `cedar` policy to this file. The policy composes every other AGT stock

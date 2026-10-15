@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # AGT-DELTA D1 regression tests. The previous policy emitted a v4
 # `effects: [redact ...]` payload at post_tool_call for SSN / card
 # matches. The Rust core hard-rejects any verdict with an `effects`

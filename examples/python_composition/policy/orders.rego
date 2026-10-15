@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package refund_orders
 
 import rego.v1

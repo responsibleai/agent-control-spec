@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_spec::{Limits, Manifest, RuntimeError};
 use serde_json::json;
 

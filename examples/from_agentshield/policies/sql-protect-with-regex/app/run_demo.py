@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Deterministic ACS runtime demo for the ported sql-protect-with-regex policy.
 
 Drives the real ACS core + OPA over crafted snapshots and asserts the verdict at

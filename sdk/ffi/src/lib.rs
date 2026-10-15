@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // C ABI over the Agent Control Specification runtime (language bindings).
 //
 // Conventions, shared with the .NET binding in `sdk/dotnet`:

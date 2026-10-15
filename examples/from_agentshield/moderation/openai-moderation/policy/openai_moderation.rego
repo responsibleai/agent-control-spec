@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/policies/openai-moderation.yaml
 package agent_control_specification.openai_moderation
 

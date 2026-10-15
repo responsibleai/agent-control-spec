@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/policies/azure-content-safety.yaml
 package agent_control_specification.azure_content_safety
 

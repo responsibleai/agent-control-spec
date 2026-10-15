@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::point_ext::InterceptionPointExt;
 use crate::{
     manifest::{InterventionPointConfig, Manifest},

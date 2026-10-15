@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/langchain_quickstart_azure.guardrails.yaml.
 # ACS is stateless. Host snapshots must supply snapshot.email_authorized for the
 # per-call send_email approval decision.

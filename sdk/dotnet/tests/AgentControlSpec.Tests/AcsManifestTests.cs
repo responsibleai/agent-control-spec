@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Grammar checks are reachable without building a runtime.
 
 using Xunit;

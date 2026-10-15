@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 #![cfg(all(feature = "rego", feature = "default-dispatchers"))]
 
 use agent_control_spec::{

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::{
     annotation::{AnnotatorDispatcher, AnnotatorInvocation},
     constants::{annotation as annotation_key, policy_input as pi_key},

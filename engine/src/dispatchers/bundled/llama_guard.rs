@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use super::{
     BundledClassifierProvider, ClassifierVerdict, HttpTransport, ResolvedClassifierConfig,
     TransportRequest,

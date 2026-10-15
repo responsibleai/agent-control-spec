@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Small shared helpers."""
 
 from __future__ import annotations

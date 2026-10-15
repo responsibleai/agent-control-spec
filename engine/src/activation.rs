@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! One policy version, readied once and evaluated many times.
 //!
 //! A host that governs an agent evaluates the same policy version at

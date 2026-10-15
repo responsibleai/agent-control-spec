@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Generate the shared streaming conformance fixtures from the normative
 Python buffer-mode SSE guard.
 

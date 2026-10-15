@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // The activated-policy contract: a policy version readied once, then
 // evaluated by name, concurrently, until the host releases it.
 

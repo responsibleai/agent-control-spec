@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint, JsonValue, Limits,
     Manifest, PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError,

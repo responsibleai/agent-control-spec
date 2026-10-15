@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Host extension surface: annotator dispatcher, policy dispatcher,
 // telemetry sink, perf telemetry level; and manifest tooling (parse,
 // chain, structured diagnostics).

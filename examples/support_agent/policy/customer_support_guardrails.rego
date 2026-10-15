@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agent_control_specification.customer_support_guardrails
 
 import rego.v1

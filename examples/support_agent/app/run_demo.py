@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Copyright (c) Microsoft. All rights reserved.
+
 """Runnable ACS Python SDK integration for the generated support-agent policy."""
 
 from __future__ import annotations

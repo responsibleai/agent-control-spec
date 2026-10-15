@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """The `acs-policy-gen` command."""
 
 from __future__ import annotations

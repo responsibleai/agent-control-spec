@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Runnable regressions for the PR review, using local data and loopback only."""
 
 import builtins

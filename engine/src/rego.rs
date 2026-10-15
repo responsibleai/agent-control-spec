@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! In-process Rego policy dispatcher backed by [`regorus`].
 //!
 //! This is the bundled zero-config Rego execution path. It supersedes the

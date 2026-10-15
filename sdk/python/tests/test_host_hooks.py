@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Host extension points: annotator and policy dispatchers, telemetry
 sinks, perf-telemetry levels, manifest tooling, and structured
 validation diagnostics.

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_spec::{InterceptionPoint, Manifest};
 
 mod common;

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Host extension points and manifest tooling.
 //
 // The engine takes an annotator dispatcher, a policy dispatcher, a

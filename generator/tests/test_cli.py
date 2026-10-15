@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """The command surface a partner actually runs.
 
 The model is replaced with a scripted one, so these exercise argument

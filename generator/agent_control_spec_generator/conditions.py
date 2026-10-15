@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Inspect condition bodies with the same Regorus parser used by ACS."""
 
 from __future__ import annotations

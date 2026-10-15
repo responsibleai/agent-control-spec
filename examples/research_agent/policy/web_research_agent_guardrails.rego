@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agent_control_specification.web_research_agent_guardrails
 
 import rego.v1

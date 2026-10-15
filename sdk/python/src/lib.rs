@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Python native binding over the Agent Control Specification runtime.
 //
 // Deliberately thin, mirroring the Node binding: construct a runtime

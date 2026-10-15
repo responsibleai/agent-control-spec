@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Manifest provenance seen through the public API.
 //!
 //! A manifest that folded in a fetched document is URL sourced. The

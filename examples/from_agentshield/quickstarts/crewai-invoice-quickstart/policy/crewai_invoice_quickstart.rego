@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 # Ported from AgentShield/examples/crewai_invoice_quickstart_azure.guardrails.yaml.
 # ACS is stateless. Host snapshots must supply prior AgentShield variables explicitly:
 #   snapshot.vendor, snapshot.invoice_id, snapshot.amount, snapshot.fraud_score,

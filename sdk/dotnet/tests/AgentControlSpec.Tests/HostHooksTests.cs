@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Host extension points: the engine's own dispatchers, telemetry sink
 // and perf level, reachable from .NET.
 //

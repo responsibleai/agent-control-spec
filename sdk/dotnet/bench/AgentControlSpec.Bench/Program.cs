@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 // Benchmark for the activated-policy surface.
 //
 // What it measures, and why those four things:

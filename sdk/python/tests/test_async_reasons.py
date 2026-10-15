@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Adapter failures are registered and cannot be manufactured by a policy."""
 
 import ast

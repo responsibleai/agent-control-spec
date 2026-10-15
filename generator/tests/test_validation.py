@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """The checks that catch a policy which loads, evaluates, and enforces nothing.
 
 A rejected manifest is easy. These cover the failures that produce a green

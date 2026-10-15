@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Render untrusted text without terminal controls or Markdown structure."""
 
 import json

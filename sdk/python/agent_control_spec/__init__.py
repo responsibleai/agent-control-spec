@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """Agent Control Specification: a policy decision runtime behind the
 agent-hooks interceptor contract.
 

@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(

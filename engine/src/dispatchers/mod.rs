@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! Bundled reference dispatchers for Agent Control Specification.
 //!
 //! The core defines the annotator contract but leaves execution to hosts. This

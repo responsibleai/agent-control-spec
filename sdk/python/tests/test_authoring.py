@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """The authoring parser uses Regorus without evaluating the supplied source."""
 
 import json

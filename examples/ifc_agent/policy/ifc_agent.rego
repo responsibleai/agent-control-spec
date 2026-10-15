@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 package agent_control_specification.ifc_agent
 
 import data.agent_control_specification.lib.ifc

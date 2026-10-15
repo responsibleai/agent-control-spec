@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) Microsoft. All rights reserved.
+
 # Prove a packed ResponsibleAI.AgentControlSpec really works.
 #
 # The managed assembly reaches the engine through

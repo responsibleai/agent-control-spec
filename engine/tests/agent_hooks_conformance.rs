@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 //! AGENT-HOOKS-0.1 conformance for the agent-control-spec reference
 //! host, plus an end-to-end session registering [`AcsInterceptor`]
 //! with an agent-hooks emitter.

@@ -1,3 +1,5 @@
+# Copyright (c) Microsoft. All rights reserved.
+
 """What the plan gate refuses, and why each refusal exists.
 
 Every case here is a plan a model can plausibly return. The point of the gate

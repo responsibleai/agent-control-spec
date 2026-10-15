@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use agent_control_spec::{
     canonical_json, AnnotatorDispatcher, AnnotatorInvocation, Decision, InterceptionPoint,
     JsonPath, JsonValue, Manifest, PathEnv, PerfTelemetry, PolicyDispatcher,

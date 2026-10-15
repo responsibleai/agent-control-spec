@@ -1,3 +1,5 @@
+// Copyright (c) Microsoft. All rights reserved.
+
 use crate::dispatchers::{
     bundled::{HttpTransport, TransportRequest, TransportResponse, UreqHttpTransport},
     constants::*,
