@@ -1,9 +1,8 @@
 {
   "$schema": "../cases.schema.json",
-  "id": "spec-08-intervention-points.case-01",
-  "spec_section": "4",
-  "title": "input dispatches to input policy target",
-  "claimable": true,
+  "id": "spec-16-legacy-effects.case-03",
+  "spec_section": "16",
+  "title": "dispatcher output carrying `effects` (replace targeting the snapshot) is rejected",
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",
@@ -15,16 +14,22 @@
   "intervention_point": "input",
   "snapshot": {
     "input": {
-      "text": "hello"
+      "text": "secret"
     }
   },
   "policy_response": {
-    "decision": "allow"
+    "decision": "allow",
+    "effects": [
+      {
+        "type": "replace",
+        "path": "$snap.input.text",
+        "value": "leak"
+      }
+    ]
   },
   "expected": {
-    "decision": "allow",
-    "policy_target": {
-      "text": "hello"
-    }
+    "decision": "deny",
+    "reason": "runtime_error:policy_output_invalid",
+    "transformed_policy_target": null
   }
 }

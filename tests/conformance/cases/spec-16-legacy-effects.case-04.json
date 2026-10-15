@@ -1,9 +1,8 @@
 {
   "$schema": "../cases.schema.json",
-  "id": "spec-16-effects.case-02",
+  "id": "spec-16-legacy-effects.case-04",
   "spec_section": "16",
-  "title": "AGT D1: dispatcher output with append effects is rejected",
-  "claimable": true,
+  "title": "dispatcher output carrying `effects` (redaction pattern) is rejected",
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",
@@ -15,16 +14,17 @@
   "intervention_point": "input",
   "snapshot": {
     "input": {
-      "count": 7
+      "text": "Email jane@example.com and john@example.org"
     }
   },
   "policy_response": {
-    "decision": "allow",
+    "decision": "warn",
     "effects": [
       {
-        "type": "append",
-        "path": "$target.count",
-        "value": "x"
+        "type": "redact",
+        "path": "$target.text",
+        "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+        "replacement": "[EMAIL]"
       }
     ]
   },

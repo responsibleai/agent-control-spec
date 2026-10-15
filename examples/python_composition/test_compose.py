@@ -12,7 +12,6 @@ import re
 import subprocess
 import sys
 import unittest
-from importlib.metadata import version
 
 from agent_control_spec import AcsInterceptor, ActivatedPolicy
 from agent_hooks import (
@@ -132,8 +131,6 @@ class SdkTests(unittest.TestCase):
         self.assertIn("'value': 100", result.stdout)
 
     def test_sdk_readme_async_block(self):
-        if version("agent-control-spec") == "0.4.0a3":
-            self.skipTest("The published alpha.3 baseline has no async interceptor")
         readme = (ROOT / "sdk/python/README.md").read_text()
         _, separator, remaining = readme.partition(
             "## Async hosts and partial-policy scope\n"
@@ -164,10 +161,6 @@ class SdkTests(unittest.TestCase):
         self.assertTrue(separator)
         blocks = re.findall(r"```python\n(.*?)\n```", authoring, re.DOTALL)
         self.assertEqual(len(blocks), 1)
-        if version("agent-control-spec") == "0.4.0a3":
-            self.skipTest(
-                "Authoring first ships in alpha.4, not the published alpha.3 baseline"
-            )
         subprocess.run(
             [sys.executable, "-c", blocks[0] + "\nassert module\n"],
             cwd=ROOT,

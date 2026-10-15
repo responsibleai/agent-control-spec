@@ -180,6 +180,21 @@ fn conformance_cases_validate_against_schema() {
             case["id"].as_str().unwrap(),
             "case id must match file name"
         );
+        // `references` point a reader at supporting material; a path that
+        // does not exist is a dangling claim.
+        for reference in case
+            .get("references")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let reference = reference.as_str().unwrap();
+            assert!(
+                common::repo_root().join(reference).exists(),
+                "{}: references {reference}, which does not exist",
+                path.display()
+            );
+        }
     }
 }
 

@@ -687,11 +687,13 @@ impl StreamWatermark {
 /// normalizer screens.
 const RESERVED_REASON_PREFIXES: [&str; 2] = ["runtime_error:", "host_error:"];
 
-/// Whether a verdict has a shape the section 5 contract does not admit.
+/// Whether a verdict has a shape the AGENT-HOOKS-0.1 section 5 contract does
+/// not admit.
 ///
 /// A host may hand over a verdict it decoded from the wire or one it built as a
 /// typed value, and the two paths do not enforce the same rules on their own.
-/// The wire decoder checks the whole of section 5, while `Verdict::validate`
+/// The wire decoder checks the whole of AGENT-HOOKS-0.1 section 5, while
+/// `Verdict::validate`
 /// covers only what survives into the typed form. This function closes that
 /// gap, so the accounting applies one rule set whichever path the host used.
 /// The correspondence, wire check to enforcement here:
@@ -1103,8 +1105,9 @@ impl StreamSession {
     /// emitting anything. The transform names a node under `$target`, not a
     /// rune range, so it does not necessarily correspond to this span.
     ///
-    /// A verdict whose shape section 5 does not admit fails the stream closed
-    /// with [`StreamError::VerdictInvalid`] before its decision is read.
+    /// A verdict whose shape AGENT-HOOKS-0.1 section 5 does not admit fails the
+    /// stream closed with [`StreamError::VerdictInvalid`] before its decision is
+    /// read.
     ///
     /// A `deny` denies, whether or not it carries an `approval` block. A deny
     /// carrying one is liftable through the host's approval seam, defined in
@@ -1745,8 +1748,8 @@ mod tests {
     #[test]
     fn a_verdict_the_contract_forbids_fails_closed() {
         // A transform decision carrying no transform body is invalid under
-        // section 5. Clearing the span on it would release text on the strength
-        // of a substitution that does not exist.
+        // AGENT-HOOKS-0.1 section 5. Clearing the span on it would release
+        // text on the strength of a substitution that does not exist.
         let mut s = session(&["t"], SafetyLevel::Blocking);
         s.observe(RES, 10).expect("observe");
         let bodyless = verdict(Decision::Transform);

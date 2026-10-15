@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn intervention_point_transformed_event_uses_spec_wire_name() {
-        // AGT D2 wire-name contract per AGT-EVIDENCE-1.0 §3.
+        // Wire name per `spec/SPECIFICATION.md` section 19.
         let event = TelemetryEvent::new(
             TelemetryEventType::InterventionPointTransformed,
             InterceptionPoint::Output,

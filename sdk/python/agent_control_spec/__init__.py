@@ -216,7 +216,7 @@ class AcsInterceptor:
     - ``limits``: a mapping of resource caps that overrides the engine's
       defaults field by field. Absent means keep every default; each
       field is individually optional, so a host raising one cap does
-      not restate the other nine. A host feeding large payloads raises
+      not restate the others. A host feeding large payloads raises
       ``max_snapshot_bytes``; one hardening against a hostile manifest
       lowers ``max_extends_depth`` or ``max_manifest_url_bytes``. The
       overrides apply to manifest loading (the ``extends`` chain), to
@@ -290,11 +290,8 @@ class ActivatedPolicy:
     sources held by the host, with no file to read.
 
     Host dispatchers are supplied by the same keyword arguments as
-    :class:`AcsInterceptor`. Passing them here is exactly how the
-    consumer-facing ``AgentControl.from_native(...,
-    annotator_dispatcher=ContentSafetyDispatcher())`` shape composed:
-    activation carries the dispatcher, evaluation calls it, and readying
-    warms it.
+    :class:`AcsInterceptor`: activation carries the dispatcher,
+    evaluation calls it, and readying warms it.
     """
 
     __slots__ = ("_handle",)
@@ -662,8 +659,8 @@ class StreamSession:
 
         ``verdict`` may be a :class:`agent_hooks.Verdict` or the same
         wire dict :meth:`agent_hooks.Verdict.to_wire` produces. A shape
-        the section 5 contract does not admit fails the stream closed
-        with :class:`ValueError` before its decision is read.
+        the AGENT-HOOKS-0.1 section 5 contract does not admit fails the
+        stream closed with :class:`ValueError` before its decision is read.
         """
         if isinstance(verdict, Verdict):
             wire = verdict.to_wire()

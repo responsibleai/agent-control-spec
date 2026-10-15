@@ -3,7 +3,6 @@
   "id": "spec-13-evidence-cap.case-03",
   "spec_section": "13.3",
   "title": "evidence under the cap passes without a warning",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

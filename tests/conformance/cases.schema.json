@@ -31,12 +31,8 @@
    "type": "string",
    "minLength": 1
   },
-  "claimable": {
-   "type": "boolean"
-  },
   "operation": {
    "enum": [
-    "build",
     "evaluate"
    ]
   },
@@ -96,12 +92,6 @@
   },
   "snapshot": {},
   "policy_response": {},
-  "mode": {
-   "enum": [
-    "enforce",
-    "evaluate_only"
-   ]
-  },
   "policy_behavior": {
    "enum": [
     "error",

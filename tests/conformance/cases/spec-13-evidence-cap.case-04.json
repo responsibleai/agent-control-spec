@@ -3,7 +3,6 @@
   "id": "spec-13-evidence-cap.case-04",
   "spec_section": "13.3",
   "title": "oversize evidence on a transform verdict keeps the transform and the redaction applies",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

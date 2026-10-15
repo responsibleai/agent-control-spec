@@ -3,7 +3,6 @@
   "id": "spec-12-dispatcher.case-01",
   "spec_section": "12",
   "title": "policy dispatcher failure fails closed",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

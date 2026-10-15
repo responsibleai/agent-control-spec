@@ -46,6 +46,10 @@
 //!   other builtin this runtime does not provide. Policies here are
 //!   meant to be pure and offline, and one that reaches for the network
 //!   now finds out at the first decision rather than at an incident.
+//! * `time.now_ns`, `rand.intn`, `uuid.rfc4122` and `opa.runtime` are
+//!   shadowed the same way and fail closed with
+//!   `runtime_error:policy_invocation_failed`; the `opa` CLI dispatcher
+//!   runs them. See [`NONDETERMINISTIC_BUILTINS`].
 //! * Loading policy runs in the host process, where the `opa` CLI
 //!   dispatcher confined it to a child. A module is parsed by a
 //!   recursive descent parser with no depth limit, so a deeply nested

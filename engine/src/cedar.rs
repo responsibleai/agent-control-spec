@@ -1266,11 +1266,12 @@ mod builtin {
 
 #[cfg(test)]
 mod tests {
-    //! AGT M2.S2 D3.3 dispatcher behaviour tests. Each test drives the
+    //! Dispatcher behaviour tests. Each test drives the
     //! [`CedarTestDispatcher`] against a hand-crafted policy input whose
-    //! snapshot carries the AGT `envelope` block [`build_cedar_request`]
-    //! accepts as the principal's fallback location, and asserts the verdict the runtime would emit after normalizing the
-    //! dispatcher's JsonValue through [`crate::normalize_policy_output`].
+    //! snapshot carries the legacy `envelope` block [`build_cedar_request`]
+    //! accepts as the principal's fallback location, and asserts the
+    //! verdict the runtime would emit after normalizing the dispatcher's
+    //! JsonValue through [`crate::normalize_policy_output`].
 
     use super::*;
     use crate::{normalize_policy_output, Decision};
@@ -1401,7 +1402,7 @@ mod tests {
         schema_for_resource("PolicyTarget")
     }
 
-    // ── D3.2 request mapping ──────────────────────────────────────────
+    // ── request mapping (section 12.4) ────────────────────────────────
 
     #[test]
     fn build_cedar_request_maps_principal_action_resource_per_d32() {
@@ -1762,7 +1763,7 @@ mod tests {
         assert_eq!(request.principal, CedarEntity::new("Agent", "agent-wire"));
     }
 
-    // ── D3.3 allow / deny ─────────────────────────────────────────────
+    // ── allow / deny ──────────────────────────────────────────────────
 
     #[test]
     fn test_dispatcher_allow_path() {
@@ -1806,7 +1807,7 @@ mod tests {
         assert_eq!(verdict.reason.as_deref(), Some("no_matching_policy"));
     }
 
-    // ── D3.3 advice translation ───────────────────────────────────────
+    // ── advice translation ────────────────────────────────────────────
 
     #[test]
     fn test_dispatcher_advice_translates_to_transform() {
@@ -1910,7 +1911,7 @@ mod tests {
         );
     }
 
-    // ── D3.3 malformed advice ─────────────────────────────────────────
+    // ── malformed advice ──────────────────────────────────────────────
 
     #[test]
     fn test_dispatcher_malformed_advice_missing_verdict_fails_closed() {
@@ -1965,7 +1966,7 @@ mod tests {
         assert_eq!(error.reason(), "runtime_error:policy_output_invalid");
     }
 
-    // ── D1.1 transform target confinement ─────────────────────────────
+    // ── transform target confinement (section 14) ─────────────────────
 
     #[test]
     fn test_dispatcher_transform_path_outside_policy_target_fails_closed() {
@@ -1979,7 +1980,7 @@ mod tests {
         let inv = invocation(policy_set, tool_input("agent-1", "hello"));
         // The dispatcher emits the verdict JSON verbatim; the runtime's
         // normalize_policy_output is what enforces $target confinement
-        // per AGT D1.1, returning runtime_error:transform_target_forbidden.
+        // per section 14, returning runtime_error:transform_target_forbidden.
         let output = CedarTestDispatcher::new().evaluate_cedar(&inv).unwrap();
         let error = normalize_policy_output(output).unwrap_err();
         assert_eq!(error.reason(), "runtime_error:transform_target_forbidden");
@@ -2080,7 +2081,7 @@ mod tests {
         assert_eq!(value["decision"], json!("transform"));
     }
 
-    // ── M2.S5 D7 builtin dispatcher (feature `cedar`) ─────────────────
+    // ── builtin dispatcher (feature `cedar`) ──────────────────────────
 
     #[cfg(feature = "cedar")]
     #[test]

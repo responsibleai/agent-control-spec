@@ -42,9 +42,10 @@ pub struct Manifest {
     pub annotators: BTreeMap<String, AnnotatorConfig>,
     /// Optional top-level `approval` section that configures the
     /// escalation backend used for `escalate` verdicts. The runtime
-    /// validates the shape per `spec/SPECIFICATION.md` section 24 but
-    /// does not consult resolver configuration; that plumbing lives in
-    /// host SDKs.
+    /// validates the shape per `spec/SPECIFICATION.md` section 24 and
+    /// does not read it further; a host's approval resolver
+    /// (AGENT-HOOKS-0.1 section 9, specification section 17.1) consumes
+    /// it. No SDK in this repository does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approval: Option<ApprovalSection>,
     /// Runtime provenance, not manifest grammar. Every HTTPS URL the

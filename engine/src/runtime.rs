@@ -603,9 +603,8 @@ impl Runtime {
         Ok(JsonValue::Object(annotations_map))
     }
 
-    // AGT integration passes decision evidence/identity fields explicitly; keep
-    // the signature stable to minimize divergence and risk in the vendored
-    // runtime hot path rather than refactoring to a params struct.
+    // Callers pass the evidence and identity fields explicitly; the flat
+    // signature stays rather than moving to a params struct.
     #[allow(clippy::too_many_arguments)]
     fn emit_decision_event(
         &self,
@@ -616,9 +615,9 @@ impl Runtime {
         duration_ms: f64,
         action_identity: Option<&str>,
     ) {
-        // AGT D2 / AGT-EVIDENCE-1.0 §3: propagate the verbatim artefact
-        // string and the sorted pointer keys (not URL values) when the
-        // verdict carries `evidence`.
+        // Sections 13.3 and 19: propagate the verbatim artefact string and
+        // the sorted pointer keys (not URL values) when the verdict carries
+        // `evidence`.
         let (evidence_artefact, evidence_keys): (Option<String>, Vec<String>) =
             match verdict.evidence.as_ref() {
                 Some(evidence) => (
@@ -661,7 +660,7 @@ impl Runtime {
                 .with_evidence(evidence_artefact.as_deref(), evidence_keys.clone()),
         ));
 
-        // AGT D2: when the decision is `Transform`, emit the dedicated
+        // Section 19: when the decision is `Transform`, emit the dedicated
         // `intervention_point.transformed` event in addition to the
         // base Decision event so that single-event consumers and
         // multi-event consumers both see the transformation.
@@ -837,18 +836,10 @@ pub struct EvaluationRequest {
 
 /// Result of evaluating a single intervention point.
 ///
-/// The engine produces two SHA-256 identities for every successful
-/// evaluation (`spec/SPECIFICATION.md` section 19):
-///
-/// - `input_identity` pins what the policy actually saw.
-/// - `enforced_identity` pins what the host will carry out. It differs
-///   from `input_identity` only when the verdict is `Decision::Transform`
-///   in `EnforcementMode::Enforce`; in every other case the two are equal.
-///
-/// `action_identity` is retained as a backwards-compatible alias that
-/// always equals `enforced_identity`, so a telemetry consumer that
-/// records one identity gets the enforced one. New callers should reach
-/// for the two fields directly.
+/// The engine returns the verdict and, for diagnostics, the policy input
+/// it evaluated. Context identity is a host obligation under
+/// AGENT-HOOKS-0.1 section 10: the emitter computes it over the agent
+/// context, and the engine computes none.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvaluationResult {
     /// The agent-hooks verdict the host must honour. Always present:

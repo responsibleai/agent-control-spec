@@ -82,7 +82,7 @@ fn warnings_field(
                 // The runtime and the host own those namespaces, and the
                 // agent-hooks wire decoder rejects a warning that uses
                 // one, so a verdict carrying it would fail the host's
-                // section 5 gate as host_error:verdict_invalid.
+                // AGENT-HOOKS-0.1 section 5 gate as host_error:verdict_invalid.
                 if let Some(reason) = &reason {
                     for prefix in RESERVED_PREFIXES {
                         if reason.starts_with(prefix) {
