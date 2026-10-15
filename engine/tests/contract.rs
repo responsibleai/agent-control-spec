@@ -166,7 +166,7 @@ fn no_events() -> Arc<Mutex<Vec<String>>> {
 }
 
 #[test]
-fn action_identity_is_stable_for_repeated_escalations() {
+fn escalation_verdicts_are_deterministic_for_identical_snapshots() {
     let manifest_yaml = r#"agent_control_specification_version: 0.4.0-alpha.1
 policies:
   p:
@@ -473,7 +473,7 @@ annotators:
 }
 
 #[test]
-fn explicit_path_roots_resolve_against_their_intended_envelopes() {
+fn explicit_path_roots_resolve_against_the_snapshot_and_the_policy_input() {
     let snap = json!({
         "tool_call": {
             "name": "wire_transfer",
@@ -1072,11 +1072,9 @@ intervention_points:
 
 #[test]
 fn telemetry_sink_receives_structured_low_cardinality_events() {
-    // AGT D1 migration: the warn-with-effects scenario is now a single
-    // transform decision. Effects are no longer emitted on the verdict;
-    // the runtime exposes the rewritten policy target through
-    // `transformed_policy_target` and the dedicated Transformed event is
-    // added by AGT D2 in a follow-up commit.
+    // A rewrite is a single transform decision. The verdict carries the
+    // transform unapplied, and the runtime emits the dedicated Transformed
+    // event beside the Decision event (section 19).
     let callback_events = no_events();
     let annotations = RecordingAnnotator::new(callback_events.clone());
     annotations.set_output("classifier", json!({"risk": "low"}));
@@ -1123,7 +1121,7 @@ annotators:
 
     let events = emitted.lock().unwrap().clone();
     let event_types: Vec<_> = events.iter().map(|event| event.event_type).collect();
-    // AGT D2: a transform decision emits both the base Decision event
+    // Section 19: a transform decision emits both the base Decision event
     // and the dedicated InterceptionPointTransformed event.
     assert_eq!(
         event_types,
@@ -1422,12 +1420,9 @@ annotators:
 
 #[test]
 fn transform_verdict_carries_the_delta_and_leaves_application_to_the_host() {
-    // AGT D1 migration of the legacy multi-effect contract test. Effects are
-    // sunset by `SPECIFICATION.md` §14; the only mutating decision
-    // is `transform`, which carries a single replacement at one path. The
-    // multi-step rewriting that this test originally covered now flows
-    // through annotators per D1.3 (slated for M5). This test verifies the
-    // transform decision honors enforce vs evaluate_only and that the
+    // Section 14: the only mutating decision is `transform`, which carries
+    // a single replacement at one path. The engine validates the transform
+    // and returns it unapplied; applying it is a host obligation. The
     // transform-invalid and transform-target-forbidden reasons surface on
     // the runtime path.
     let manifest_yaml = r#"agent_control_specification_version: 0.4.0-alpha.1

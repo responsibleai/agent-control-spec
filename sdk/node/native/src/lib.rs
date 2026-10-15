@@ -267,7 +267,7 @@ fn parse_perf(value: Option<Utf16String>) -> napi::Result<agent_control_spec::Pe
 ///
 /// - Absent / null / empty means keep every default.
 /// - Each field is individually optional; an absent field keeps its own
-///   default, so a host raising one cap does not restate the other nine.
+///   default, so a host raising one cap does not restate the others.
 /// - A field present but not a non-negative integer is a hard ERROR, not
 ///   a silently-kept default. A host that asked for a smaller bound and
 ///   got the larger one would believe it was protected when it was not.
@@ -371,7 +371,7 @@ pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Hand
 /// `limits_json` is a JSON object of resource caps overriding the
 /// engine's defaults field by field. Null or empty means keep every
 /// default; each field is individually optional, so a host raising one
-/// cap does not restate the other nine. A host feeding large payloads
+/// cap does not restate the others. A host feeding large payloads
 /// raises `max_snapshot_bytes`; one hardening against a hostile
 /// manifest lowers `max_extends_depth` or `manifest_url_timeout_ms`.
 /// The caps bound manifest loading (the `extends` chain), evaluation

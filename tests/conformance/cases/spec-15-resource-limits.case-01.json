@@ -3,7 +3,6 @@
   "id": "spec-15-resource-limits.case-01",
   "spec_section": "15",
   "title": "snapshot size limit fails closed",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

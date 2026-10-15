@@ -1,9 +1,8 @@
 {
   "$schema": "../cases.schema.json",
-  "id": "spec-08-intervention-points.case-04",
-  "spec_section": "4",
-  "title": "pre tool call dispatch projects known tool",
-  "claimable": true,
+  "id": "spec-11-ifc.case-02",
+  "spec_section": "11",
+  "title": "tool clearance below source labels denies flow",
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",
@@ -14,22 +13,30 @@
   "manifest_yaml": "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  p:\n    type: rego\n    query: data.acs.verdict\nintervention_points:\n  pre_tool_call:\n    tool_name_from: $snap.tool_call.name\n    policy:\n      id: p\n    policy_target: $snap.tool_call.args\ntools:\n  search:\n    type: Tool\n    clearance: internal\n    security_labels:\n      sink: retrieval\n",
   "intervention_point": "pre_tool_call",
   "snapshot": {
+    "ifc": {
+      "source_labels": [
+        "confidential"
+      ]
+    },
     "tool_call": {
-      "id": "call-1",
+      "id": "call-5",
       "name": "search",
       "args": {
-        "q": "acs"
+        "q": "confidential memo"
       }
     }
   },
   "policy_response": {
-    "decision": "allow"
+    "decision": "deny",
+    "reason": "ifc_clearance_violation"
   },
   "expected": {
-    "decision": "allow",
-    "policy_target": {
-      "q": "acs"
-    },
+    "decision": "deny",
+    "reason": "ifc_clearance_violation",
     "tool_name": "search"
-  }
+  },
+  "references": [
+    "policy/lib/ifc.rego",
+    "spec/SPECIFICATION.md"
+  ]
 }

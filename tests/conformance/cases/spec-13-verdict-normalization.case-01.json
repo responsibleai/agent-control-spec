@@ -1,9 +1,8 @@
 {
   "$schema": "../cases.schema.json",
-  "id": "spec-16-effects.case-05",
-  "spec_section": "16",
-  "title": "AGT D1: dispatcher output with redaction-values effects is rejected",
-  "claimable": true,
+  "id": "spec-13-verdict-normalization.case-01",
+  "spec_section": "13",
+  "title": "invalid policy decision fails closed",
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",
@@ -15,19 +14,11 @@
   "intervention_point": "input",
   "snapshot": {
     "input": {
-      "text": "ababa clear secret secret"
+      "text": "hello"
     }
   },
   "policy_response": {
-    "decision": "allow",
-    "effects": [
-      {
-        "type": "redact",
-        "path": "$target.text",
-        "values": ["aba", "bab", "secret"],
-        "replacement": "[VALUE]"
-      }
-    ]
+    "decision": "block"
   },
   "expected": {
     "decision": "deny",

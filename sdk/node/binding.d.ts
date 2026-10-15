@@ -50,7 +50,7 @@ export declare function interceptorNew(manifestPath: string): ExternalObject<Han
  * `limits_json` is a JSON object of resource caps overriding the
  * engine's defaults field by field. Null or empty means keep every
  * default; each field is individually optional, so a host raising one
- * cap does not restate the other nine. A host feeding large payloads
+ * cap does not restate the others. A host feeding large payloads
  * raises `max_snapshot_bytes`; one hardening against a hostile
  * manifest lowers `max_extends_depth` or `manifest_url_timeout_ms`.
  * The caps bound manifest loading (the `extends` chain), evaluation

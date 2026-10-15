@@ -385,7 +385,7 @@ fn limits_defaults_map<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
 ///
 /// - `None` (absent) means keep every default.
 /// - Each field is individually optional; an absent field keeps its own
-///   default, so a host raising one cap does not restate the other nine.
+///   default, so a host raising one cap does not restate the others.
 /// - A field present but not a non-negative integer is a hard ERROR, not
 ///   a silently-kept default. A host that asked for a smaller bound and
 ///   got the larger one would believe it was protected when it was not.
@@ -1049,8 +1049,8 @@ fn stream_record_outcome(
 
 /// Record a wire-shaped agent-hooks verdict for one span under one
 /// task. The verdict text is deserialized with the same grammar the
-/// runtime uses, so a shape section 5 does not admit fails closed here
-/// rather than clearing the span.
+/// runtime uses, so a shape AGENT-HOOKS-0.1 section 5 does not admit
+/// fails closed here rather than clearing the span.
 #[pyfunction]
 fn stream_record_verdict(
     handle: &StreamSessionHandle,

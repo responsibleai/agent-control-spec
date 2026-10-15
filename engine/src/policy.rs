@@ -1022,8 +1022,8 @@ mod path_resolution_tests {
 
 #[cfg(test)]
 mod cedar_manifest_tests {
-    //! AGT M2.S2 D1 manifest-side validation for the cedar policy type, per
-    //! `policy-engine/spec/SPECIFICATION.md` §12.4. These tests
+    //! Manifest-side validation for the cedar policy type, per
+    //! `spec/SPECIFICATION.md` section 12.4. These tests
     //! cover the strict cross-type rules: a rego policy that carries a
     //! cedar-reserved field is rejected, a cedar policy that declares the
     //! rego-shaped `bundle` field is rejected, and a cedar policy that

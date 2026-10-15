@@ -324,10 +324,8 @@ fn dispatcher_boundary_reason_constants_match_enum() {
 
 #[test]
 fn every_runtime_error_reason_maps_to_deny_without_effects() {
-    // AGT D1 removed `effects` from the verdict surface. This test now
-    // verifies that runtime-error verdicts carry no transform and no
-    // mutated policy target, preserving the same fail-closed invariant
-    // ("a runtime error never rewrites the policy target") under D1.
+    // A runtime error never rewrites the policy target: runtime-error
+    // verdicts carry no transform, and the policy target is untouched.
     for error in [
         RuntimeError::ManifestInvalid(String::new()),
         RuntimeError::InterventionPointUnknown(String::new()),
@@ -421,9 +419,8 @@ fn executable_parity_fixture_fails_closed_for_build_and_evaluate_reasons() {
 
 #[test]
 fn error_paths_never_apply_policy_effects() {
-    // AGT D1 sunsets effects on verdicts. The same invariant ("a policy
-    // cannot mutate state outside `$target`") is now enforced on
-    // the transform decision path, surfaced as `transform_target_forbidden`.
+    // A policy cannot mutate state outside `$target`: the transform
+    // decision path enforces it and surfaces `transform_target_forbidden`.
     let yaml = manifest_yaml("");
     let runtime = runtime_with_limits(
         &yaml,
@@ -728,12 +725,8 @@ fn escalation_intent_is_a_deterministic_liftable_deny() {
 
 #[test]
 fn evaluate_only_records_would_be_deny_without_transforming_target() {
-    // AGT D1: a deny verdict that previously rode with effects (and got
-    // them rejected at the runtime layer) is now rejected at the
-    // normalization layer because `effects` is no longer permitted at all.
-    // The test preserves the original "deny + would-be effects do not
-    // mutate state" invariant by sending the deny verdict alone and
-    // confirming the policy target is untouched in evaluate-only mode.
+    // A deny carries no transform and leaves the policy target untouched,
+    // and the decision event records the deny as the policy stated it.
     let events = Arc::new(Mutex::new(Vec::new()));
     let telemetry = Arc::new(RecordingTelemetry {
         events: events.clone(),

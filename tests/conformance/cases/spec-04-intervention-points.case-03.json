@@ -1,9 +1,8 @@
 {
  "$schema": "../cases.schema.json",
- "id": "spec-08-intervention-points.case-03",
+ "id": "spec-04-intervention-points.case-03",
  "spec_section": "4",
  "title": "post model call dispatches and normalizes warn",
- "claimable": true,
  "operation": "evaluate",
  "sdk_support": {
   "rust": "required",

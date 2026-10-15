@@ -1,9 +1,8 @@
 {
   "$schema": "../cases.schema.json",
-  "id": "spec-16-effects.case-01",
+  "id": "spec-16-legacy-effects.case-05",
   "spec_section": "16",
-  "title": "AGT D1: dispatcher output with redaction-span effects is rejected",
-  "claimable": true,
+  "title": "dispatcher output carrying `effects` (redaction values) is rejected",
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",
@@ -15,22 +14,17 @@
   "intervention_point": "input",
   "snapshot": {
     "input": {
-      "text": "🔥SECRET tail"
+      "text": "ababa clear secret secret"
     }
   },
   "policy_response": {
-    "decision": "warn",
+    "decision": "allow",
     "effects": [
       {
         "type": "redact",
         "path": "$target.text",
-        "spans": [
-          {
-            "start": 1,
-            "end": 7,
-            "replacement": "[REDACTED]"
-          }
-        ]
+        "values": ["aba", "bab", "secret"],
+        "replacement": "[VALUE]"
       }
     ]
   },

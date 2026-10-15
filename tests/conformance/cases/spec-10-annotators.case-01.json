@@ -3,7 +3,6 @@
   "id": "spec-10-annotators.case-01",
   "spec_section": "10",
   "title": "annotator outputs are isolated under their configured names",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

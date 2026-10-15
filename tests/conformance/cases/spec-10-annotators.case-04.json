@@ -3,7 +3,6 @@
   "id": "spec-10-annotators.case-04",
   "spec_section": "10",
   "title": "a declared dependency orders ahead of ascending annotator name",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

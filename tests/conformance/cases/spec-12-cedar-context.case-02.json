@@ -3,7 +3,6 @@
   "id": "spec-12-cedar-context.case-02",
   "spec_section": "12.4",
   "title": "bundled cedar dispatcher reads the principal from the top-level agent of a wire-shaped snapshot",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

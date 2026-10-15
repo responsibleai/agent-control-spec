@@ -70,7 +70,8 @@ pub(crate) mod engine {
     pub(crate) const TEST: &str = "test";
 }
 
-/// Field names reserved for the `cedar` policy type, per AGT delta D3.1.
+/// Field names reserved for the `cedar` policy type, per
+/// `spec/SPECIFICATION.md` section 12.4.
 /// These are rejected when they appear on a `rego` policy's flattened
 /// `adapter_config` so that mixed-language manifests are caught early.
 pub(crate) mod cedar_field {

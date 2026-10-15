@@ -1,9 +1,8 @@
 {
   "$schema": "../cases.schema.json",
-  "id": "spec-16-effects.case-04",
+  "id": "spec-16-legacy-effects.case-01",
   "spec_section": "16",
-  "title": "AGT D1: dispatcher output with redaction-pattern effects is rejected",
-  "claimable": true,
+  "title": "dispatcher output carrying `effects` (redaction spans) is rejected",
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",
@@ -15,7 +14,7 @@
   "intervention_point": "input",
   "snapshot": {
     "input": {
-      "text": "Email jane@example.com and john@example.org"
+      "text": "🔥SECRET tail"
     }
   },
   "policy_response": {
@@ -24,8 +23,13 @@
       {
         "type": "redact",
         "path": "$target.text",
-        "pattern": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
-        "replacement": "[EMAIL]"
+        "spans": [
+          {
+            "start": 1,
+            "end": 7,
+            "replacement": "[REDACTED]"
+          }
+        ]
       }
     ]
   },
