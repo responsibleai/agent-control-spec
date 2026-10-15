@@ -55,9 +55,7 @@ the tag's publication set. The tag workflow does not publish the generator.
    newest release. For a pre-release it also adds a channel tag from
    the label: `alpha` for `-alpha.N`, `beta` for `-beta.N`, `rc` for
    `-rc.N`, `next` for any other label. Stable versions carry only
-   `latest`. The channel tag needs one setting per package, once:
-   "Allow npm dist-tag" on the trusted publisher configuration at
-   npmjs.com > package > Settings > Trusted Publisher, for
+   `latest`. The channel tag relies on "Allow npm dist-tag" being enabled on the trusted publisher configuration (npmjs.com > package > Settings > Trusted Publisher) of every package, which it is today for
 
    - `@responsibleai/agent-control-spec`
    - `@responsibleai/agent-control-spec-linux-x64-gnu`
@@ -65,9 +63,7 @@ the tag's publication set. The tag workflow does not publish the generator.
    - `@responsibleai/agent-control-spec-darwin-arm64`
    - `@responsibleai/agent-control-spec-win32-x64-msvc`
 
-   Until that is on, the workflow prints a warning for each package
-   and the channel tag must be added by hand on the loader and every
-   platform package. Run this from an interactive npm login with 2FA,
+   If that setting is ever lost, the dist-tag step fails the release; re-enable it and re-run the tag workflow, or add the tag by hand on the loader and every platform package. Run this from an interactive npm login with 2FA,
    not a stored automation token:
 
    ```bash
