@@ -8,7 +8,7 @@ the tag's publication set. The tag workflow does not publish the generator.
    `sdk/python/{Cargo.toml,pyproject.toml}` + `Cargo.lock`,
    `sdk/node/package.json` + `npm/*/package.json` + lockfile,
    `sdk/dotnet/src/AgentControlSpec/AgentControlSpec.csproj`,
-   `generator/pyproject.toml`) and add a
+   `generator/pyproject.toml`, `sdk/python_remote_policy/pyproject.toml`) and add a
    `CHANGELOG.md` entry, through a PR. Python's `__version__` is NOT on
    that list and must not be added to it: it is read from the installed
    distribution, and `sdk/python/tests/test_version.py` fails if someone
@@ -40,15 +40,22 @@ the tag's publication set. The tag workflow does not publish the generator.
    come from that section through `scripts/release-notes.py`).
 
 4. The tag run publishes: crates.io `agent-control-spec`, PyPI
-   `agent-control-spec`, npm `@responsibleai/agent-control-spec` plus
+   `agent-control-spec` and optional `agent-control-spec-remote-policy`,
+   npm `@responsibleai/agent-control-spec` plus
    four platform packages, NuGet `ResponsibleAI.AgentControlSpec`.
    Each artifact carries the LICENSE text and a build provenance
    attestation; the npm attestation covers the exact tarballs the
    workflow publishes. A final job creates the GitHub Release for the
-   tag (pre-release when the version has a hyphen) with the four SBOMs
+   tag (pre-release when the version has a hyphen) with the five SBOMs
    attached. All legs are idempotent: already-published versions are
    skipped and an existing release gets its SBOMs re-uploaded, so a
    re-run after a partial failure is safe.
+
+   Before the polling package's first publication, configure its own PyPI
+   trusted publisher for this repository, `release.yml` and the `release`
+   environment. The base package's publisher does not grant permission to a
+   different distribution. Adding this workflow configuration does not create
+   that publisher or publish a package.
 
 5. npm dist-tags. The workflow publishes every version under
    `latest`, pre-releases included, so a plain `npm install` gets the

@@ -92,11 +92,43 @@ jobs:
         # install use that pinned maturin, and [tool.maturin] locked=true
         # pins the Rust side via sdk/python/Cargo.lock.
         run: |
-          uv pip install --system -r sdk/python/requirements-dev.lock
+          uv pip install --system --require-hashes -r sdk/python_remote_policy/requirements-dev.lock
           uv pip install --system --no-deps --no-build-isolation -e ./sdk/python
+          uv pip install --system --no-deps --no-build-isolation -e ./sdk/python_remote_policy
       - run: uv pip check --system
-      - run: ruff format --check sdk/python scripts generator && ruff check sdk/python scripts generator
-      - run: pytest sdk/python/tests -v
+      - run: ruff format --check sdk/python sdk/python_remote_policy scripts generator examples/remote_policy && ruff check sdk/python sdk/python_remote_policy scripts generator examples/remote_policy
+      - run: pyright --project sdk/python_remote_policy
+      - name: Build distributions before artifact tests
+        run: |
+          set -euo pipefail
+          uv build sdk/python --wheel --no-build-isolation --out-dir dist
+          uv build sdk/python_remote_policy --no-build-isolation --out-dir dist
+          echo "ACS_CORE_WHEEL=$(realpath dist/agent_control_spec-*.whl)" >> "$GITHUB_ENV"
+          echo "ACS_REMOTE_POLICY_WHEEL=$(realpath dist/agent_control_spec_remote_policy-*.whl)" >> "$GITHUB_ENV"
+          echo "ACS_REMOTE_POLICY_SDIST=$(realpath dist/agent_control_spec_remote_policy-*.tar.gz)" >> "$GITHUB_ENV"
+          echo "ACS_REQUIRE_PACKAGE_ARTIFACTS=1" >> "$GITHUB_ENV"
+      - run: pytest -c sdk/python_remote_policy/pyproject.toml sdk/python/tests sdk/python_remote_policy/tests -v
+      - name: Verify isolated wheel installs without optional dependencies
+        run: |
+          set -euo pipefail
+          uv venv "$RUNNER_TEMP/acs-core-only"
+          printf '%s\n' "$ACS_CORE_WHEEL" |
+            uv pip compile - --constraint sdk/python_remote_policy/requirements-dev.lock \
+              --generate-hashes --output-file "$RUNNER_TEMP/acs-core-only.lock"
+          uv pip install --python "$RUNNER_TEMP/acs-core-only/bin/python" \
+            --require-hashes -r "$RUNNER_TEMP/acs-core-only.lock"
+          "$RUNNER_TEMP/acs-core-only/bin/python" -I -c \
+            "import importlib.util; import agent_control_spec; assert all(importlib.util.find_spec(name) is None for name in ('httpx', 'yaml', 'azure', 'aiohttp', 'agent_control_spec_remote_policy', 'agent_control_spec.remote_policy'))"
+          uv pip check --python "$RUNNER_TEMP/acs-core-only/bin/python"
+          uv venv "$RUNNER_TEMP/acs-polling-no-cloud"
+          printf '%s\n' "$ACS_CORE_WHEEL" "$ACS_REMOTE_POLICY_WHEEL" |
+            uv pip compile - --constraint sdk/python_remote_policy/requirements-dev.lock \
+              --generate-hashes --output-file "$RUNNER_TEMP/acs-polling-no-cloud.lock"
+          uv pip install --python "$RUNNER_TEMP/acs-polling-no-cloud/bin/python" \
+            --require-hashes -r "$RUNNER_TEMP/acs-polling-no-cloud.lock"
+          "$RUNNER_TEMP/acs-polling-no-cloud/bin/python" -I -c \
+            "import importlib.util; import agent_control_spec_remote_policy; from agent_control_spec_remote_policy.auth import AuthorizationProvider; from agent_control_spec_remote_policy.azure import AzureAuthorizationProvider; assert AuthorizationProvider in AzureAuthorizationProvider.__mro__; assert all(importlib.util.find_spec(name) is None for name in ('azure', 'aiohttp'))"
+          uv pip check --python "$RUNNER_TEMP/acs-polling-no-cloud/bin/python"
       - name: Install and test the policy generator
         # --no-deps because agent-control-spec is already installed above from
         # this tree; resolving it would pull the published wheel instead and
@@ -158,17 +190,18 @@ jobs:
         with: { python-version: "3.12" }
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Install and test the Python binding and generator
-        # requirements-dev.lock is compiled on Linux and is not portable;
-        # this advisory job installs the package (Rust side still pinned
+        # This advisory job exercises package installation rather than the
+        # universal dev lock (Rust side still pinned
         # via [tool.maturin] locked=true) plus pytest. agent-hooks-sdk
         # ships only a manylinux wheel at 0.1.0a3, so macOS and Windows
         # build it from the sdist with the toolchain installed above.
         shell: bash
         run: |
-          uv pip install --system ./sdk/python ./generator pytest==9.1.1
+          uv pip install --system ./sdk/python "./sdk/python_remote_policy[azure]" ./generator pytest==9.1.1
           # Each suite needs its own pytest configuration: SDK importlib mode
           # must not override the generator's shared-fixture imports.
-          pytest sdk/python/tests -v -o pythonpath=
+          pytest sdk/python/tests -v
+          pytest sdk/python_remote_policy/tests -v
           pytest generator -v -o pythonpath=
           python -c "import pathlib, agent_control_spec_generator as g; assert pathlib.Path('generator').resolve() not in pathlib.Path(g.__file__).resolve().parents"
 

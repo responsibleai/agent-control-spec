@@ -21,7 +21,9 @@ updates:
     groups:
       node: { patterns: ["*"] }
   - package-ecosystem: pip
-    directory: "/sdk/python"
+    directories:
+      - "/sdk/python"
+      - "/sdk/python_remote_policy"
     schedule: { interval: weekly }
     groups:
       python: { patterns: ["*"] }

@@ -345,6 +345,33 @@ validate_manifest_file(str(manifest_path))
 `supported_manifest_versions()` reports the grammar versions this
 engine accepts. Read it rather than hardcoding the set.
 
+## Remote policies (unreleased)
+
+Remote polling is a separate optional distribution,
+`agent-control-spec-remote-policy`, not an extra or module in this base package.
+Customers who need it install the [polling package](../python_remote_policy/README.md).
+Its `agent_control_spec_remote_policy.PolicyPoller` downloads complete ACS/Rego
+artifacts at startup, then every 300 seconds by default, using YAML
+`agent_id`/`tenant_id`/`policy_id` registrations and independent in-memory caches.
+The host supplies the policy source and credential; no cloud provider or
+existing service API is assumed. No secret belongs in YAML.
+
+`remote_policy.credentials` selects a trusted credential factory and its
+non-secret provider options. Hosts can register factories for any platform;
+an optional Azure credential adapter is available through that package's `azure`
+extra. Installing the base SDK does not install polling, HTTP or cloud SDKs.
+`CredentialProviderRegistry.open(config)` supplies the existing source's
+credential mapping and owns factory cleanup. Request-aware providers can sign
+the final HTTP request; the old single-header interface remains supported.
+There is no module loading from YAML, ambient provider fallback or built-in AWS
+policy source. See the [custom-provider contract](../../examples/remote_policy/README.md#custom-providers).
+
+Downloaded artifacts are not prepared policy handles. Use a reviewed evaluation
+adapter, check freshness immediately before effects, and close the poller.
+Existing local constructors and interceptors are unchanged.
+See the [contract and runnable remote-polling example](https://github.com/responsibleai/agent-control-spec/blob/main/examples/remote_policy/README.md)
+for checkout installation, authentication, leases and first-slice limitations.
+
 ## Authoring inspection
 
 This checkout adds an in-process Rego parser for Python authoring tools:

@@ -9,7 +9,8 @@ comment style:
     Copyright (c) Microsoft. All rights reserved.
 
 A shebang may come first; the header is then the second line. Ruff checks
-the same line for Python under sdk/python, scripts and generator (CPY001)
+the same line for Python under sdk/python, sdk/python_remote_policy, scripts
+and generator (CPY001)
 and the .NET build checks it for C# under sdk/dotnet (IDE0073). Neither
 reaches Rust, TypeScript, JavaScript, shell, Rego or Cedar, nor the Python
 and C# outside those trees, so CI runs this script over every tracked file
