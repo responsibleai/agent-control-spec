@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "tenant_id": "demo-tenant",
+  "policy_id": "refunds",
+  "revision": 1,
+  "issued_at": "2026-10-12T00:00:00Z",
+  "expires_at": "2026-10-12T00:15:00Z",
+  "manifest": "agent_control_specification_version: \"0.4.0-alpha.1\"\npolicies:\n  gate:\n    type: rego\n    query: data.refund_limits.verdict\nintervention_points:\n  pre_tool_call:\n    policy_target: $.tool_call.args\n    tool_name_from: $.tool_call.name\n    policy:\n      id: gate\ntools:\n  issue_refund:\n    type: Tool\n    id: issue_refund\n",
+  "bundles": {
+    "gate": {
+      "modules": {
+        "limits.rego": "package refund_limits\n\ndefault verdict := {\"decision\": \"deny\", \"reason\": \"over_limit\"}\nverdict := {\"decision\": \"allow\", \"reason\": \"within_limit\"} if {\n  is_number(input.policy_target.value.amount)\n  input.policy_target.value.amount > 0\n  input.policy_target.value.amount <= 100\n}\n"
+      }
+    }
+  }
+}

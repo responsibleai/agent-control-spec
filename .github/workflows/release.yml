@@ -14,7 +14,8 @@
 #   PyPI   — trusted publishing (OIDC): PyPI supports PENDING publishers,
 #            so configure BEFORE the first publish at
 #            https://pypi.org/manage/account/publishing/ (project
-#            agent-control-spec, repo responsibleai/agent-control-spec,
+#            agent-control-spec and agent-control-spec-remote-policy,
+#            repo responsibleai/agent-control-spec,
 #            workflow release.yml, environment release). No token.
 #   crates — trusted publishing (OIDC): the crate's publisher is
 #            configured (repo responsibleai/agent-control-spec,
@@ -111,11 +112,17 @@ jobs:
           maturin --version
           maturin build --release --locked -m sdk/python/Cargo.toml -o dist
           maturin sdist -m sdk/python/Cargo.toml -o dist
+          uv build sdk/python_remote_policy --out-dir dist
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: sdk/python
           artifact-name: sbom-python.spdx.json
+      - name: Optional polling package SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: sdk/python_remote_policy
+          artifact-name: sbom-python-remote-policy.spdx.json
       - name: Attest build provenance
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2

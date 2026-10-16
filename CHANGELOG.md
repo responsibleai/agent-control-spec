@@ -4,6 +4,20 @@
 
 - Examples: the legacy example set that predates the extraction (23 manifests with their apps and policies) is removed. It targeted the earlier API and no longer loaded; the remaining examples are unchanged.
 
+- Add the separate optional `agent-control-spec-remote-policy` Python package:
+  install it only when remote downloads are needed; the base SDK contains no
+  polling modules or HTTP/cloud dependencies. Its shared credential interfaces
+  support single-header token providers and request-aware signing providers;
+  the optional Azure adapter explicitly implements the token-provider interface.
+  The `--azure` example mode is supported, not deprecated.
+- Add an opt-in Python remote policy artifact poller: YAML per-agent tenant/policy
+  selections, startup and 300-second background downloads, memory-only snapshots,
+  conditional reads, bounded ownership and fail-closed freshness checks. A
+  provider-neutral v1 ACS/embedded-Rego contract, explicit Azure credential
+  adapter, and real-engine local example accompany it. This does not implement
+  an existing service API, inheritance, or automatic native policy hot-swapping.
+- Mark the Python SDK as PEP 561 typed. Strict Pyright coverage currently targets
+  the remote-policy feature, not the entire legacy SDK.
 - Reject unknown policy-output members before typed verdict conversion. Unknown
   root, warning and transform members now fail closed with
   `runtime_error:policy_output_invalid` instead of being silently discarded.
