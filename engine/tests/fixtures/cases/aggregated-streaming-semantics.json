@@ -130,9 +130,7 @@
   ],
   "id": "aggregated-streaming-semantics",
   "intentionally_absent": [
-    "stream_chunk_intervention_point",
-    "token_level_enforcement",
-    "chunk_level_verdicts"
+    "stream_chunk_intervention_point"
   ],
   "manifest_yaml": "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  test_policy:\n    type: test\nintervention_points:\n  post_model_call:\n    policy_target_kind: model_response\n    policy:\n      id: test_policy\n    policy_target: $snap.model_response\n  output:\n    policy_target_kind: assistant_output\n    policy:\n      id: test_policy\n    policy_target: $snap.output\n",
   "schema_version": 1

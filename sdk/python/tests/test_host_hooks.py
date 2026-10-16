@@ -4,12 +4,11 @@
 sinks, perf-telemetry levels, manifest tooling, and structured
 validation diagnostics.
 
-Restores the 0.3.1b1 shape of ``AgentControl.from_native(manifest,
-annotator_dispatcher=...)`` that a consumer using an HTTP-backed
-Content Safety dispatcher depended on. Verifies both that the host
-callback runs and that its output reaches the policy decision, so a
-regression that reintroduced the 0.4 hardcoded zero-config path would
-fail.
+Covers the ``ActivatedPolicy(manifest, annotator_dispatcher=...)`` and
+``AcsInterceptor(manifest, annotator_dispatcher=...)`` constructors that
+a host with its own HTTP-backed annotator relies on. Verifies both that
+the host callback runs and that its output reaches the policy decision,
+so a regression to a hardcoded zero-config path would fail.
 """
 
 from __future__ import annotations

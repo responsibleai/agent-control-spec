@@ -3,7 +3,6 @@
   "id": "spec-09-tool-projection.case-02",
   "spec_section": "9",
   "title": "tool projection does not require a tool call id",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

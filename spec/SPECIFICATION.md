@@ -2,7 +2,7 @@
 
 This document specifies version `0.5.0-alpha.1` of the Agent Control Specification (ACS). Its status is Draft. Legacy manifest contract `0.4.0-alpha.1` remains supported as described in section 2.1.
 
-The machine readable manifest contract is `schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository. That schema governs manifest syntax. This document governs runtime semantics, which are the evaluation order, the policy input shape, verdict handling, transform validation, and fail closed behavior.
+The machine readable manifest contract is `spec/schema/manifest.schema.json` in this repository. That schema governs manifest syntax. This document governs runtime semantics, which are the evaluation order, the policy input shape, verdict handling, transform validation, and fail closed behavior.
 
 The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, NOT RECOMMENDED, MAY, and OPTIONAL in this document are to be interpreted as described in BCP 14 [RFC 2119] [RFC 8174] when, and only when, they appear in all capitals, as shown here. The references are listed in section 23.
 
@@ -619,7 +619,7 @@ The current version carries the `-alpha` pre release tag and the status Draft. W
 
 **[RFC 8259]** Bray, T., Ed., "The JavaScript Object Notation (JSON) Data Interchange Format", RFC 8259, December 2017.
 
-**[SCHEMA]** Agent Control Specification manifest schema, `schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository.
+**[SCHEMA]** Agent Control Specification manifest schema, `spec/schema/manifest.schema.json` in this repository.
 
 **[OPA]** Open Policy Agent and the Rego policy language, `https://www.openpolicyagent.org/`.
 

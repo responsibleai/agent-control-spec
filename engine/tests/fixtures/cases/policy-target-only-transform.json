@@ -1,9 +1,9 @@
 {
   "case_kind": "runtime",
   "covers": [
-    "policy_target_only_effect_validation_application"
+    "policy_target_only_transform_validation"
   ],
-  "description": "AGT D1 migration: the policy_target-only invariant is now enforced on the transform decision. Effects are removed from the verdict surface; the same property (only $target may be rewritten; rewrites apply only in enforce mode; deny carries no rewrite) holds on the transform path.",
+  "description": "The policy_target-only invariant holds on the transform decision: only $target may be rewritten, the runtime carries the transform unapplied for the host to apply, and a deny carries no rewrite.",
   "evaluations": [
     {
       "expected": {
@@ -179,7 +179,7 @@
       "intervention_point": "output"
     }
   ],
-  "id": "policy_target-only-transform",
+  "id": "policy-target-only-transform",
   "manifest_yaml": "agent_control_specification_version: 0.4.0-alpha.1\npolicies:\n  test_policy:\n    type: test\nintervention_points:\n  output:\n    policy_target_kind: assistant_output\n    policy:\n      id: test_policy\n    policy_target: $snap.output\n",
   "schema_version": 1
 }

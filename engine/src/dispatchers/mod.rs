@@ -70,7 +70,7 @@ pub fn default_annotator_dispatcher_for(
 /// evaluation. A build that opts out of `rego` and into the legacy `opa`
 /// feature instead gets the dispatcher that shells out to the `opa` CLI.
 ///
-/// AGT M2.S5 D7: gated behind the Rego features. Hosts that build the core
+/// Gated behind the Rego features. Hosts that build the core
 /// without either MUST register their own `PolicyDispatcher` explicitly; the
 /// FFI builder surfaces a clear error in that configuration.
 #[cfg(any(feature = "rego", feature = "opa"))]

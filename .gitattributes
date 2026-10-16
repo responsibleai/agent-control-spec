@@ -4,8 +4,8 @@
 # byte-for-byte. Never let autocrlf rewrite their line endings on checkout.
 /tests/conformance/streaming/inputs/*.sse -text
 
-# The vendored agent-hooks vectors and the ACS corpus cases are hashed
-# against the digest in conformance/agent-hooks/PROVENANCE.md and read
-# as JSON by every binding runner. Keep them LF on every platform.
+# The vendored agent-hooks vectors are hashed against the digest in
+# conformance/agent-hooks/PROVENANCE.md; the ACS corpus cases are read as
+# JSON by every binding runner. Keep both LF on every platform.
 conformance/agent-hooks/vectors/*.json text eol=lf
 tests/conformance/**/*.json text eol=lf

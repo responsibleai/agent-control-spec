@@ -3,7 +3,6 @@
   "id": "spec-10-annotators.case-02",
   "spec_section": "10",
   "title": "an annotation runs after every annotation it names in needs",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

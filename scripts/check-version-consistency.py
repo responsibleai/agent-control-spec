@@ -33,6 +33,11 @@ sdk/python/requirements-dev.lock (the CI editable install) and
 .github/requirements/maturin.txt (the hashed pin the release and CI wheel
 builds install). A wheel built by one maturin and an sdist declaring
 another once shipped in the same release.
+
+Every pin in sdk/python/requirements-dev.in must appear in
+sdk/python/requirements-dev.lock. CI installs from the lock, so a bump
+to the .in that leaves the lock behind is never exercised until the lock
+is regenerated (RELEASING.md).
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # The files that pin the maturin build backend besides pyproject.toml.
 MATURIN_PIN_FILES = (
+    "sdk/python/requirements-dev.in",
     "sdk/python/requirements-dev.lock",
     ".github/requirements/maturin.txt",
 )
@@ -131,14 +137,42 @@ def read_maturin_pins() -> dict[str, str]:
     return pins
 
 
+def stale_dev_lock_pins() -> list[str]:
+    """Pins in requirements-dev.in that requirements-dev.lock does not carry."""
+    lock = (ROOT / "sdk/python/requirements-dev.lock").read_text(encoding="utf-8")
+    stale = []
+    for line in (
+        (ROOT / "sdk/python/requirements-dev.in")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ):
+        pin = line.split("#", 1)[0].strip()
+        if not pin:
+            continue
+        m = re.fullmatch(r"([A-Za-z0-9_.-]+)==(\S+)", pin)
+        assert m, f"requirements-dev.in must pin exactly: {pin}"
+        name = re.sub(r"[-_.]+", "-", m.group(1)).lower()
+        if not re.search(
+            rf"^{re.escape(name)}=={re.escape(m.group(2))}(\s|$)", lock, re.MULTILINE
+        ):
+            stale.append(pin)
+    return stale
+
+
 def main() -> int:
     try:
         versions = read_versions()
         maturin = read_maturin_pins()
+        stale = stale_dev_lock_pins()
     except FileNotFoundError as exc:
         print(
             f"::error::missing version surface: {Path(exc.filename).relative_to(ROOT).as_posix()}"
         )
+        return 1
+    if stale:
+        print("::error::requirements-dev.in pins missing from requirements-dev.lock:")
+        for pin in stale:
+            print(f"  {pin}")
         return 1
     if len(set(maturin.values())) != 1:
         print("::error::maturin pins disagree:")

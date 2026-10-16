@@ -18,8 +18,8 @@ They also check transform visibility, denied invocations, evaluation errors,
 unbound points, and approval stop/resume behavior. No private service,
 annotator, or paid model is required.
 
-The example was verified with published ACS `0.4.0a4`, Agent Hooks
-`0.1.0a5`, and CPython 3.12.3 on Linux x86-64. To reproduce that baseline,
+The example was verified with published ACS `0.4.0b1`, Agent Hooks
+`0.1.0b2`, and CPython 3.12.3 on Linux x86-64. To reproduce that baseline,
 install `examples/python_composition/requirements.txt` in a clean environment.
 The Python CI job runs these tests against both the checkout's native build
 and the published baseline. The consumer pin is maintained after publication

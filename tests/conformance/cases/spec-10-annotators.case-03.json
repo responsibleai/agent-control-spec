@@ -3,7 +3,6 @@
   "id": "spec-10-annotators.case-03",
   "spec_section": "10",
   "title": "an upstream two annotations share is dispatched once",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

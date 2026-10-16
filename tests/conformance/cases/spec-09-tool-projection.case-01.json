@@ -3,7 +3,6 @@
   "id": "spec-09-tool-projection.case-01",
   "spec_section": "9",
   "title": "unknown tool name fails closed before policy evaluation",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

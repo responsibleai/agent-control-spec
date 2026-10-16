@@ -3,7 +3,6 @@
   "id": "spec-13-evidence-cap.case-01",
   "spec_section": "13.3",
   "title": "oversize evidence degrades and the verdict stands",
-  "claimable": true,
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",

@@ -5,33 +5,11 @@ and asks a model for a JSON policy plan. It renders the plan as an ACS manifest,
 Rego module, and review report. The output is a draft. Review the rules and test
 them against your application's inputs before activating the policy.
 
-This is a port of AGT's `acs-generate --prompt` flow from
-[`policy-engine/generator/` at `c63c51e8`](https://github.com/microsoft/agent-governance-toolkit/tree/c63c51e881c442fbc060705f7e211f29993f2c1b/policy-engine/generator).
-The guided `acs-generate init` designer is not included. The distribution
-`agent-control-spec-generator` and command `acs-policy-gen` have different names
-so they can coexist with AGT's generator.
-
-### Behavior changes from AGT
-
-- Manifests read the agent-hooks `$.target` shape. Saved plans using old model
-  request/response paths or assuming a scalar input/output target need updating.
-- Effects on non-transform decisions, empty annotation `from` paths, undeclared
-  explicit annotator bindings, and unsupported conditions are rejected. AGT
-  dropped some effects, defaulted empty paths, and accepted a wider set of builtins.
-  In particular, this authoring subset rejects `time.now_ns`, `glob.match`, and
-  `regex.template_match`.
-- Sampling uses the provider default rather than requesting `temperature: 0`.
-- Empty verdict messages and `extends: []` are omitted. Names beginning with a
-  digit get a `policy_` prefix, so `2fa Agent` becomes `policy_2fa_agent`.
-- The raw `--api-key` flag is removed. Use the environment or `--api-key-file`.
-- Existing output directories require explicit replacement; old artifacts are
-  retained in a backup rather than overwritten in place.
-
 ## Install from this checkout
 
 The generator is a separate Python package with version metadata kept in lockstep
 with ACS. It is not part of the runtime wheel or the tag-driven publication set.
-See [RELEASING.md](../RELEASING.md). This change does not publish it to PyPI.
+See [RELEASING.md](../RELEASING.md). The generator is not published to PyPI.
 
 From the repository root, in a virtual environment:
 
@@ -41,7 +19,9 @@ python -m pip install ./sdk/python ./generator
 
 Building `sdk/python` requires Rust and the package's maturin build backend.
 The dependency floor is SDK `0.4.0a4`, the first version with the authoring helper.
-Until that SDK release is available, install both packages from this checkout.
+The SDK is on PyPI, so `python -m pip install --pre agent-control-spec ./generator`
+installs both. Install the SDK from this checkout only to test unreleased engine
+changes.
 If dependency resolution is bypassed or an editable native build is stale, the
 generator reports the incompatible binding on first use, before any model call.
 
@@ -241,3 +221,27 @@ The example uses a scripted model and a local example annotator. It generates
 artifacts and evaluates password, transfer, and redaction cases through ACS.
 It does not execute a bank transfer or enforce a host action. Tests require no
 provider credentials; transport tests use loopback servers or recorded responses.
+
+## Differences from the source generator
+
+`acs-policy-gen` was ported from the Agent Governance Toolkit's
+`acs-generate --prompt` flow at
+[`policy-engine/generator/`, revision `c63c51e8`](https://github.com/microsoft/agent-governance-toolkit/tree/c63c51e881c442fbc060705f7e211f29993f2c1b/policy-engine/generator).
+The guided `acs-generate init` designer was not ported. The distribution
+`agent-control-spec-generator` and the command `acs-policy-gen` have different
+names so both generators can be installed side by side. For a user of the
+source generator, the behavior differs in these ways:
+
+- Manifests read the agent-hooks `$.target` shape. Saved plans using old model
+  request/response paths or assuming a scalar input/output target need updating.
+- Effects on non-transform decisions, empty annotation `from` paths, undeclared
+  explicit annotator bindings, and unsupported conditions are rejected. The source
+  generator dropped some effects, defaulted empty paths, and accepted a wider set
+  of builtins. In particular, this authoring subset rejects `time.now_ns`,
+  `glob.match`, and `regex.template_match`.
+- Sampling uses the provider default rather than requesting `temperature: 0`.
+- Empty verdict messages and `extends: []` are omitted. Names beginning with a
+  digit get a `policy_` prefix, so `2fa Agent` becomes `policy_2fa_agent`.
+- The raw `--api-key` flag is removed. Use the environment or `--api-key-file`.
+- Existing output directories require explicit replacement; old artifacts are
+  retained in a backup rather than overwritten in place.

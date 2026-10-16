@@ -2,14 +2,12 @@ agent_control_specification_version: "0.4.0-alpha.1"
 metadata:
   name: canonical-all-interventions
   description: Frozen stateless manifest contract covering every intervention point.
-extends:
-  - ./base-controls.yaml
+extends: []
 policies:
   lifecycle_policy:
     type: test
   input_policy:
     type: rego
-    bundle: ./policy/input.tar.gz
   model_policy:
     type: test
   tool_authz_policy:

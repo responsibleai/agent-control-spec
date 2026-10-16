@@ -1,9 +1,8 @@
 {
   "$schema": "../cases.schema.json",
-  "id": "spec-16-effects.case-03",
-  "spec_section": "16",
-  "title": "AGT D1: dispatcher output with replace effects targeting snapshot is rejected",
-  "claimable": true,
+  "id": "spec-04-intervention-points.case-01",
+  "spec_section": "4",
+  "title": "input dispatches to input policy target",
   "operation": "evaluate",
   "sdk_support": {
     "rust": "required",
@@ -15,22 +14,16 @@
   "intervention_point": "input",
   "snapshot": {
     "input": {
-      "text": "secret"
+      "text": "hello"
     }
   },
   "policy_response": {
-    "decision": "allow",
-    "effects": [
-      {
-        "type": "replace",
-        "path": "$snap.input.text",
-        "value": "leak"
-      }
-    ]
+    "decision": "allow"
   },
   "expected": {
-    "decision": "deny",
-    "reason": "runtime_error:policy_output_invalid",
-    "transformed_policy_target": null
+    "decision": "allow",
+    "policy_target": {
+      "text": "hello"
+    }
   }
 }

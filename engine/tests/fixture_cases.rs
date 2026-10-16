@@ -4,6 +4,7 @@ use agent_control_spec::{
     AnnotatorDispatcher, AnnotatorInvocation, InterceptionPoint, JsonValue, Manifest,
     PolicyDispatcher, PreparedPolicyInvocation, Runtime, RuntimeError,
 };
+use jsonschema::Validator;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -18,7 +19,7 @@ const REQUIRED_COVERAGE: &[&str] = &[
     "manifest_validation",
     "unknown_intervention_point_rejection",
     "invalid_root_rejection",
-    "per_intervention_point_snapshot_envelope",
+    "per_intervention_point_snapshot",
     "policy_target_extraction",
     "tool_metadata_projection",
     "preliminary_policy_input_before_annotations",
@@ -26,7 +27,7 @@ const REQUIRED_COVERAGE: &[&str] = &[
     "rego_prepared_invocation",
     "verdict_normalization",
     "reserved_runtime_error_reasons",
-    "policy_target_only_effect_validation_application",
+    "policy_target_only_transform_validation",
     "parallel_tool_call_per_invocation_semantics",
     "aggregated_streaming_semantics",
     "fail_closed_errors",
@@ -222,19 +223,51 @@ fn fixture_cases_match_current_core_contract() {
     );
 }
 
-fn load_cases() -> Vec<FixtureCase> {
-    let cases_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+/// Every case must validate against `fixtures/fixture-case.schema.json`,
+/// the shape the fixtures README documents, so the schema and the cases
+/// cannot drift apart while `FixtureCase` keeps deserializing them.
+#[test]
+fn fixture_cases_validate_against_schema() {
+    let schema: Value = serde_json::from_str(
+        &fs::read_to_string(fixtures_dir().join("fixture-case.schema.json")).unwrap(),
+    )
+    .unwrap();
+    let compiled = Validator::new(&schema).unwrap();
+    let paths = case_paths();
+    assert!(!paths.is_empty(), "expected fixture cases to be present");
+    for path in paths {
+        let case: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        let messages = compiled
+            .iter_errors(&case)
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            messages.is_empty(),
+            "{} failed schema validation: {messages:?}",
+            path.display()
+        );
+    }
+}
+
+fn fixtures_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
         .join("fixtures")
-        .join("cases");
+}
+
+fn case_paths() -> Vec<PathBuf> {
+    let cases_dir = fixtures_dir().join("cases");
     let mut paths: Vec<PathBuf> = fs::read_dir(&cases_dir)
         .unwrap_or_else(|err| panic!("failed to read {}: {err}", cases_dir.display()))
         .map(|entry| entry.unwrap().path())
         .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("json"))
         .collect();
     paths.sort();
-
     paths
+}
+
+fn load_cases() -> Vec<FixtureCase> {
+    case_paths()
         .into_iter()
         .map(|path| {
             let content = fs::read_to_string(&path)
@@ -464,7 +497,6 @@ fn assert_intentionally_absent_markers(case: &FixtureCase) {
             "stream_chunk_intervention_point" => {
                 assert!(InterceptionPoint::from_str("stream_chunk").is_err())
             }
-            "token_level_enforcement" | "chunk_level_verdicts" => {}
             other => panic!("{}: unknown intentionally_absent marker {other}", case.id),
         }
     }

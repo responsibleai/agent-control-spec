@@ -85,17 +85,16 @@ and the root placeholder are omitted, not literal punctuation in mapping keys.
 
 ## Dependency and MSRV evidence
 
-Verified against registry metadata on September 18, 2026:
+Verified against registry metadata on October 15, 2026:
 
 | Crate | Locked version | Published (UTC) | Declared Rust |
 | --- | --- | --- | --- |
-| `serde-saphyr` | 1.2.0 | 2026-08-30 11:49:53.652594 | 1.89 |
-| `granit-parser` | 1.2.1 | 2026-09-11 09:25:43.624847 | 1.81.0 |
+| `serde-saphyr` | 1.3.0 | 2026-09-16 16:41:36.112385 | 1.89 |
+| `granit-parser` | 1.3.0 | 2026-09-16 15:29:32.796908 | 1.81.0 |
 | `serde_path_to_error` | 0.1.20 | 2025-09-15 15:05:54.817744 | 1.61 |
 
-The granit patch was older than seven full days when selected. It fixes colon-tab
-separation; the tab leniencies above are pinned by regressions. Both Cargo lockfiles record the
-registry checksum. Version 1.3 releases from September 16 were not selected.
+The granit 1.2.1 patch fixed colon-tab separation; the tab leniencies above are
+pinned by regressions. Both Cargo lockfiles record the registry checksum.
 The published manifest follows the repository's caret convention; lockfiles,
 not an exact published dependency constraint, select the tested parser versions.
 Library builds enable only `deserialize`; serialization is a test dependency.
@@ -109,8 +108,8 @@ available. No capabilities were disabled to obtain a clean dependency graph.
 
 Registry metadata and upstream source:
 
-- <https://crates.io/api/v1/crates/serde-saphyr/1.2.0>
-- <https://crates.io/api/v1/crates/granit-parser/1.2.1>
+- <https://crates.io/api/v1/crates/serde-saphyr/1.3.0>
+- <https://crates.io/api/v1/crates/granit-parser/1.3.0>
 - <https://crates.io/api/v1/crates/serde_path_to_error/0.1.20>
 - <https://github.com/bourumir-wyngs/serde-saphyr>
 - <https://github.com/bourumir-wyngs/granit-parser>
@@ -119,6 +118,8 @@ The registry `src/` trees and `Cargo.toml.orig` were compared byte-for-byte
 against their recorded upstream commits: `serde-saphyr`
 `45042059e6905e833516f52d958cba4c16e8cedd` (60 files) and `granit-parser`
 `d0c5b42f9c99ded05d305e788e626a037081572f` (13 files). No differences were found.
+That comparison covered the 1.2.0 and 1.2.1 tags. It has not been repeated for
+the 1.3.0 releases, which a grouped dependency update selected.
 
 Both parser crates have a single registry owner, `bourumir-wyngs`, rather than a
 team. That remains a supply-chain concentration risk, not a correctness finding.

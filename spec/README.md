@@ -1,6 +1,6 @@
 # Agent Control Specification spec
 
-`schema/manifest.schema.json` in artifact kits and `spec/schema/manifest.schema.json` in this repository are the authoritative contracts for Agent Control Specification (ACS) manifest syntax. [`SPECIFICATION.md`](SPECIFICATION.md) is the normative specification for runtime semantics, which are the evaluation order, the policy input shape, verdict normalization, transform validation, and fail closed behavior. Transform application, approval resolution and record keeping are host obligations under AGENT-HOOKS-0.1.
+`spec/schema/manifest.schema.json` is the authoritative contract for Agent Control Specification (ACS) manifest syntax. [`SPECIFICATION.md`](SPECIFICATION.md) is the normative specification for runtime semantics, which are the evaluation order, the policy input shape, verdict normalization, transform validation, and fail closed behavior. Transform application, approval resolution and record keeping are host obligations under AGENT-HOOKS-0.1.
 
 ## Manifest top-level properties
 

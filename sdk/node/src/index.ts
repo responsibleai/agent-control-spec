@@ -242,7 +242,7 @@ export type PerfTelemetry = "off" | "external" | "full";
  * hostile manifest lowers `maxExtendsDepth` or
  * `manifestUrlTimeoutMs`. Each field is individually optional; an
  * absent field keeps its own default, so a host raising one cap does
- * not restate the other nine. A field present but not a non-negative
+ * not restate the others. A field present but not a non-negative
  * integer is a hard error, not a silently-kept default: a host that
  * asked for a smaller bound and got the larger one would believe it
  * was protected when it was not.
@@ -956,6 +956,23 @@ export interface StreamSessionState {
 }
 
 /**
+ * Refuse a rune offset N-API would silently reshape.
+ *
+ * N-API converts to `u32` with ToUint32, which wraps rather than fails:
+ * `2 ** 32` arrives as `0`, and an end offset of `2 ** 32 + 5` records a
+ * *cleared* span of `[0, 5)`, releasing text no task evaluated. Python
+ * raises OverflowError and .NET throws OverflowException on the same
+ * input, so this is the one language doing modular arithmetic on
+ * release accounting.
+ */
+function runeOffset(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 0 || value > 0x7fffffff) {
+    throw new RangeError(`${name} must be a rune offset between 0 and 2147483647, got ${value}`);
+  }
+  return value;
+}
+
+/**
  * Incremental streaming session (spec §18.1).
  *
  * ACS is stateless on every other path, so a rune-addressable track a
@@ -988,23 +1005,6 @@ export interface StreamSessionState {
  * engine's message and puts the session in its terminal `failed`
  * state. The next call sees the session as ended.
  */
-/**
- * Refuse a rune offset N-API would silently reshape.
- *
- * N-API converts to `u32` with ToUint32, which wraps rather than fails:
- * `2 ** 32` arrives as `0`, and an end offset of `2 ** 32 + 5` records a
- * *cleared* span of `[0, 5)`, releasing text no task evaluated. Python
- * raises OverflowError and .NET throws OverflowException on the same
- * input, so this is the one language doing modular arithmetic on
- * release accounting.
- */
-function runeOffset(value: number, name: string): number {
-  if (!Number.isInteger(value) || value < 0 || value > 0x7fffffff) {
-    throw new RangeError(`${name} must be a rune offset between 0 and 2147483647, got ${value}`);
-  }
-  return value;
-}
-
 export class StreamSession {
   private readonly handle: unknown;
 
@@ -1096,9 +1096,9 @@ export class StreamSession {
    * the verdict returned by {@link ActivatedPolicy.evaluate} straight
    * back without translating it.
    *
-   * A verdict whose shape section 5 does not admit (a `transform`
-   * carrying no transform body, a reserved reason from a policy, ...)
-   * fails the stream closed rather than clearing the span.
+   * A verdict whose shape AGENT-HOOKS-0.1 section 5 does not admit (a
+   * `transform` carrying no transform body, a reserved reason from a
+   * policy, ...) fails the stream closed rather than clearing the span.
    */
   recordVerdict(
     task: string,

@@ -45,12 +45,6 @@
           ],
           "type": "object"
         },
-        "mode": {
-          "enum": [
-            "enforce",
-            "evaluate_only"
-          ]
-        },
         "name": {
           "type": "string"
         },
@@ -74,7 +68,6 @@
       "required": [
         "name",
         "intervention_point",
-        "mode",
         "snapshot",
         "expected"
       ],

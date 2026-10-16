@@ -1,9 +1,8 @@
 {
  "$schema": "../cases.schema.json",
- "id": "spec-08-intervention-points.case-06",
+ "id": "spec-04-intervention-points.case-06",
  "spec_section": "4",
  "title": "output dispatches and normalizes escalate",
- "claimable": true,
  "operation": "evaluate",
  "sdk_support": {
   "rust": "required",
