@@ -143,17 +143,35 @@ fn collect_manifest_versions_from_text(
         };
         let version = raw_version
             .trim()
-            .trim_matches('"')
-            .trim_matches('\'')
             .split("\\n")
             .next()
             .unwrap_or_default()
             .split_whitespace()
             .next()
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .trim_matches(['"', '\'']);
         if version.chars().next().is_some_and(|ch| ch.is_ascii_digit()) {
             versions.push((path.display().to_string(), version.to_string()));
         }
+    }
+}
+
+#[test]
+fn manifest_version_scan_handles_yaml_and_python_literal_quotes() {
+    let path = Path::new("fixture.py");
+    for text in [
+        "agent_control_specification_version: 0.4.0-alpha.1",
+        "agent_control_specification_version: \"0.4.0-alpha.1\"",
+        r#"'agent_control_specification_version: "0.4.0-alpha.1"\n'"#,
+        r#""agent_control_specification_version: '0.4.0-alpha.1'\n""#,
+    ] {
+        let mut versions = Vec::new();
+        collect_manifest_versions_from_text(path, text, &mut versions);
+        assert_eq!(
+            versions,
+            vec![(path.display().to_string(), "0.4.0-alpha.1".to_string())],
+            "{text}"
+        );
     }
 }
 
@@ -330,7 +348,18 @@ fn an_unreadable_extends_target_is_not_a_dangling_reference() {
         fs::create_dir_all(&locked).unwrap();
         fs::write(
             locked.join("base.yaml"),
-            "agent_control_specification_version: \"0.4.0-alpha.1\"\npolicies:\n  p:\n    type: test\n    verdict:\n      decision: allow\nintervention_points:\n  input:\n    policy_target: \"$.input\"\n    policy:\n      id: p\n",
+            r#"agent_control_specification_version: "0.4.0-alpha.1"
+policies:
+  p:
+    type: test
+    verdict:
+      decision: allow
+intervention_points:
+  input:
+    policy_target: "$.input"
+    policy:
+      id: p
+"#,
         )
         .unwrap();
         let child = dir.join("child.yaml");
@@ -485,7 +514,16 @@ fn all_committed_manifest_version_values_are_supported() {
 
     for (source, version) in versions {
         let yaml = format!(
-            "agent_control_specification_version: {version}\npolicies:\n  p:\n    type: test\nintervention_points:\n  input:\n    policy:\n      id: p\n    policy_target: $snap.input\n"
+            r#"agent_control_specification_version: {version}
+policies:
+  p:
+    type: test
+intervention_points:
+  input:
+    policy:
+      id: p
+    policy_target: $snap.input
+"#
         );
         Manifest::from_yaml_str(&yaml)
             .unwrap_or_else(|err| panic!("{source} uses unsupported version {version}: {err}"));

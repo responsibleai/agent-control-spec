@@ -15,6 +15,7 @@ from agent_control_spec import ActivatedPolicy, AsyncAcsInterceptor
 
 policy = ActivatedPolicy.activate("policies.yaml")
 
+
 async def serve(emitter):
     async with AsyncAcsInterceptor(policy) as control:
         emitter.register(control, control.name)
