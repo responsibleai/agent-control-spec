@@ -8,6 +8,40 @@ policy management stays outside the SDK.
 This example does **not** call a model. Decisions use the real ACS Rego engine,
 not mocked or scripted verdicts.
 
+## Same application setup for local and remote YAML
+
+```python
+from agent_control_spec import ActivatedPolicy, AsyncAcsInterceptor
+
+policy = ActivatedPolicy.activate("policies.yaml")
+
+async def serve(emitter):
+    async with AsyncAcsInterceptor(policy) as control:
+        emitter.register(control, control.name)
+        # Emit host-owned contexts and use the enforced target.
+```
+
+For local manifests, activation performs the existing native preparation.
+For `remote_policy` YAML it only captures validated configuration; async entry
+fetches all initial valid policies and starts the default HTTP poller. The normal
+`--remote` demo uses this flow. An explicit CLI polling-interval override retains
+the advanced client path; normal managed scheduling comes from YAML.
+
+Remote handles are single-owner/single-use: call `activate()` again for a new
+lifetime, and use separate loaders/registries for concurrent lifetimes. Remote
+evaluation has one process-wide slot/no queue, not local concurrency 8. Capacity
+denies with `runtime_error:acs_async_capacity_exceeded`. Use async entry and close
+on the same owner loop; synchronous remote evaluation/introspection is an error.
+The final snapshot check occurs after the interceptor's last await, but does not
+cover a later application or emitter await. Re-evaluate if execution is deferred.
+
+Customers can pass `RemotePolicyFileLoader(registry=..., source_factory=...,
+poller_factory=...)` as trusted `remote_loader=` to `activate`. Factories are
+typed, bounded host constructors; auth stays independent of source/poller
+selection. YAML only selects registered provider keys/options, never executable
+imports. See the [custom-factory contract](../../sdk/python_remote_policy/README.md#custom-pollers-and-sources).
+Azure remains an optional separate auth adapter.
+
 ## Run locally
 
 Remote polling is a separate optional distribution,
@@ -119,27 +153,32 @@ Use `--remote` for configuration-selected credentials. Neither mode is deprecate
 ## Use the SDK in your host
 
 ```python
-from pathlib import Path
-from agent_control_spec_remote_policy.poller import (
-    PolicyPoller,
-    PollerConfig,
-    PolicySource,
-)
+from agent_control_spec_remote_policy import RemotePolicyClient
+from agent_control_spec_remote_policy.poller import JsonValue
 
 
-async def download(config_path: Path, source: PolicySource) -> None:
-    config = PollerConfig.from_yaml(config_path.read_text(encoding="utf-8"))
-    async with PolicyPoller(config, source) as poller:
-        for agent in config.agents:
-            snapshot = poller.get_policy(agent.agent_id)
-            print(agent.agent_id, snapshot.revision)
+async def run_agent(context: dict[str, JsonValue]) -> None:
+    async with RemotePolicyClient.open("remote-policies.yaml") as policies:
+        verdict = await policies.evaluate("agent-1", "pre_tool_call", context)
+        print(verdict.to_wire())
 ```
 
 Keep that context open while the application serves agents.
-`HttpPolicySource.from_config(config, {"policy-reader": provider})` supplies
-the HTTP adapter. Or implement `PolicySource` for another transport or backend.
-Sources must return the SDK's complete validated artifact contract; transport
-extensibility does not mean arbitrary policy languages are executable.
+The library owns YAML parsing, configured credentials, HTTP, polling, conditional
+ETags, isolated native evaluation, freshness checks, and cleanup. Customers do
+not copy the demo's refund helper or worker machinery. The YAML filename is
+arbitrary and uses the same `remote_policy` schema as the templates.
+
+The API must return the [standard v1 envelope](../../docs/remote-policy-contract.md#http-request-and-response)
+with the manifest and inline bundles accepted by ACS; it does not require a
+customer-written parser. Evaluation returns the existing agent-hooks `Verdict`.
+Apply it inside the open context. Do not await between an allow and the protected
+action; re-evaluate if execution is deferred. The client checks that the policy
+is still current after evaluation and blocks stale results.
+
+`PolicyPoller`, `HttpPolicySource`, and `PolicySource` remain advanced extension
+points. Transport extensibility does not make arbitrary policy languages
+executable or bypass the existing restricted ACS profile.
 
 ## Custom providers
 
@@ -157,17 +196,15 @@ requires them. Host registration has this shape:
 ```python
 async def serve(config: PollerConfig, factory: CredentialProviderFactory) -> None:
     registry = CredentialProviderRegistry({"custom_platform": factory})
-    async with registry.open(config) as credentials:
-        source = HttpPolicySource.from_config(config, credentials)
-        async with PolicyPoller(config, source) as poller:
-            for agent in config.agents:
-                print(agent.agent_id, poller.get_policy(agent.agent_id).revision)
+    async with RemotePolicyClient.open(config, registry=registry) as policies:
+        for agent in config.agents:
+            print(agent.agent_id, policies.get_policy(agent.agent_id).revision)
 ```
 
-Here `PollerConfig` and `PolicyPoller` come from `agent_control_spec_remote_policy.poller`;
+Here `PollerConfig` comes from `agent_control_spec_remote_policy.poller`;
 `CredentialProviderFactory` and `CredentialProviderRegistry` come from
-`agent_control_spec_remote_policy.auth`; `HttpPolicySource` comes from
-`agent_control_spec_remote_policy.http`. Configure the selected definition's
+`agent_control_spec_remote_policy.auth`; `RemotePolicyClient` comes from
+`agent_control_spec_remote_policy`. Configure the selected definition's
 `provider: custom_platform` and non-secret scalar options under
 `remote_policy.credentials`. Fetch secret values inside the trusted factory,
 not from YAML. A factory is an async context manager yielding one credential.

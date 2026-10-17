@@ -5,6 +5,11 @@ include LICENSE README.md pyproject.toml MANIFEST.in
 include agent_control_spec_remote_policy/__init__.py
 include agent_control_spec_remote_policy/auth.py
 include agent_control_spec_remote_policy/azure.py
+include agent_control_spec_remote_policy/client.py
+include agent_control_spec_remote_policy/evaluation.py
+include agent_control_spec_remote_policy/_worker.py
 include agent_control_spec_remote_policy/http.py
+include agent_control_spec_remote_policy/integration.py
 include agent_control_spec_remote_policy/poller.py
+include agent_control_spec_remote_policy/ports.py
 include agent_control_spec_remote_policy/py.typed
