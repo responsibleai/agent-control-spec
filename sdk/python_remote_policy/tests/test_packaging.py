@@ -20,7 +20,19 @@ from packaging.version import Version
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = "agent_control_spec_remote_policy"
 PUBLIC_FILES = frozenset(
-    {"__init__.py", "auth.py", "azure.py", "http.py", "poller.py", "py.typed"}
+    {
+        "__init__.py",
+        "_worker.py",
+        "auth.py",
+        "azure.py",
+        "client.py",
+        "evaluation.py",
+        "http.py",
+        "integration.py",
+        "poller.py",
+        "ports.py",
+        "py.typed",
+    }
 )
 REMOTE_DEPENDENCIES = frozenset(
     {"httpx", "pyyaml", "azure-identity", "azure-core", "aiohttp"}

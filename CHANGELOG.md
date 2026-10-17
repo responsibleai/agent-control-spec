@@ -4,6 +4,22 @@
 
 - Examples: the legacy example set that predates the extraction (23 manifests with their apps and policies) is removed. It targeted the earlier API and no longer loaded; the remaining examples are unchanged.
 
+- Use `ActivatedPolicy.activate(path)` and `async with AsyncAcsInterceptor(policy)`
+  for local manifests or optional `remote_policy` YAML. Managed remote startup,
+  memory-only immutable revisions, isolated native evaluation and a final
+  snapshot gate share the existing interceptor contract. Add trusted typed
+  poller/source factories independent of authentication, single-use ownership,
+  bounded cancellation/cleanup, and explicit lazy package capability checks.
+  The direct `RemotePolicyClient` API remains supported; release requires a
+  documented minimum compatible core and real mixed-archive verification.
+  Remote evaluation currently has one process-wide worker and no queue;
+  concurrent overflow denies with `runtime_error:acs_async_capacity_exceeded`.
+  It does not inherit local mode's default concurrency of eight.
+
+- Add YAML-first `RemotePolicyClient.open(...)` to the optional polling package.
+  It owns configured authentication, HTTP, scheduling, bounded isolated ACS
+  evaluation, current-policy checks, and cleanup. Callers provide the YAML and
+  existing agent-hooks context and receive the native ACS verdict.
 - Add the separate optional `agent-control-spec-remote-policy` Python package:
   install it only when remote downloads are needed; the base SDK contains no
   polling modules or HTTP/cloud dependencies. Its shared credential interfaces

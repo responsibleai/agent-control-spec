@@ -10,6 +10,39 @@ them **in memory**, independently for each configured agent.
 
 ## Configuration and lifecycle
 
+Use `ActivatedPolicy.activate(path)` then `async with AsyncAcsInterceptor(policy)`
+for either local ACS or remote-policy YAML. Remote activation captures validated
+configuration synchronously, without network work. Async entry opens configured
+credentials, fetches every required initial snapshot, and starts the default
+HTTP source/`PolicyPoller`. The stable managed handle holds atomic immutable
+in-memory revisions, not a replaceable native `_handle`.
+
+Remote evaluation runs in the existing credential-free local worker. A
+snapshot-bound completion carries the full native `Verdict` and a synchronous
+currentness assertion to the outer interceptor after its **last internal await**.
+A later emitter/application await is outside this guarantee: re-evaluate when
+execution is deferred or another interceptor awaits afterwards.
+`RemotePolicyClient.open(path)` and its full-verdict `evaluate` remain supported.
+The v1 artifact contract/restricted ACS profile below are unchanged.
+
+Remote activation is single-owner/single-use. Call `activate()` again for a new
+lifetime; use separate loaders/registries for concurrent lifetimes. There is one
+process-wide evaluation slot/no queue, not local default concurrency 8; capacity
+denies with `runtime_error:acs_async_capacity_exceeded`. Before READY, evaluation
+raises `ManagedPolicyUsageError`; close returns closed denials, including pending
+calls unless their caller requested cancellation. Remote synchronous evaluation/
+introspection and incompatible local overrides raise clear usage errors.
+Loader async contexts enter/exit in the same owned task and must close before
+the owner loop. Failed cleanup is reported, not treated as successful cancellation.
+Closing during startup raises `ManagedPolicyUsageError("Remote startup was closed")`
+unless the entry caller itself requested cancellation. The managed outer startup
+wait is 240 seconds; close waits up to 30 seconds for the loader owner. These
+fixed limits are independent of inner YAML/credential budgets and can expire
+while legal cleanup remains active. Exhaustion raises `ManagedPolicyUsageError`,
+not proof that work stopped: retain the owner loop until actual drain. Repeated
+`aclose()` calls reuse owned cleanup and replay recorded failures, including
+failed-start errors, rather than silently swallowing them.
+
 ```yaml
 remote_policy:
   endpoint: https://policies.example.net
@@ -66,12 +99,33 @@ Decoding is bounded by the artifact limits and runs synchronously on the event
 loop. More agents or a slower backend may require increasing the default
 10-second timeout, within the limits above.
 
-The core accepts a host-supplied `PolicySource` with async
+The optional package accepts a host-supplied `PolicySource` with async
 `fetch(selection: AgentPolicy, if_none_match: str | None) -> Changed | NotModified`
 and `aclose()`. `Changed(body: bytes, etag: str)` preserves the exact wire bytes;
 `NotModified(etag: str)` contains no new lease. A custom source need not use
 HTTP or a particular cloud provider, but must export this complete ACS/Rego
 envelope.
+`endpoint` is optional; if present it must be an HTTP(S) URL without user-info,
+query or fragment, even for custom sources.
+
+`RemotePolicyFileLoader(source_factory=..., poller_factory=..., registry=...)`
+can be injected through core `activate(..., remote_loader=loader)`.
+`RemotePolicyClient.open` accepts the same source/poller factories. The source
+factory receives validated config/read-only credentials; the poller factory
+receives config/source and implements `PolicyPollerProtocol`. Factories are
+trusted nonblocking host constructors. Custom pollers preserve the validation,
+atomic revision, lease, fence, bound and source-close obligations above.
+Credential providers/signers and the separate optional Azure adapter remain
+independent of poller/source selection. YAML only selects registered provider
+keys/options, never executable imports.
+
+Managed integration uses capability 1 in both distributions and lazy optional
+exports. Old-core/new-optional low-level imports remain supported; managed access
+fails explicitly. New-core/old-optional valid remote activation raises
+`RemotePolicyDependencyError`, while local activation remains available.
+Before release, document the exact minimum core version shipping that capability
+and verify actual old/new installed archives; do not infer it from reused
+`0.4.0b1` development metadata or bump unrelated language packages here.
 
 ## HTTP request and response
 

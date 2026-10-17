@@ -29,49 +29,164 @@ The optional package requires `agent-control-spec>=0.4.0b1,<0.5`,
 
 ## Use and ownership
 
-The facade exports the common poller, configuration, source, error, and credential
-types. Detailed artifact helpers are in `agent_control_spec_remote_policy.poller`.
-For a host-owned configuration and explicit provider allow-list:
+The normal entry point is the same core activation API used for local manifests.
+Synchronous `activate` captures validated configuration only; async interceptor
+entry opens credentials, creates the default HTTP source and poller, fetches
+all initial valid policies, and starts scheduling. No synchronous networking,
+event-loop bridge, native-handle swapping or disk snapshot cache is used.
+The service must implement the existing [v1 response contract](../../docs/remote-policy-contract.md#http-request-and-response):
+an ACS manifest and its inline Rego bundles, not a deployment-specific payload.
 
 ```python
-from collections.abc import Mapping
+from agent_control_spec import ActivatedPolicy, AsyncAcsInterceptor
 
+policy = ActivatedPolicy.activate("policies.yaml")
+
+
+async def serve(emitter) -> None:
+    async with AsyncAcsInterceptor(policy) as control:
+        emitter.register(control, control.name)
+        # Emit host-owned contexts and consume the emitter's enforced target.
+```
+
+Keep the context open for the application's lifetime, not once per operation.
+Pass the existing host-owned agent-hooks context and apply the native ACS
+`Verdict` (`allow`, `deny`, or `transform`); the SDK does not execute actions.
+Do not await between an allow and its protected action. If execution is deferred,
+re-evaluate. The library checks the current policy before **and after** isolated
+evaluation. A snapshot-bound completion carries that gate across the backend task;
+the outer interceptor checks after its final internal await. Expiry, replacement,
+authorization fences, or closure block the result.
+Native engine errors remain fail-closed deny verdicts with `runtime_error:*` reasons.
+
+An activation is single-owner/single-use, even if its interceptor is closed
+without entering. Call `activate()` again for a new lifetime. Use separate loaders
+and credential registries for concurrent lifetimes. Remote evaluation has one
+process-wide slot/no queue and returns `runtime_error:acs_async_capacity_exceeded`
+at capacity; it does not inherit local concurrency 8. Remote mode requires strict
+scope and rejects non-default local admission options/native dispatchers or
+telemetry it cannot honor. Synchronous remote evaluation/introspection raises
+`ManagedPolicyUsageError`; pre-READY use is an error, while closing/closed use
+denies. Closing a pending call returns a closed deny unless its caller itself
+requested cancellation. Failed snapshot freshness remains a typed unavailable
+failure, converted to a fail-closed host error by the emitter.
+A failed startup remains a pre-READY usage error rather than a reusable closed
+interceptor; create a fresh activation for another attempt.
+Closing while entry is still starting raises `ManagedPolicyUsageError`, not
+`CancelledError`, unless the entry caller itself requested cancellation.
+The managed outer startup wait is 240 seconds; close waits up to 30 seconds for
+its loader owner, after a separate evaluation-drain phase of up to 30 seconds.
+These fixed limits are independent of YAML/credential budgets
+and can expire before a legal inner cleanup budget. Deadline exhaustion raises
+`ManagedPolicyUsageError` and may leave bounded work retained: keep the owner loop
+running until that work actually drains. Repeated `aclose()` calls reuse owned
+cleanup and replay recorded failures, including startup failures; they do not
+silently turn failed cleanup into success.
+
+This final check does not make a later emitter/application await atomic with the
+effect. Re-evaluate if execution is deferred or a later interceptor awaits.
+
+The YAML uses the existing `remote_policy` schema; the filename is not fixed.
+Configure a provider already registered in trusted host code, such as the optional
+`azure_cli` adapter. Custom providers use
+`RemotePolicyClient.open(path, registry=CredentialProviderRegistry(factories))`;
+YAML never imports or executes provider code. No AWS signer is bundled.
+The native base SDK still has no dependency on this optional client.
+
+The existing `RemotePolicyClient.open(path)` remains supported: its
+`evaluate(agent_id, point, context)` still returns the full native `Verdict`.
+Its `open` also accepts a validated `PollerConfig`, or caller-owned credentials through
+`credentials=...` (mutually exclusive with `registry`). The client closes its
+poller/source before registry-owned credentials. Injected credentials remain
+caller-owned. `get_policy`, `status`, `refresh`, and `assert_current` remain
+available for advanced integrations. `PolicyPoller`, `HttpPolicySource`, and
+`evaluate_policy_snapshot` remain lower-level building blocks; the snapshot
+evaluator alone does not perform the final current-policy gate.
+Cancellation arriving during startup or teardown still waits for bounded
+poller/source shutdown before closing registry-owned credentials.
+
+Evaluation runs in a library-owned subprocess, not an example script. It receives
+only the validated artifacts and host-supplied intervention point/context, never
+ambient credential variables. Admission is one worker per host process with no
+queue. Calls default to ten seconds and accept a maximum thirty-second budget.
+Worker cleanup has a separate five-second limit; retained work raises a cleanup
+error and keeps admission occupied until the process exits.
+Input/output and native execution are bounded; timeout/cancellation kills and
+drains the child, retaining admission until it actually exits. This isolated
+single-shot path prioritizes safety over compilation caching or throughput.
+Do not suppress cleanup failures or treat caller timeout as proof work stopped.
+
+### Custom pollers and sources
+
+Pass trusted host code, not YAML imports:
+
+```python
+from agent_control_spec import ActivatedPolicy
 from agent_control_spec_remote_policy import (
-    CredentialProviderFactory,
-    CredentialProviderRegistry,
-    HttpPolicySource,
-    PolicyPoller,
-    PollerConfig,
+    RemotePolicyFileLoader,
+    PolicyPollerFactory,
+    PolicySourceFactory,
 )
 
 
-async def serve(
-    config: PollerConfig,
-    factories: Mapping[str, CredentialProviderFactory],
-) -> None:
-    registry = CredentialProviderRegistry(factories)
-    async with registry.open(config) as credentials:
-        source = HttpPolicySource.from_config(config, credentials)
-        async with PolicyPoller(config, source) as poller:
-            for agent in config.agents:
-                snapshot = poller.get_policy(agent.agent_id)
-                # Feed the validated snapshot to the host's evaluator.
-                # Fetching a policy is not an authorization to execute an action.
-                assert snapshot.revision >= 1
+def configure(
+    path: str,
+    source_factory: PolicySourceFactory,
+    poller_factory: PolicyPollerFactory,
+    registry,
+):
+    loader = RemotePolicyFileLoader(
+        registry=registry,
+        source_factory=source_factory,
+        poller_factory=poller_factory,
+    )
+    return ActivatedPolicy.activate(path, remote_loader=loader)
 ```
 
-`PollerConfig.from_yaml(...)` validates bounded, non-secret YAML configuration.
-The host must choose trusted credential factories and policy API scope; downloaded
-policy/configuration cannot expand the factory allow-list or supply credentials.
-Keep actual secrets out of YAML, logs, and examples.
+`PolicySourceFactory` receives validated `PollerConfig` and a read-only credential
+mapping. `PolicyPollerFactory` receives that config and its owned `PolicySource`
+and returns `PolicyPollerProtocol`: `config`, async `start`, `refresh`, `aclose`,
+and synchronous `get_policy`, `status`, `assert_current`. Constructors must be
+bounded/nonblocking. Capture additional host configuration in typed factory
+instances; no schema changes or plugin strings are needed.
+`endpoint` is optional; if present it must be an HTTP(S) URL without user-info,
+query or fragment, even when a custom source does not use HTTP.
 
-Keep the registry outside the source/poller context. The poller closes its source;
-the source closes its HTTP client but **does not close credentials**. The registry
-owns factory context entry/exit, including bounded cancellation and cleanup.
-When supplying a credential directly, the host owns its lifetime. A directly
-constructed `AzureAuthorizationProvider` also leaves the underlying async Azure
-credential caller-owned. Do not suppress cleanup failures or treat a timeout as
-proof that retained work stopped.
+Custom pollers must preserve existing strict artifact validation, atomic immutable
+snapshots, fixed leases, authorization fences, bounded work and source ownership.
+Use composition/subclassing of `PolicyPoller` when possible. These hooks trust
+host code; they are not a sandbox for downloaded code. Authentication is separate:
+use existing token providers/signers, the default HTTP implementation, a custom
+source, or the optional Azure adapter independently.
+
+If poller construction fails, source close has a five-second default phase.
+A timed-out source keeps its registry-owned credentials alive in one retained
+cleanup owner until its users/close drain; startup raises `PolicyCloseError`
+with a retained count. Do not reuse that registry or close the owner loop early.
+Injected credentials remain caller-owned, including after cleanup failure.
+
+### Managed integration compatibility and release gate
+
+Managed activation requires `MANAGED_ACTIVATION_API_VERSION == 1` in both core
+and optional distributions. The optional managed export is lazy: ordinary package,
+star, poller, auth, source, client and evaluator imports remain supported with an
+older core exposing the existing low-level APIs. `RemotePolicyFileLoader` is
+included in `__all__` only when the core has this capability. Explicit managed
+lookup/import on old core raises an actionable `PolicyUsageError`.
+`hasattr(package, "RemotePolicyFileLoader")` deliberately raises the same error
+on an unsupported core, rather than returning `False`; discovery should check
+the core capability or `__all__` instead. New core with an old optional package
+rejects valid remote YAML with `RemotePolicyDependencyError`; local behavior stays local.
+Missing optional install preserves the native parser error with an install hint.
+Recognized invalid remote roots preserve the native error type with a safe
+`code=config; path=remote_policy` diagnostic, not configuration contents.
+
+Before publishing managed activation, the release owner must assign and document
+the **minimum core release shipping capability 1**, select compatible optional
+release metadata, and pass actual old/new installed-archive checks. Current
+`0.4.0b1` metadata is not proof every earlier archive has that capability.
+Do not republish changed bytes under an already published version; no unrelated
+cross-language version bump is part of this feature.
 
 ### Reusable credential interfaces
 
@@ -147,6 +262,8 @@ wheels and source archive with the packaging tests by setting `ACS_CORE_WHEEL`,
 `pytest -c sdk/python_remote_policy/pyproject.toml sdk/python_remote_policy/tests/test_packaging.py`.
 Without those variables, archive checks are explicitly skipped; installed
 metadata and checkout-boundary checks still run.
+Release assurance must also set `ACS_REQUIRE_PACKAGE_ARTIFACTS=1` so missing
+artifact paths fail instead of being skipped.
 
 For full isolation, use two fresh environments: install only the native wheel in
 one and confirm it has no remote/cloud requirements or `remote_policy*` modules;

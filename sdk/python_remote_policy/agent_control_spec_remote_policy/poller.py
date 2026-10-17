@@ -26,6 +26,7 @@ from typing import (
     TypeGuard,
     cast,
 )
+from urllib.parse import urlsplit
 
 import yaml
 from agent_control_spec import (
@@ -77,6 +78,7 @@ State: TypeAlias = Literal[
     "failed",
 ]
 MAX_POLICY_BYTES = 1024 * 1024
+MAX_EVALUATION_BYTES = 2 * MAX_POLICY_BYTES
 MAX_YAML_BYTES = 64 * 1024
 MAX_AGENTS = 32
 MAX_CONCURRENT_FETCHES = 4
@@ -150,6 +152,10 @@ class PolicySourceError(PolicyError):
 
 class PolicyUnavailable(PolicyError):
     """No current authorized, unexpired snapshot; the host must block."""
+
+
+class PolicyCapacityError(PolicyUnavailable):
+    """Immediate bounded-worker admission failed; no work was queued."""
 
 
 class PolicyUsageError(PolicyError, RuntimeError):
@@ -469,6 +475,20 @@ class PollerConfig:
         endpoint = config.get("endpoint")
         if endpoint is not None and not isinstance(endpoint, str):
             raise PolicyValidationError("config")
+        if endpoint is not None:
+            try:
+                url = urlsplit(endpoint)
+                if (
+                    url.scheme not in ("http", "https")
+                    or not url.hostname
+                    or url.username is not None
+                    or url.password is not None
+                    or url.query
+                    or url.fragment
+                ):
+                    raise PolicyValidationError("config")
+            except ValueError:
+                raise PolicyValidationError("config") from None
         credential_ref = config.get("credential_ref")
         if credential_ref is not None:
             credential_ref = _identifier(credential_ref, "config")
@@ -484,6 +504,22 @@ class PollerConfig:
             insecure,
             _parse_credentials(config.get("credentials", {})),
         )
+
+
+def remote_configuration_note(source: str) -> str | None:
+    """Give a payload-free validation note only for an established remote root."""
+    try:
+        _preflight_yaml(source, "config")
+        loader = _UniqueSafeLoader(source)
+        try:
+            raw: object = loader.get_single_data()
+        finally:
+            loader.dispose()
+    except (PolicyValidationError, yaml.YAMLError):
+        return None
+    if _is_object(raw) and "remote_policy" in raw:
+        return "Remote configuration rejected (code=config; path=remote_policy)."
+    return None
 
 
 @dataclass(frozen=True, slots=True)
