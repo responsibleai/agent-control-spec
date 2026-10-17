@@ -22,7 +22,12 @@ _FIXTURE = (
     .resolve()
     .parents[2]
     .joinpath(
-        "sdk", "python_remote_policy", "tests", "fixtures", "remote_policy_v1.json"
+        "sdk",
+        "remote-policy",
+        "python",
+        "tests_remote_policy",
+        "fixtures",
+        "remote_policy_v1.json",
     )
 )
 _LOG = logging.getLogger(__name__)

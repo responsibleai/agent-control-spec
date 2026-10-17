@@ -17,7 +17,7 @@ from zipfile import ZipFile
 import pytest
 from packaging.version import Version
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 PACKAGE = "agent_control_spec_remote_policy"
 PUBLIC_FILES = frozenset(
     {
@@ -57,7 +57,7 @@ def _remote_project_identity() -> tuple[str, str]:
     """Read the checkout's normalized distribution name and version."""
     config = _table(
         tomllib.loads(
-            ROOT.joinpath("sdk/python_remote_policy/pyproject.toml").read_text("utf-8")
+            ROOT.joinpath("sdk/remote-policy/python/pyproject.toml").read_text("utf-8")
         )
     )
     project = _table(config["project"])
@@ -148,6 +148,14 @@ def _assert_remote_payload(names: Iterable[str]) -> None:
         assert path.name in PUBLIC_FILES, name
 
 
+def test_remote_checkout_layout_preserves_public_distribution_name() -> None:
+    """Feature grouping must not rename the published Python distribution."""
+    assert Path(__file__).resolve().parents[1] == ROOT.joinpath(
+        "sdk", "remote-policy", "python"
+    )
+    assert _remote_project_identity()[0] == "agent_control_spec_remote_policy"
+
+
 def test_native_checkout_has_no_optional_polling_feature() -> None:
     """Keep unrelated native build, dependency, and pytest metadata intact."""
     config = _table(
@@ -196,7 +204,8 @@ def test_installed_remote_metadata_is_a_separate_optional_distribution() -> None
         # only the wheel archive is authoritative for the exact payload.
         assert f"{PACKAGE}/py.typed" in files
         assert not any(
-            PurePosixPath(path).parts[0] in {"tests", "examples", "sdk"}
+            PurePosixPath(path).parts[0]
+            in {"tests", "tests_remote_policy", "examples", "sdk"}
             for path in files
         )
 

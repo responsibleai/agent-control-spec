@@ -13,7 +13,7 @@ but is outside tag publication. All these manifests must agree:
   sdk/python/Cargo.toml        [package] version             (SemVer)
   sdk/python/Cargo.toml        agent-control-spec req         (SemVer)
   sdk/python/pyproject.toml    [project] version             (PEP 440)
-  sdk/python_remote_policy/pyproject.toml [project] version   (PEP 440)
+  sdk/remote-policy/python/pyproject.toml [project] version   (PEP 440)
   generator/pyproject.toml     [project] version             (PEP 440)
   sdk/node/package.json        version                       (SemVer)
   sdk/node/npm/*/package.json  version                       (SemVer)
@@ -96,9 +96,9 @@ def read_versions() -> dict[str, str]:
     versions["sdk/python/pyproject.toml"] = m.group(1)
 
     remote = tomllib.loads(
-        (ROOT / "sdk/python_remote_policy/pyproject.toml").read_text(encoding="utf-8")
+        (ROOT / "sdk/remote-policy/python/pyproject.toml").read_text(encoding="utf-8")
     )["project"]
-    versions["sdk/python_remote_policy/pyproject.toml"] = remote["version"]
+    versions["sdk/remote-policy/python/pyproject.toml"] = remote["version"]
     assert "agent-control-spec>=0.4.0b1,<0.5" in remote["dependencies"], (
         "polling package SDK floor must name the first supported beta SDK"
     )

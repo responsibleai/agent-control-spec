@@ -8,6 +8,33 @@ policy management stays outside the SDK.
 This example does **not** call a model. Decisions use the real ACS Rego engine,
 not mocked or scripted verdicts.
 
+## High-level architecture
+
+```mermaid
+flowchart LR
+    Config["Choose the policy configuration path"]
+    Remote["Customer policy API<br/>Authenticated download and refresh"]
+    Local["Local YAML and Rego<br/>No remote connection"]
+    Evaluate["Local ACS evaluation"]
+    Enforce["Agent Hooks enforcement"]
+    Action["Application action"]
+    Config -->|"Remote configuration"| Remote
+    Config -->|"Local manifest"| Local
+    Remote --> Evaluate
+    Local --> Evaluate
+    Evaluate -->|"Allow, deny or transform"| Enforce
+    Enforce -->|"Enforced target"| Action
+```
+
+These are alternative sources for the same application integration, not two
+steps in a chain. Remote access uses a customer-owned signer or the optional
+Azure adapter; evaluation stays local. The API is a separate trust boundary:
+downloaded policy is validated, not trusted to configure authentication.
+Change the path and reopen the control to switch sources. Local files have no
+background refresh, and a remote outage never selects them automatically.
+The [SDK architecture](../../sdk/remote-policy/python/README.md#high-level-architecture)
+shows authentication and ownership.
+
 ## Same application setup for local and remote YAML
 
 ```python
@@ -40,7 +67,7 @@ Customers can pass `RemotePolicyFileLoader(registry=..., source_factory=...,
 poller_factory=...)` as trusted `remote_loader=` to `activate`. Factories are
 typed, bounded host constructors; auth stays independent of source/poller
 selection. YAML only selects registered provider keys/options, never executable
-imports. See the [custom-factory contract](../../sdk/python_remote_policy/README.md#custom-pollers-and-sources).
+imports. See the [custom-factory contract](../../sdk/remote-policy/python/README.md#custom-pollers-and-sources).
 Azure remains an optional separate auth adapter.
 
 ## Run locally
@@ -52,7 +79,7 @@ This distribution is unreleased; use the checkout. Build/install the native SDK
 using its instructions, then from the repository root:
 
 ```powershell
-python -m pip install -e .\sdk\python_remote_policy
+python -m pip install -e .\sdk\remote-policy\python
 ```
 
 The polling package depends on the base SDK for ACS validation. Customers who
@@ -143,7 +170,7 @@ Python. The `azure_cli` factory creates and closes `AzureCliCredential`.
 No default credential chain or automatic sign-in is used.
 
 ```powershell
-python -m pip install -e ".\sdk\python_remote_policy[azure]"
+python -m pip install -e ".\sdk\remote-policy\python[azure]"
 ```
 
 The `--azure` mode supports explicit `azure-cli`,

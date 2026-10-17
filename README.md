@@ -49,7 +49,7 @@ report a vulnerability.
 | `engine/` | Rust evaluation core (`agent-control-spec` crate): manifest, dispatchers, annotators, policy-output normalization, the `AcsInterceptor` |
 | `sdk/ffi/` | C ABI over the engine (`agent-control-spec-ffi`), which the .NET binding calls |
 | `sdk/python/` | Python binding: `agent_control_spec` package wrapping the engine as an `agent_hooks` interceptor |
-| `sdk/python_remote_policy/` | Optional `agent-control-spec-remote-policy` distribution for remote policy downloads and pluggable authentication; not installed with the base SDK |
+| `sdk/remote-policy/python/` | Optional `agent-control-spec-remote-policy` Python distribution for remote policy downloads and pluggable authentication; not installed with the base SDK |
 | `sdk/node/` | Node binding: `@responsibleai/agent-control-spec` |
 | `sdk/dotnet/` | .NET binding: `ResponsibleAI.AgentControlSpec` |
 | [`generator/`](generator/README.md) | Optional `acs-policy-gen` authoring tool. Produces draft manifests and Rego from prose, with parser checks and ACS validation |

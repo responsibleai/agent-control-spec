@@ -18,8 +18,8 @@ from agent_control_spec_remote_policy.poller import (
     PolicyValidationError,
 )
 
-from sdk.python_remote_policy.tests.test_client import context
-from sdk.python_remote_policy.tests.test_remote_policy import (
+from .test_client import context
+from .test_remote_policy import (
     FakeClock,
     MemorySource,
     configuration,

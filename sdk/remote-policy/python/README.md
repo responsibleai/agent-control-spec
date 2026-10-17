@@ -7,6 +7,42 @@ distribution. Its import namespace is `agent_control_spec_remote_policy`.
 The native `agent-control-spec` distribution remains the local policy evaluator:
 installing it alone does not install HTTP, YAML, Azure, or polling code.
 
+The source lives under `sdk/remote-policy/python`, leaving room for future
+language implementations alongside it. It builds a separate PyPI distribution,
+`agent-control-spec-remote-policy`; the directory layout does not change the
+distribution name or the `agent_control_spec_remote_policy` import namespace.
+
+## High-level architecture
+
+```mermaid
+flowchart LR
+    subgraph Remote["Customer API boundary"]
+        Store[("Customer policy storage")] --> API["Policy API"]
+    end
+    subgraph Host["Trusted agent host"]
+        Auth["Customer AWS signer<br/>or optional Azure authentication"]
+        Config["Select remote or local policy source"]
+        Files["Local YAML and Rego"]
+        Loader["Policy loading"]
+        Evaluate["Local ACS evaluation"]
+        Enforce["Agent Hooks enforcement"]
+        Config --> Loader
+        Auth -->|"Authenticate remote reads"| Loader
+        Files -->|"Local source"| Loader
+        Loader --> Evaluate
+        Evaluate -->|"Allow, deny or transform"| Enforce
+    end
+    API -->|"Initial download and configured refresh"| Loader
+    Enforce -->|"Enforced action"| Tools["Application tools"]
+```
+
+Remote storage changes where policies come from, not where they are evaluated.
+The host selects either authenticated remote downloads or local YAML/Rego.
+Remote responses are validated before use; credentials stay out of policy input.
+Switching sources means changing the configured path and reopening the control,
+not automatic fallback on a remote failure. The host remains responsible for
+using the enforced result before running a tool.
+
 ## Install
 
 This checkout defines version **0.4.0b1**; the extraction is not a claim that
@@ -14,9 +50,9 @@ this distribution has been published. Until release, install from this checkout
 or from locally built wheels:
 
 ```sh
-python -m pip install ./sdk/python ./sdk/python_remote_policy
+python -m pip install ./sdk/python ./sdk/remote-policy/python
 # Only when using the Azure adapter:
-python -m pip install ./sdk/python "./sdk/python_remote_policy[azure]"
+python -m pip install ./sdk/python "./sdk/remote-policy/python[azure]"
 ```
 
 Run these commands from the repository root. Python 3.11 or later is required;
@@ -34,7 +70,7 @@ Synchronous `activate` captures validated configuration only; async interceptor
 entry opens credentials, creates the default HTTP source and poller, fetches
 all initial valid policies, and starts scheduling. No synchronous networking,
 event-loop bridge, native-handle swapping or disk snapshot cache is used.
-The service must implement the existing [v1 response contract](../../docs/remote-policy-contract.md#http-request-and-response):
+The service must implement the existing [v1 response contract](../../../docs/remote-policy-contract.md#http-request-and-response):
 an ACS manifest and its inline Rego bundles, not a deployment-specific payload.
 
 ```python
@@ -211,6 +247,94 @@ transport use. Custom providers use the same registry and source as Azure.
 The tests exercise non-Azure single-header providers and deterministic HMAC
 signing; the HMAC test double is not an AWS implementation.
 
+### Customer-owned signer, Azure, and switching back to local files
+
+The same host setup supports a customer-owned request signer and the optional
+Azure adapter. An explicit registry **replaces** the defaults; include the Azure
+factories when both provider keys should be available:
+
+```python
+from agent_control_spec import ActivatedPolicy
+from agent_control_spec_remote_policy import RemotePolicyFileLoader
+from agent_control_spec_remote_policy.auth import (
+    CredentialProviderFactory,
+    CredentialProviderRegistry,
+)
+from agent_control_spec_remote_policy.azure import azure_credential_factories
+
+
+def load_policy(
+    path: str, customer_signer_factory: CredentialProviderFactory
+) -> ActivatedPolicy:
+    registry = CredentialProviderRegistry(
+        {**azure_credential_factories(), "customer_aws": customer_signer_factory}
+    )
+    loader = RemotePolicyFileLoader(registry=registry)
+    return ActivatedPolicy.activate(path, remote_loader=loader)
+```
+
+The customer's async context-manager factory receives non-secret options and
+yields a `RequestAuthenticator`. It owns credential acquisition, rotation and
+cleanup. For AWS IAM authentication, use a customer-maintained SigV4 signer;
+ACS does not implement or verify AWS signing itself. Return only newly added
+authentication headers, such as `Authorization`, `X-Amz-Date` and
+`X-Amz-Security-Token`, not a copy of all signed request headers. `Host` and
+existing headers must remain unchanged. Sign every request, including conditional
+refreshes. Blocking AWS credential discovery/refresh must not run on the event
+loop or escape the bounded ownership contract.
+
+Configure remote downloads in a file such as `remote-policy.yaml`:
+
+```yaml
+remote_policy:
+  endpoint: https://policies.example.net
+  credential_ref: policy-reader
+  credentials:
+    policy-reader:
+      provider: customer_aws
+      options:
+        region: us-east-1
+        service: execute-api
+  poll_interval_seconds: 300
+  request_timeout_seconds: 10
+  agents:
+    - agent_id: agent-1
+      tenant_id: tenant-1
+      policy_id: policy-1
+```
+
+`customer_aws`, `region` and `service` are a host-defined factory contract, not
+built-in AWS configuration. For Azure, change the selected definition to
+`provider: azure_cli` with `scope` and optional `process_timeout_seconds`, as
+shown in the [authentication contract](../../../docs/remote-policy-contract.md#optional-azure-credential-adapter).
+Only the selected factory is opened. Install the `[azure]` extra when using Azure;
+registering its factory alone does not import Azure SDKs.
+
+Keep the existing `async with AsyncAcsInterceptor(policy)` application flow.
+Async entry downloads the initial policy and starts the configured scheduler;
+evaluation uses the validated in-memory manifest/Rego locally, not a remote
+evaluation API. Your API must serve the
+[v1 artifact envelope](../../../docs/remote-policy-contract.md#http-request-and-response),
+not a bare YAML file or a provider-specific response. Use a custom `PolicySource`
+if the API cannot expose that contract.
+
+To switch back, change only the path supplied to `load_policy`, from
+`remote-policy.yaml` to a local ACS manifest such as
+[`limits.yaml`](../../../examples/python_composition/limits.yaml). Its
+`bundle: ./policy/limits.rego` resolves relative to that manifest. The same
+loader/registry can stay in host setup: local activation never opens credentials,
+the HTTP source or the poller. Close the previous interceptor and activate the
+new path; switching is not live mutation of an existing activation.
+Local policies are prepared once and do not inherit remote background polling;
+reactivate explicitly to pick up local file changes. Remote outages do not
+automatically select local files: expiry or authorization loss stays fail-closed.
+
+The integration tests cover both a customer-owned signing test double and the
+real Azure adapter with a fake credential: configured startup, a five-second
+scheduled revision update, real local Rego evaluation through agent-hooks,
+path-only local switching and cleanup. This verifies the extension contract,
+not AWS IAM signature compatibility or live Azure/AWS authorization.
+
 `azure_credential_factories()` supplies the explicit `azure_cli` factory.
 The facade and default registry do not import Azure SDKs until Azure credential
 acquisition is needed. Azure SDKs are optional, not a fallback for custom providers.
@@ -237,29 +361,31 @@ From the repository root, after installing the parent-managed development lock
 and both packages into a development environment:
 
 ```sh
-ruff format --check sdk/python_remote_policy
-ruff check sdk/python_remote_policy
-pyright --project sdk/python_remote_policy
-pytest -c sdk/python_remote_policy/pyproject.toml sdk/python/tests sdk/python_remote_policy/tests
+ruff format --check sdk/remote-policy/python
+ruff check sdk/remote-policy/python
+pyright --project sdk/remote-policy/python
+pytest -c sdk/remote-policy/python/pyproject.toml sdk/python/tests sdk/remote-policy/python/tests_remote_policy
 ```
 
 The strict type project covers production code, all moved tests, and the
 parent-owned remote-policy examples. Test helpers and the JSON fixture stay in
-`sdk/python_remote_policy/tests`; tests resolve the fixture beside their source,
+`sdk/remote-policy/python/tests_remote_policy`; tests resolve the fixture beside their source,
 so the optional package itself can be imported from an installed wheel. Tests
 and examples require a checkout and are intentionally not shipped in the wheel.
+The distinct test-package name avoids collisions with the core SDK's `tests`
+package when both suites run together.
 
 Build separately, with an output directory outside either source tree:
 
 ```sh
 python -m build --wheel --outdir dist/native sdk/python
-python -m build --outdir dist/remote-policy sdk/python_remote_policy
+python -m build --outdir dist/remote-policy sdk/remote-policy/python
 ```
 
 The pure-Python build backend is pinned to `setuptools==84.0.0`. Inspect both
 wheels and source archive with the packaging tests by setting `ACS_CORE_WHEEL`,
 `ACS_REMOTE_POLICY_WHEEL`, and `ACS_REMOTE_POLICY_SDIST` to their exact paths, then running
-`pytest -c sdk/python_remote_policy/pyproject.toml sdk/python_remote_policy/tests/test_packaging.py`.
+`pytest -c sdk/remote-policy/python/pyproject.toml sdk/remote-policy/python/tests_remote_policy/test_packaging.py`.
 Without those variables, archive checks are explicitly skipped; installed
 metadata and checkout-boundary checks still run.
 Release assurance must also set `ACS_REQUIRE_PACKAGE_ARTIFACTS=1` so missing

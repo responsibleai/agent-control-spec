@@ -39,7 +39,8 @@ from agent_control_spec_remote_policy.poller import (
 from agent_hooks import AgentContextBuilder, Verdict
 
 from examples.remote_policy.server import PolicyServer
-from sdk.python_remote_policy.tests.test_remote_policy import (
+
+from .test_remote_policy import (
     FakeClock,
     MemorySource,
     configuration,

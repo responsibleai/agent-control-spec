@@ -44,14 +44,14 @@ reportUnnecessaryIsInstance = false
 pythonVersion = "3.11"
 include = [
   "agent_control_spec_remote_policy",
-  "tests",
-  "../../examples/remote_policy/demo.py",
-  "../../examples/remote_policy/server.py",
+  "tests_remote_policy",
+  "../../../examples/remote_policy/demo.py",
+  "../../../examples/remote_policy/server.py",
 ]
-extraPaths = [".", "../python", "../.."]
+extraPaths = [".", "../../python", "../../.."]
 
 [tool.pytest.ini_options]
 # Resolve the optional package from an installed wheel, not a shadow checkout.
 addopts = ["--import-mode=importlib"]
 # Shared test helpers and the parent-owned reference example live in the checkout.
-pythonpath = ["../.."]
+pythonpath = ["../../.."]

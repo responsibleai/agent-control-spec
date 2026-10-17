@@ -27,7 +27,8 @@ from agent_hooks import AgentContextBuilder
 
 from examples.remote_policy import demo
 from examples.remote_policy.server import PolicyServer
-from sdk.python_remote_policy.tests.test_remote_policy import (
+
+from .test_remote_policy import (
     FakeClock,
     MemorySource,
     configuration,
@@ -36,7 +37,7 @@ from sdk.python_remote_policy.tests.test_remote_policy import (
 )
 
 SCRIPT = (
-    Path(__file__).resolve().parents[3].joinpath("examples", "remote_policy", "demo.py")
+    Path(__file__).resolve().parents[4].joinpath("examples", "remote_policy", "demo.py")
 )
 
 

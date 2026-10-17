@@ -24,9 +24,9 @@ from agent_control_spec_remote_policy.poller import (
 )
 from agent_hooks import InterceptionEmitter, Verdict
 
-from sdk.python_remote_policy.tests.test_client import context
-from sdk.python_remote_policy.tests.test_integration import write_config
-from sdk.python_remote_policy.tests.test_remote_policy import (
+from .test_client import context
+from .test_integration import write_config
+from .test_remote_policy import (
     FakeClock,
     MemorySource,
     configuration,

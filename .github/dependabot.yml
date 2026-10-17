@@ -23,7 +23,7 @@ updates:
   - package-ecosystem: pip
     directories:
       - "/sdk/python"
-      - "/sdk/python_remote_policy"
+      - "/sdk/remote-policy/python"
     schedule: { interval: weekly }
     groups:
       python: { patterns: ["*"] }

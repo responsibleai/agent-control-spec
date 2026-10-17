@@ -8,7 +8,7 @@ the tag's publication set. The tag workflow does not publish the generator.
    `sdk/python/{Cargo.toml,pyproject.toml}` + `Cargo.lock`,
    `sdk/node/package.json` + `npm/*/package.json` + lockfile,
    `sdk/dotnet/src/AgentControlSpec/AgentControlSpec.csproj`,
-   `generator/pyproject.toml`, `sdk/python_remote_policy/pyproject.toml`) and add a
+   `generator/pyproject.toml`, `sdk/remote-policy/python/pyproject.toml`) and add a
    `CHANGELOG.md` entry, through a PR. Python's `__version__` is NOT on
    that list and must not be added to it: it is read from the installed
    distribution, and `sdk/python/tests/test_version.py` fails if someone

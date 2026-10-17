@@ -1,4 +1,4 @@
--r ../python/requirements-dev.in
+-r ../../python/requirements-dev.in
 httpx==0.28.1
 azure-identity==1.25.3
 aiohttp==3.14.4

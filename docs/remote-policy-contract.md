@@ -8,6 +8,35 @@ Policy creation, updates, inheritance, authorization, and storage remain the
 backend's responsibility. The SDK only downloads complete artifacts and caches
 them **in memory**, independently for each configured agent.
 
+## High-level architecture
+
+```mermaid
+flowchart LR
+    subgraph Service["Customer policy service boundary"]
+        Storage[("Policy storage")] --> API["Authenticated policy API"]
+    end
+    subgraph Host["Trusted agent host"]
+        Auth["Customer signer or Azure authentication"]
+        Download["Policy download and configured refresh"]
+        Policy["Validated policy in memory"]
+        Evaluate["Local ACS evaluation"]
+        Enforce["Agent Hooks enforcement"]
+        Auth -->|"Authenticate reads"| Download
+        Download --> Policy
+        Policy --> Evaluate
+        Evaluate -->|"Verdict"| Enforce
+    end
+    API -->|"Manifest and Rego artifacts"| Download
+    Enforce -->|"Enforced action"| Tool["Application tool"]
+```
+
+The API owns storage and read authorization; the SDK downloads artifacts, not
+remote decisions. Authentication is pluggable and does not give policy content
+permission to change credentials or execute tools. Local YAML/Rego bypasses
+remote downloading and authentication while retaining local ACS evaluation and
+host enforcement. See the
+[source-switching guide](../sdk/remote-policy/python/README.md#customer-owned-signer-azure-and-switching-back-to-local-files).
+
 ## Configuration and lifecycle
 
 Use `ActivatedPolicy.activate(path)` then `async with AsyncAcsInterceptor(policy)`
@@ -153,7 +182,7 @@ bytes**. No compression or `Content-Encoding`, weak ETag, redirect, or delta.
 | `manifest` | Complete ACS YAML string |
 | `bundles` | Logical manifest Rego key -> `modules`, optional inline `data` |
 
-The [golden envelope](../sdk/python_remote_policy/tests/fixtures/remote_policy_v1.json) is shared
+The [golden envelope](../sdk/remote-policy/python/tests_remote_policy/fixtures/remote_policy_v1.json) is shared
 by contract tests and the reference server. For example, `bundles.gate.modules`
 maps a basename such as `limits.rego` to Rego source. Optional `data` is a list
 of `{mount: ["logical", "path"], document: <JSON>}` objects, not filesystem paths.

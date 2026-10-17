@@ -92,28 +92,28 @@ jobs:
         # install use that pinned maturin, and [tool.maturin] locked=true
         # pins the Rust side via sdk/python/Cargo.lock.
         run: |
-          uv pip install --system --require-hashes -r sdk/python_remote_policy/requirements-dev.lock
+          uv pip install --system --require-hashes -r sdk/remote-policy/python/requirements-dev.lock
           uv pip install --system --no-deps --no-build-isolation -e ./sdk/python
-          uv pip install --system --no-deps --no-build-isolation -e ./sdk/python_remote_policy
+          uv pip install --system --no-deps --no-build-isolation -e ./sdk/remote-policy/python
       - run: uv pip check --system
-      - run: ruff format --check sdk/python sdk/python_remote_policy scripts generator examples/remote_policy && ruff check sdk/python sdk/python_remote_policy scripts generator examples/remote_policy
-      - run: pyright --project sdk/python_remote_policy
+      - run: ruff format --check sdk/python sdk/remote-policy/python scripts generator examples/remote_policy && ruff check sdk/python sdk/remote-policy/python scripts generator examples/remote_policy
+      - run: pyright --project sdk/remote-policy/python
       - name: Build distributions before artifact tests
         run: |
           set -euo pipefail
           uv build sdk/python --wheel --no-build-isolation --out-dir dist
-          uv build sdk/python_remote_policy --no-build-isolation --out-dir dist
+          uv build sdk/remote-policy/python --no-build-isolation --out-dir dist
           echo "ACS_CORE_WHEEL=$(realpath dist/agent_control_spec-*.whl)" >> "$GITHUB_ENV"
           echo "ACS_REMOTE_POLICY_WHEEL=$(realpath dist/agent_control_spec_remote_policy-*.whl)" >> "$GITHUB_ENV"
           echo "ACS_REMOTE_POLICY_SDIST=$(realpath dist/agent_control_spec_remote_policy-*.tar.gz)" >> "$GITHUB_ENV"
           echo "ACS_REQUIRE_PACKAGE_ARTIFACTS=1" >> "$GITHUB_ENV"
-      - run: pytest -c sdk/python_remote_policy/pyproject.toml sdk/python/tests sdk/python_remote_policy/tests -v
+      - run: pytest -c sdk/remote-policy/python/pyproject.toml sdk/python/tests sdk/remote-policy/python/tests_remote_policy -v
       - name: Verify isolated wheel installs without optional dependencies
         run: |
           set -euo pipefail
           uv venv "$RUNNER_TEMP/acs-core-only"
           printf '%s\n' "$ACS_CORE_WHEEL" |
-            uv pip compile - --constraint sdk/python_remote_policy/requirements-dev.lock \
+            uv pip compile - --constraint sdk/remote-policy/python/requirements-dev.lock \
               --generate-hashes --output-file "$RUNNER_TEMP/acs-core-only.lock"
           uv pip install --python "$RUNNER_TEMP/acs-core-only/bin/python" \
             --require-hashes -r "$RUNNER_TEMP/acs-core-only.lock"
@@ -122,7 +122,7 @@ jobs:
           uv pip check --python "$RUNNER_TEMP/acs-core-only/bin/python"
           uv venv "$RUNNER_TEMP/acs-polling-no-cloud"
           printf '%s\n' "$ACS_CORE_WHEEL" "$ACS_REMOTE_POLICY_WHEEL" |
-            uv pip compile - --constraint sdk/python_remote_policy/requirements-dev.lock \
+            uv pip compile - --constraint sdk/remote-policy/python/requirements-dev.lock \
               --generate-hashes --output-file "$RUNNER_TEMP/acs-polling-no-cloud.lock"
           uv pip install --python "$RUNNER_TEMP/acs-polling-no-cloud/bin/python" \
             --require-hashes -r "$RUNNER_TEMP/acs-polling-no-cloud.lock"
@@ -200,11 +200,11 @@ jobs:
         # from the sdist.
         shell: bash
         run: |
-          uv pip install --system ./sdk/python "./sdk/python_remote_policy[azure]" ./generator pytest==9.1.1
+          uv pip install --system ./sdk/python "./sdk/remote-policy/python[azure]" ./generator pytest==9.1.1
           # Each suite needs its own pytest configuration: SDK importlib mode
           # must not override the generator's shared-fixture imports.
           pytest sdk/python/tests -v
-          pytest sdk/python_remote_policy/tests -v
+          pytest sdk/remote-policy/python/tests_remote_policy -v
           pytest generator -v -o pythonpath=
           python -c "import pathlib, agent_control_spec_generator as g; assert pathlib.Path('generator').resolve() not in pathlib.Path(g.__file__).resolve().parents"
 

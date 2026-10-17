@@ -36,7 +36,7 @@ from agent_control_spec_remote_policy.poller import (
     StartupError,
 )
 
-from sdk.python_remote_policy.tests.test_remote_policy import configuration
+from .test_remote_policy import configuration
 
 
 class Headers:
@@ -745,7 +745,7 @@ def test_azure_factory_owns_context_and_uses_bounded_process_timeout(
 ) -> None:
     import azure.identity.aio
 
-    from sdk.python_remote_policy.tests.test_remote_policy_http import AzureCredential
+    from .test_remote_policy_http import AzureCredential
 
     credential = AzureCredential()
     observed: list[int] = []

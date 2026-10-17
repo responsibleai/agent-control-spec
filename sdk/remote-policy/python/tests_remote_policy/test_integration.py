@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from pathlib import Path
 
+import httpx
 import pytest
 from agent_control_spec import (
     ActivatedPolicy,
@@ -26,24 +27,34 @@ from agent_control_spec_remote_policy.auth import (
     CredentialOption,
     CredentialProviderRegistry,
 )
+from agent_control_spec_remote_policy.azure import azure_credential_factories
+from agent_control_spec_remote_policy.http import HttpPolicySource
 from agent_control_spec_remote_policy.poller import (
+    CredentialConfig,
     JsonValue,
+    PolicyError,
     PolicyPoller,
     PolicySource,
     PolicySourceError,
     PolicyValidationError,
     PollerConfig,
+    validate_acs_artifacts,
 )
 from agent_hooks import AgentContextBuilder, InterceptionBlocked, InterceptionEmitter
 
 from examples.remote_policy.server import PolicyServer
-from sdk.python_remote_policy.tests.test_client import context
-from sdk.python_remote_policy.tests.test_remote_policy import (
+
+from .test_client import context
+from .test_remote_policy import (
     FakeClock,
     MemorySource,
     configuration,
     document,
     reply,
+)
+from .test_remote_policy_http import (
+    AzureCredential,
+    HmacAuthenticator,
 )
 
 
@@ -56,6 +67,8 @@ def write_config(tmp_path: Path, config: PollerConfig) -> Path:
                     "endpoint": config.endpoint,
                     "allow_insecure_localhost": config.allow_insecure_localhost,
                     "credential_ref": config.credential_ref,
+                    "poll_interval_seconds": config.poll_interval_seconds,
+                    "request_timeout_seconds": config.request_timeout_seconds,
                     "credentials": {
                         key: {
                             "provider": value.provider,
@@ -147,6 +160,177 @@ def test_yaml_factory_real_http_emitter_and_per_agent_selection(tmp_path: Path) 
             assert (await control.intercept(context("agent1"))).reason == (
                 "runtime_error:acs_async_closed"
             )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("provider", ["customer_signer", "azure_cli"])
+def test_configured_auth_scheduled_refresh_and_path_only_local_switch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, provider: str
+) -> None:
+    """Exercise extension wiring, not a real AWS signature or cloud deployment."""
+    import azure.identity.aio
+
+    async def scenario() -> None:
+        config = replace(
+            configuration(1, interval=5, timeout=2),
+            endpoint="https://policies.example.test/base",
+            credential_ref="reader",
+            credentials={
+                "reader": CredentialConfig(
+                    provider,
+                    {"region": "us-east-1", "service": "execute-api"}
+                    if provider == "customer_signer"
+                    else {
+                        "scope": "api://policy/.default",
+                        "process_timeout_seconds": 1,
+                    },
+                )
+            },
+        )
+        signer, azure_credential = HmacAuthenticator(), AzureCredential()
+        opened: list[str] = []
+        closed: list[str] = []
+
+        @asynccontextmanager
+        async def customer_factory(
+            options: Mapping[str, CredentialOption],
+        ) -> AsyncGenerator[Credential, None]:
+            assert options == {"region": "us-east-1", "service": "execute-api"}
+            opened.append("customer_signer")
+            try:
+                yield signer
+            finally:
+                closed.append("customer_signer")
+
+        def azure_factory(*, process_timeout: int) -> AzureCredential:
+            assert process_timeout == 1
+            opened.append("azure_cli")
+            return azure_credential
+
+        monkeypatch.setattr(azure.identity.aio, "AzureCliCredential", azure_factory)
+        registry = CredentialProviderRegistry(
+            {**azure_credential_factories(), "customer_signer": customer_factory}
+        )
+        payload = document(config.agents[0])
+        manifest = payload["manifest"]
+        assert isinstance(manifest, str)
+        bundles = validate_acs_artifacts(manifest, payload["bundles"])
+        local_path = tmp_path / "local-policy.yaml"
+        local_path.write_text(
+            manifest.replace("type: rego\n", "type: rego\n    bundle: ./limits.rego\n"),
+            encoding="utf-8",
+        )
+        (tmp_path / "limits.rego").write_text(
+            bundles["gate"]["modules"]["limits.rego"], encoding="utf-8"
+        )
+        envelope = reply(payload)
+        initial_etag = envelope.etag
+        observed: list[httpx.Request] = []
+        request_times: list[float] = []
+        sources: list[HttpPolicySource] = []
+        pollers: list[PolicyPoller] = []
+        installed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def transport(request: httpx.Request) -> httpx.Response:
+            assert str(request.url) == (
+                "https://policies.example.test/base/v1/tenants/demo-tenant/policies/policy0"
+            )
+            assert request.headers["authorization"].startswith(
+                "HMAC Signature=" if provider == "customer_signer" else "Bearer "
+            )
+            observed.append(request)
+            request_times.append(loop.time())
+            return httpx.Response(
+                200,
+                content=envelope.body,
+                headers={"Content-Type": "application/json", "ETag": envelope.etag},
+            )
+
+        def make_source(
+            selected: PollerConfig, credentials: Mapping[str, Credential]
+        ) -> PolicySource:
+            assert selected == config
+            assert selected.endpoint is not None
+            source = HttpPolicySource(
+                selected.endpoint,
+                credentials["reader"],
+                request_timeout_seconds=selected.request_timeout_seconds,
+                transport=httpx.MockTransport(transport),
+            )
+            source._client.headers["X-Correlation-ID"] = "host-owned"
+            sources.append(source)
+            return source
+
+        class ObservedPoller(PolicyPoller):
+            async def _refresh_all(self) -> dict[str, PolicyError]:
+                failures = await super()._refresh_all()
+                if self.status("agent0").revision == 2:
+                    installed.set()
+                return failures
+
+        def make_poller(selected: PollerConfig, source: PolicySource) -> PolicyPoller:
+            poller = ObservedPoller(selected, source, clock=FakeClock())
+            pollers.append(poller)
+            return poller
+
+        loader = RemotePolicyFileLoader(
+            registry=registry,
+            source_factory=make_source,
+            poller_factory=make_poller,
+        )
+
+        def activate(path: Path) -> AsyncAcsInterceptor:
+            return AsyncAcsInterceptor(
+                ActivatedPolicy.activate(str(path), remote_loader=loader)
+            )
+
+        remote = activate(write_config(tmp_path, config))
+        assert not opened and not sources and not pollers
+        async with remote:
+            emitter = InterceptionEmitter(timeout=15).register(remote)  # pyright: ignore[reportArgumentType]
+            assert (await emitter.emit(context("agent0"))).target["amount"] == 75
+            assert len(observed) == 1  # Evaluation made no policy API call.
+            payload["revision"] = 2
+            payload["bundles"] = {
+                "gate": {
+                    "modules": {
+                        "limits.rego": bundles["gate"]["modules"][
+                            "limits.rego"
+                        ].replace("<= 100", "<= 50")
+                    }
+                }
+            }
+            envelope = reply(payload)
+            await asyncio.wait_for(installed.wait(), 15)
+            assert request_times[1] - request_times[0] >= 5
+            assert observed[1].headers["if-none-match"] == initial_etag
+            assert pollers[0].get_policy("agent0").revision == 2
+            with pytest.raises(InterceptionBlocked) as blocked:
+                await emitter.emit(context("agent0"))
+            assert blocked.value.result.verdict.reason == "over_limit"
+            assert len(observed) == 2
+        assert opened == [provider] and len(sources) == len(pollers) == 1
+        if provider == "customer_signer":
+            assert len(signer.requests) == 2 and closed == ["customer_signer"]
+            assert not azure_credential.closed
+        else:
+            assert azure_credential.scopes == ("api://policy/.default",)
+            assert azure_credential.closed
+            assert not signer.requests and not closed
+
+        async with activate(local_path) as local:
+            emitter = InterceptionEmitter(timeout=15).register(local)  # pyright: ignore[reportArgumentType]
+            assert (await emitter.emit(context("agent0"))).target["amount"] == 75
+            with pytest.raises(InterceptionBlocked) as blocked:
+                await emitter.emit(context("agent0", 150))
+            assert blocked.value.result.verdict.reason == "over_limit"
+        assert opened == [provider] and len(sources) == len(pollers) == 1
+        assert len(observed) == 2
+        assert sources[0]._client.is_closed and registry.pending_task_count == 0
+        assert pollers[0]._scheduler is not None and pollers[0]._scheduler.done()
+        assert not pollers[0]._requests and not pollers[0]._flights
 
     asyncio.run(scenario())
 

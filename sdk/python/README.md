@@ -350,7 +350,7 @@ engine accepts. Read it rather than hardcoding the set.
 Remote polling is a separate optional distribution,
 `agent-control-spec-remote-policy`, not an extra or module in this base package.
 Customers who need it install the
-[polling package](https://github.com/responsibleai/agent-control-spec/blob/main/sdk/python_remote_policy/README.md).
+[polling package](https://github.com/responsibleai/agent-control-spec/blob/main/sdk/remote-policy/python/README.md).
 Use the same async application setup shown above for a local ACS manifest or
 `remote_policy` YAML: `policy = ActivatedPolicy.activate(path)`, then
 `async with AsyncAcsInterceptor(policy) as control`.

@@ -112,7 +112,7 @@ jobs:
           maturin --version
           maturin build --release --locked -m sdk/python/Cargo.toml -o dist
           maturin sdist -m sdk/python/Cargo.toml -o dist
-          uv build sdk/python_remote_policy --out-dir dist
+          uv build sdk/remote-policy/python --out-dir dist
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -121,7 +121,7 @@ jobs:
       - name: Optional polling package SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          path: sdk/python_remote_policy
+          path: sdk/remote-policy/python
           artifact-name: sbom-python-remote-policy.spdx.json
       - name: Attest build provenance
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'

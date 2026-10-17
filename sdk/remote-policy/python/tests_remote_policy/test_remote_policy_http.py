@@ -38,7 +38,7 @@ from azure.core.credentials import AccessToken
 from azure.core.exceptions import ClientAuthenticationError
 from azure.identity import CredentialUnavailableError
 
-from sdk.python_remote_policy.tests.test_remote_policy import (
+from .test_remote_policy import (
     FakeClock,
     configuration,
     document,
