@@ -34,17 +34,33 @@ from agent_control_spec.async_interceptor import (
     Saturation,
     Scope,
 )
+from agent_control_spec.loading import (
+    MANAGED_ACTIVATION_API_VERSION,
+    AsyncPolicyEvaluator,
+    ManagedActivation,
+    ManagedPolicyUsageError,
+    PolicyEvaluation,
+    RemotePolicyDependencyError,
+    RemotePolicyLoader,
+    prepare_managed,
+)
 
 __all__ = [
     "DEFAULT_LIMITS",
+    "MANAGED_ACTIVATION_API_VERSION",
     "PERF_TELEMETRY_LEVELS",
     "AcsInterceptor",
     "ActivatedPolicy",
     "ArtifactDiagnostic",
     "AsyncAcsInterceptor",
     "AsyncAcsLoopMismatchError",
+    "AsyncPolicyEvaluator",
+    "ManagedPolicyUsageError",
     "ManifestInvalidError",
+    "PolicyEvaluation",
     "RegoBundle",
+    "RemotePolicyDependencyError",
+    "RemotePolicyLoader",
     "Saturation",
     "Scope",
     "StreamSession",
@@ -295,9 +311,16 @@ class ActivatedPolicy:
     annotator_dispatcher=ContentSafetyDispatcher())`` shape composed:
     activation carries the dispatcher, evaluation calls it, and readying
     warms it.
+
+    ``activate(path)`` also accepts optional ``remote_policy`` YAML. That mode
+    captures configuration only: use ``async with AsyncAcsInterceptor(policy)``
+    to fetch and poll. It is single-owner/single-use; activate again for a new
+    lifetime. Native constructor/from_memory behavior remains local and immutable.
     """
 
-    __slots__ = ("_handle",)
+    __slots__ = ("_handle", "_managed")
+    _handle: object | None
+    _managed: ManagedActivation | None
 
     def __init__(
         self,
@@ -322,6 +345,7 @@ class ActivatedPolicy:
         the deadline surfaces at the first decision instead. A policy that
         merely needs real input to produce a verdict activates fine.
         """
+        self._managed = None
         self._handle = _native.policy_activate(
             manifest_path,
             annotator_dispatcher,
@@ -341,11 +365,31 @@ class ActivatedPolicy:
         telemetry_sink: object | Callable[[TelemetryEvent], None] | None = None,
         perf_telemetry: str = "off",
         limits: Mapping[str, int] | None = None,
+        remote_loader: RemotePolicyLoader | None = None,
     ) -> ActivatedPolicy:
         """Activate the manifest at ``manifest_path``.
 
-        Same as the constructor, named for the lifecycle it belongs to.
+        Local manifests retain synchronous native activation. Remote YAML only
+        configures a single-use handle: enter AsyncAcsInterceptor asynchronously
+        to fetch initial policies and poll. No synchronous network work occurs.
+        ``remote_loader`` is trusted host injection, never executable YAML.
         """
+        managed = prepare_managed(manifest_path, remote_loader, limits)
+        if managed is not None:
+            if (
+                annotator_dispatcher is not None
+                or policy_dispatcher is not None
+                or telemetry_sink is not None
+                or perf_telemetry != "off"
+                or limits is not None
+            ):
+                raise ManagedPolicyUsageError(
+                    "Remote activation cannot honor native dispatchers, telemetry or limits"
+                )
+            policy = cls.__new__(cls)
+            policy._handle = None
+            policy._managed = managed
+            return policy
         return cls(
             manifest_path,
             annotator_dispatcher=annotator_dispatcher,
@@ -385,6 +429,7 @@ class ActivatedPolicy:
         known location on disk.
         """
         policy = cls.__new__(cls)
+        policy._managed = None
         policy._handle = _native.policy_activate_from_memory(
             manifest_yaml,
             json.dumps(bundles, allow_nan=False),
@@ -407,7 +452,19 @@ class ActivatedPolicy:
         version does not bind. Raises only on boundary problems: an
         unknown point name or a context that will not serialize.
         """
-        return _evaluate_wire(self._handle, point, json.dumps(context, allow_nan=False))
+        return _evaluate_wire(
+            self._local_handle(), point, json.dumps(context, allow_nan=False)
+        )
+
+    def _local_handle(self) -> object:
+        if self._managed is not None:
+            raise ManagedPolicyUsageError(
+                "Remote policy evaluation/introspection requires "
+                "async with AsyncAcsInterceptor(policy); call activate() "
+                "again for a new lifetime"
+            )
+        assert self._handle is not None
+        return self._handle
 
     @property
     def intervention_points(self) -> tuple[str, ...]:
@@ -415,7 +472,7 @@ class ActivatedPolicy:
         order. Use it to scope this control explicitly, not to stop
         emitting points that other controls may govern.
         """
-        return tuple(_native.policy_intervention_points(self._handle))
+        return tuple(_native.policy_intervention_points(self._local_handle()))
 
     def governs(self, point: str) -> bool:
         """Whether this policy version governs ``point``."""
@@ -425,7 +482,7 @@ class ActivatedPolicy:
 #: A manifest failed grammar validation. Raised by
 #: :func:`validate_manifest`, carrying the engine's own message, which
 #: names the offending field. Subclasses :class:`ValueError`.
-ManifestInvalidError = _native.ManifestInvalid
+ManifestInvalidError: type[ValueError] = _native.ManifestInvalid
 
 
 def validate_manifest(source: str, *, limits: Mapping[str, int] | None = None) -> None:

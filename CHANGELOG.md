@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Use `ActivatedPolicy.activate(path)` and `async with AsyncAcsInterceptor(policy)`
+  for local manifests or optional `remote_policy` YAML. Managed remote startup,
+  memory-only immutable revisions, isolated native evaluation and a final
+  snapshot gate share the existing interceptor contract. Add trusted typed
+  poller/source factories independent of authentication, single-use ownership,
+  bounded cancellation/cleanup, and explicit lazy package capability checks.
+  The direct `RemotePolicyClient` API remains supported; release requires a
+  documented minimum compatible core and real mixed-archive verification.
+  Remote evaluation currently has one process-wide worker and no queue;
+  concurrent overflow denies with `runtime_error:acs_async_capacity_exceeded`.
+  It does not inherit local mode's default concurrency of eight.
+
+- Add YAML-first `RemotePolicyClient.open(...)` to the optional polling package.
+  It owns configured authentication, HTTP, scheduling, bounded isolated ACS
+  evaluation, current-policy checks, and cleanup. Callers provide the YAML and
+  existing agent-hooks context and receive the native ACS verdict.
+- Add the separate optional `agent-control-spec-remote-policy` Python package:
+  install it only when remote downloads are needed; the base SDK contains no
+  polling modules or HTTP/cloud dependencies. Its shared credential interfaces
+  support single-header token providers and request-aware signing providers;
+  the optional Azure adapter explicitly implements the token-provider interface.
+  The `--azure` example mode is supported, not deprecated.
+- Add an opt-in Python remote policy artifact poller: YAML per-agent tenant/policy
+  selections, startup and 300-second background downloads, memory-only snapshots,
+  conditional reads, bounded ownership and fail-closed freshness checks. A
+  provider-neutral v1 ACS/embedded-Rego contract, explicit Azure credential
+  adapter, and real-engine local example accompany it. This does not implement
+  an existing service API, inheritance, or automatic native policy hot-swapping.
+- Mark the Python SDK as PEP 561 typed. Strict Pyright coverage currently targets
+  the remote-policy feature, not the entire legacy SDK.
 - Reject unknown policy-output members before typed verdict conversion. Unknown
   root, warning and transform members now fail closed with
   `runtime_error:policy_output_invalid` instead of being silently discarded.

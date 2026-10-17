@@ -56,7 +56,7 @@ its interceptor timeout only on an awaitable return.
 ## Async hosts and partial-policy scope
 
 `AsyncAcsInterceptor` is an awaitable adapter over an `ActivatedPolicy`,
-with a dedicated worker pool. Activate once outside the serving loop,
+with a dedicated worker pool for local manifests. Activate once outside the serving loop,
 reuse the adapter across requests, and close it before shutting down
 that loop.
 
@@ -103,7 +103,7 @@ ordinary bare allow. The combined verdict may discard an allow reason.
 
 ### Admission, cancellation, and shutdown
 
-`max_concurrency` (default 8) bounds submitted evaluations per adapter.
+For local policies, `max_concurrency` (default 8) bounds submitted evaluations per adapter.
 The adapter does not put overflow evaluations into the executor queue.
 
 | Setting | Behavior at capacity |
@@ -344,6 +344,79 @@ validate_manifest_file(str(manifest_path))
 
 `supported_manifest_versions()` reports the grammar versions this
 engine accepts. Read it rather than hardcoding the set.
+
+## Remote policies (unreleased)
+
+Remote polling is a separate optional distribution,
+`agent-control-spec-remote-policy`, not an extra or module in this base package.
+Customers who need it install the
+[polling package](https://github.com/responsibleai/agent-control-spec/blob/main/sdk/python_remote_policy/README.md).
+Use the same async application setup shown above for a local ACS manifest or
+`remote_policy` YAML: `policy = ActivatedPolicy.activate(path)`, then
+`async with AsyncAcsInterceptor(policy) as control`.
+See the complete
+[managed remote example](https://github.com/responsibleai/agent-control-spec/blob/main/examples/remote_policy/README.md#same-application-setup-for-local-and-remote-yaml)
+for registration and configuration.
+
+For remote YAML, synchronous activation only captures validated configuration.
+Async entry opens configured credentials, fetches **all** initial valid snapshots,
+and starts the default HTTP source/poller. Revisions are replaced atomically in
+memory; the stable policy object never swaps its native handle. Evaluation uses
+the bounded isolated native worker. The outer interceptor checks the exact
+snapshot after its final internal await and returns the full ACS verdict.
+The API must return
+the documented v1 ACS manifest/bundle envelope; no deployment-specific parser
+is needed. The lower-level `PolicyPoller` downloads complete ACS/Rego
+artifacts at startup, then every 300 seconds by default, using YAML
+`agent_id`/`tenant_id`/`policy_id` registrations and independent in-memory caches.
+Advanced hosts can inject `RemotePolicyFileLoader` through
+`ActivatedPolicy.activate(path, remote_loader=loader)`. The optional adapter
+accepts typed `source_factory`, `poller_factory`, and independent credential
+registries or credentials; no cloud
+provider or existing service API is assumed. No secret belongs in YAML.
+
+`remote_policy.credentials` selects a trusted credential factory and its
+non-secret provider options. Hosts can register factories for any platform;
+an optional Azure credential adapter is available through that package's `azure`
+extra. Installing the base SDK does not install polling, HTTP or cloud SDKs.
+`CredentialProviderRegistry.open(config)` supplies the existing source's
+credential mapping and owns factory cleanup. Request-aware providers can sign
+the final HTTP request; the old single-header interface remains supported.
+There is no module loading from YAML, ambient provider fallback or built-in AWS
+policy source. See the
+[custom-provider contract](https://github.com/responsibleai/agent-control-spec/blob/main/examples/remote_policy/README.md#custom-providers).
+
+Remote activations are **single-owner/single-use**, including an interceptor
+that is constructed and then closed without entry. Call `activate()` again for a
+new lifetime and use separate loaders/registries for concurrent lifetimes.
+Remote evaluation has one process-wide slot and no queue; saturation denies with
+`runtime_error:acs_async_capacity_exceeded`, not local default concurrency 8.
+Only strict scope/default admission arguments are accepted. Remote synchronous
+`evaluate`, `governs`, and `intervention_points` raise `ManagedPolicyUsageError`.
+Before READY, calls raise that usage error; closing/closed calls deny, including
+an evaluation cancelled by close. Caller-requested cancellation still propagates.
+A failed startup remains a pre-READY usage error: create a fresh activation
+instead of retrying that interceptor.
+Closing during startup raises `ManagedPolicyUsageError("Remote startup was closed")`
+unless the startup caller itself requested cancellation. Managed startup waits
+up to 240 seconds and close waits up to 30 seconds for the loader owner.
+Exceeding either outer budget raises `ManagedPolicyUsageError`; cleanup may
+remain retained, so keep the owner loop running until it actually drains.
+Repeated `aclose()` calls reuse cleanup and replay recorded failures, including
+startup failures, rather than silently treating them as success.
+
+The existing optional `RemotePolicyClient.open(path)` remains supported and
+returns full `Verdict` objects for advanced integrations. Hosts using
+the lower-level poller must supply those checks themselves. Keep the client
+or interceptor open for the application's lifetime. A later emitter/application
+await is not covered by the interceptor's final fence: re-evaluate if execution
+is deferred or another interceptor awaits afterwards.
+Existing local constructors and interceptors are unchanged.
+Managed integration requires capability 1 in both packages; mixed older versions
+fail explicitly for managed use while supported low-level optional imports stay
+usable. See the optional package's release compatibility gate.
+See the [contract and runnable remote-polling example](https://github.com/responsibleai/agent-control-spec/blob/main/examples/remote_policy/README.md)
+for checkout installation, authentication, leases and first-slice limitations.
 
 ## Authoring inspection
 

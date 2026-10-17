@@ -19,11 +19,32 @@ from typing import TYPE_CHECKING, Any, Self
 from agent_hooks import Decision, InterceptionPoint, Verdict
 
 from agent_control_spec._evaluation import evaluate_wire
+from agent_control_spec.loading import (
+    AsyncPolicyEvaluator,
+    ManagedPolicyUsageError,
+    ManagedRuntime,
+    PolicyEvaluation,
+    assert_evaluation_current,
+    checked_evaluation,
+    finish_owned,
+    freeze_context,
+    valid_positive_integer,
+)
 
 if TYPE_CHECKING:
     from agent_control_spec import ActivatedPolicy
 
 _logger = logging.getLogger(__name__)
+_MANAGED_DRAIN_TIMEOUT = 30.0
+
+
+def _positive_timeout(value: object) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(value)
+        and value > 0
+    )
 
 
 class Scope(str, Enum):
@@ -61,6 +82,13 @@ class AsyncAcsInterceptor:
     occupied until the native call returns. Configure finite operation
     deadlines in dispatchers; this adapter cannot terminate their threads.
     Use ``async with`` or await :meth:`aclose` before closing the event loop.
+
+    A managed remote activation instead starts at async entry and evaluates in
+    one process-wide isolated worker, without a queue. Local concurrency/scope
+    overrides are unsupported in remote mode. The activation is single-use:
+    call activate() again and use separate loaders/registries for concurrent
+    lifetimes. Close-induced evaluation cancellation becomes a closed deny;
+    cancellation requested by the caller still propagates.
     """
 
     def __init__(
@@ -78,26 +106,48 @@ class AsyncAcsInterceptor:
             ("max_concurrency", max_concurrency),
             ("max_pending", max_pending),
         ):
-            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            if not valid_positive_integer(value):
                 raise ValueError(f"{key} must be a positive integer")
-        if (
-            isinstance(admission_timeout, bool)
-            or not isinstance(admission_timeout, (int, float))
-            or not math.isfinite(admission_timeout)
-            or admission_timeout <= 0
-        ):
+        if not _positive_timeout(admission_timeout):
             raise ValueError("admission_timeout must be finite and positive")
         self._scope = Scope(scope)
-        self._policy = policy
-        self._points = frozenset(policy.intervention_points)
+        self._policy: ActivatedPolicy | None = policy
+        managed = policy._managed  # pyright: ignore[reportPrivateUsage]
+        if managed is not None and (
+            self._scope is not Scope.STRICT
+            or max_concurrency != 8
+            or Saturation(on_saturation) is not Saturation.REJECT
+            or max_pending != 64
+            or admission_timeout != 5.0
+        ):
+            raise ManagedPolicyUsageError(
+                "Remote mode requires strict scope and one immediate evaluation "
+                "slot/no queue; local concurrency options are unsupported"
+            )
+        self._points = (
+            frozenset(policy.intervention_points)
+            if managed is None
+            else frozenset[str]()
+        )
         self._name = name
         self._max_concurrency = max_concurrency
         self._on_saturation = Saturation(on_saturation)
         self._max_pending = max_pending
         self._admission_timeout = admission_timeout
-        self._executor = ThreadPoolExecutor(
-            max_workers=max_concurrency, thread_name_prefix="acs"
+        self._executor: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(max_workers=max_concurrency, thread_name_prefix="acs")
+            if managed is None
+            else None
         )
+        self._init_lifecycle()
+        self._managed_runtime = managed.claim() if managed is not None else None
+
+    def _init_lifecycle(self) -> None:
+        self._backend: AsyncPolicyEvaluator | None = None
+        self._managed_runtime: ManagedRuntime | None = None
+        self._entered = False
+        self._start_failed = False
+        self._backend_work: asyncio.Task[PolicyEvaluation] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._in_flight: set[asyncio.Future[Verdict]] = set()
         self._waiters: OrderedDict[asyncio.Future[bool], float] = OrderedDict()
@@ -116,7 +166,9 @@ class AsyncAcsInterceptor:
     @property
     def in_flight(self) -> int:
         """Submitted evaluations not yet accounted as complete on the loop."""
-        return len(self._in_flight)
+        return len(self._in_flight) + int(
+            self._backend_work is not None and not self._backend_work.done()
+        )
 
     @property
     def waiting(self) -> int:
@@ -148,11 +200,43 @@ class AsyncAcsInterceptor:
         invalid input before this method runs.
         """
         loop = self._bind_loop()
+        if self._managed_runtime is not None:
+            if self._start_failed:
+                raise ManagedPolicyUsageError(
+                    "Remote startup failed before READY; call activate() again"
+                )
+            if self._closed:
+                return Verdict.deny(reason="runtime_error:acs_async_closed")
+            if self._backend is None:
+                raise ManagedPolicyUsageError(
+                    "Remote policy is not READY; use async with AsyncAcsInterceptor(policy)"
+                )
         # Validate before the scope bypass: governs() alone accepts typos as
         # unbound, which would turn an invalid point into an allow.
         point = InterceptionPoint(context["interception_point"]).value
         if self._closed:
             return Verdict.deny(reason="runtime_error:acs_async_closed")
+        if self._managed_runtime is not None:
+            if self._backend_work is not None and not self._backend_work.done():
+                return Verdict.deny(reason="runtime_error:acs_async_capacity_exceeded")
+            try:
+                completion = checked_evaluation(
+                    await self._intercept_backend(point, context)
+                )
+            except asyncio.CancelledError:
+                caller = asyncio.current_task()
+                if caller is not None and caller.cancelling():
+                    raise
+                if self._closed:
+                    return Verdict.deny(reason="runtime_error:acs_async_closed")
+                raise ManagedPolicyUsageError(
+                    "Managed evaluator cancelled without caller cancellation"
+                ) from None
+            if self._closed:
+                return Verdict.deny(reason="runtime_error:acs_async_closed")
+            # FINAL gate in the outer coroutine, after the last internal await.
+            assert_evaluation_current(completion)
+            return completion.verdict
         if self._scope is Scope.BOUND_POINTS_ONLY and point not in self._points:
             return Verdict(decision=Decision.ALLOW, reason="acs_point_unbound")
         deadline = None
@@ -203,10 +287,12 @@ class AsyncAcsInterceptor:
             # Do not submit expired queued work, regardless of callback order.
             if deadline is not None and loop.time() >= deadline:
                 return Verdict.deny(reason="runtime_error:acs_async_admission_timeout")
+            assert self._executor is not None and self._policy is not None
             worker = self._executor.submit(
                 contextvars.copy_context().run,
                 evaluate_wire,
-                self._policy._handle,
+                # Package-internal opaque handle; serialize exactly once.
+                self._policy._local_handle(),  # pyright: ignore[reportPrivateUsage]
                 point,
                 snapshot,
             )
@@ -222,6 +308,23 @@ class AsyncAcsInterceptor:
         # Only the native future's completion releases capacity. Cancelling
         # an emitter/awaiter must not cancel that future or its accounting.
         return await asyncio.shield(work)
+
+    async def _intercept_backend(
+        self, point: str, context: Mapping[str, object]
+    ) -> PolicyEvaluation:
+        assert self._backend is not None
+        # Freeze before scheduling: caller mutation at our first await cannot
+        # change the host-owned identity or payload observed by the backend.
+        captured = freeze_context(context)
+        work = asyncio.create_task(self._backend.evaluate(point, captured))
+        self._backend_work = work
+        try:
+            # Unlike the local thread path, cancellation must reach the remote
+            # worker's existing kill/drain ownership.
+            return await work
+        finally:
+            if work.done() and self._backend_work is work:
+                self._backend_work = None
 
     def _completed(self, work: asyncio.Future[Verdict]) -> None:
         self._in_flight.remove(work)
@@ -263,25 +366,42 @@ class AsyncAcsInterceptor:
     async def aclose(self) -> None:
         """Reject new work and drain existing calls without blocking the loop.
 
-        Idempotent. Cancelling this awaiter leaves cleanup running; await
-        ``aclose()`` again before loop shutdown. A dispatcher that never
-        returns can prevent draining indefinitely.
+        Cleanup ownership is reused, not duplicated. Successful close can be
+        repeated; completed errors, including startup failures, are replayed
+        rather than swallowed. Cancelling this awaiter leaves cleanup owned;
+        await ``aclose()`` again before loop shutdown. A local dispatcher that
+        never returns can prevent draining indefinitely.
 
         If the owning loop has closed, a new loop may call this method:
         it runs :meth:`close` in a thread instead of touching the old loop.
         """
         if self._loop is not None and self._loop.is_closed():
+            if self._managed_runtime is not None:
+                raise AsyncAcsLoopMismatchError(
+                    "Remote ACS must be closed on its owning loop before shutdown"
+                )
             await asyncio.to_thread(self.close)
             return
         self._bind_loop()
-        if self._close_task is None:
+        retry = (
+            self._managed_runtime is not None
+            and self._close_task is not None
+            and self._close_task.done()
+            and not self._close_task.cancelled()
+            and self._close_task.exception() is not None
+            and (self._backend_work is None or self._backend_work.done())
+        )
+        if self._close_task is None or retry:
             self._closed = True
             while self._waiters:
                 waiter, _ = self._waiters.popitem(last=False)
                 if not waiter.done():
                     waiter.set_result(False)
             self._close_task = asyncio.create_task(self._drain())
-        await asyncio.shield(self._close_task)
+        if self._managed_runtime is not None:
+            await finish_owned(self._close_task)
+        else:
+            await asyncio.shield(self._close_task)
 
     def close(self) -> None:
         """Join workers after the owning loop has closed, or before first use.
@@ -298,7 +418,12 @@ class AsyncAcsInterceptor:
                 "use aclose() on that loop"
             )
         with self._close_lock:
+            if self._managed_runtime is not None:
+                raise AsyncAcsLoopMismatchError(
+                    "Remote ACS requires aclose() on its owning event loop"
+                )
             self._closed = True
+            assert self._executor is not None
             self._executor.shutdown(wait=True, cancel_futures=True)
             # The closed loop cannot run _completed. Native shutdown has joined
             # all workers, so bookkeeping can now be discarded without freeing
@@ -311,15 +436,59 @@ class AsyncAcsInterceptor:
             self._reserved = 0
 
     async def _drain(self) -> None:
+        if self._managed_runtime is not None:
+            work = self._backend_work
+            if work is not None:
+                work.cancel()
+                done, _ = await asyncio.wait({work}, timeout=_MANAGED_DRAIN_TIMEOUT)
+                if not done:
+                    # Keep its loader alive while that evaluator can use it.
+                    runtime = self._managed_runtime
+                    work.add_done_callback(lambda _done: runtime.request_close())
+                    raise ManagedPolicyUsageError(
+                        "Managed evaluation cleanup failed; one task remains retained"
+                    )
+                if not work.cancelled():
+                    work.exception()
+            await self._managed_runtime.aclose()
+            return
         while self._in_flight:
             await self._drained.wait()
+        assert self._executor is not None
         await asyncio.to_thread(self._executor.shutdown, wait=True)
 
     async def __aenter__(self) -> Self:
         self._bind_loop()
         if self._closed:
             raise RuntimeError("AsyncAcsInterceptor is closed")
+        if self._managed_runtime is not None:
+            if self._entered:
+                raise ManagedPolicyUsageError(
+                    "Remote interceptor is single-use; call activate() again"
+                )
+            self._entered = True
+            try:
+                backend = await self._managed_runtime.start()
+                if self._closed:
+                    raise ManagedPolicyUsageError("Remote startup was closed")
+                self._backend = backend
+            except BaseException as error:
+                self._start_failed = not self._closed and not isinstance(
+                    error, asyncio.CancelledError
+                )
+                try:
+                    await finish_owned(asyncio.create_task(self.aclose()))
+                except asyncio.CancelledError:
+                    if isinstance(error, asyncio.CancelledError):
+                        raise error
+                    raise
+                raise
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
-        await self.aclose()
+        try:
+            await self.aclose()
+        except asyncio.CancelledError:
+            if len(_exc) > 1 and isinstance(_exc[1], asyncio.CancelledError):
+                raise _exc[1]
+            raise
