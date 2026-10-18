@@ -126,7 +126,7 @@ class Loader:
 
 def activation(tmp_path: Path, loader: Loader) -> ActivatedPolicy:
     path = tmp_path / "remote.yaml"
-    path.write_text(CONFIG, encoding="utf-8")
+    path.write_text(CONFIG, encoding="utf-8", newline="\n")
     return ActivatedPolicy.activate(str(path), remote_loader=loader)
 
 

@@ -103,10 +103,12 @@ jobs:
           set -euo pipefail
           uv build sdk/python --wheel --no-build-isolation --out-dir dist
           uv build sdk/remote-policy/python --no-build-isolation --out-dir dist
-          echo "ACS_CORE_WHEEL=$(realpath dist/agent_control_spec-*.whl)" >> "$GITHUB_ENV"
-          echo "ACS_REMOTE_POLICY_WHEEL=$(realpath dist/agent_control_spec_remote_policy-*.whl)" >> "$GITHUB_ENV"
-          echo "ACS_REMOTE_POLICY_SDIST=$(realpath dist/agent_control_spec_remote_policy-*.tar.gz)" >> "$GITHUB_ENV"
-          echo "ACS_REQUIRE_PACKAGE_ARTIFACTS=1" >> "$GITHUB_ENV"
+          {
+            echo "ACS_CORE_WHEEL=$(realpath dist/agent_control_spec-*.whl)"
+            echo "ACS_REMOTE_POLICY_WHEEL=$(realpath dist/agent_control_spec_remote_policy-*.whl)"
+            echo "ACS_REMOTE_POLICY_SDIST=$(realpath dist/agent_control_spec_remote_policy-*.tar.gz)"
+            echo "ACS_REQUIRE_PACKAGE_ARTIFACTS=1"
+          } >> "$GITHUB_ENV"
       - run: pytest -c sdk/remote-policy/python/pyproject.toml sdk/python/tests sdk/remote-policy/python/tests_remote_policy -v
       - name: Verify isolated wheel installs without optional dependencies
         run: |
