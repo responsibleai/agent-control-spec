@@ -1,6 +1,0 @@
-agent_policies.yaml
-agent_policies_pinned.yaml
-agent_policies.*.local.yaml
-agent_policies.py
-test_agent_policies.py
-windows_azure_cli/

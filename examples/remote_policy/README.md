@@ -119,10 +119,9 @@ changing the SDK's 300-second default.
 
 ## Configure authentication
 
-[policies.yaml](./policies.yaml) and
-[agent_policies.example.yaml](./agent_policies.example.yaml) contain generic
-selectors, an example endpoint, and `credential_ref: policy-reader`.
-They have no provider-specific defaults, deployment identifiers or secrets.
+[policies.yaml](./policies.yaml) contains generic selectors, an example
+endpoint, and `credential_ref: policy-reader`.
+It has no provider-specific defaults, deployment identifiers or secrets.
 Replace the endpoint and selections, then configure a registered credential.
 Unconfigured HTTPS templates fail closed, not anonymously.
 
