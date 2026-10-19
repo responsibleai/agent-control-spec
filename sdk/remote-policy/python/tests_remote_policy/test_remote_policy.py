@@ -553,6 +553,16 @@ def test_same_etag_cannot_hide_changed_bytes() -> None:
         b"\xff",
         b"{}" * (512 * 1024 + 1),
     ],
+    ids=[
+        "duplicate-key",
+        "nan",
+        "infinity",
+        "excessive-depth",
+        "integer-overflow",
+        "invalid-surrogate",
+        "invalid-utf8",
+        "oversized",
+    ],
 )
 def test_strict_bounded_json(body: bytes) -> None:
     with pytest.raises(PolicyValidationError):
@@ -704,6 +714,7 @@ def test_rule_queries_are_ascii_paths_only(query: str) -> None:
         "#" + "x" * 65536,
         "[" * 12 + "`" + "x" * 100 + "`" + "]" * 12,
     ],
+    ids=["excessive-depth", "too-many-tokens", "oversized-token", "nested-raw-string"],
 )
 def test_rego_complexity_is_bounded_without_parsing(source: str) -> None:
     raw = document(configuration(1).agents[0])

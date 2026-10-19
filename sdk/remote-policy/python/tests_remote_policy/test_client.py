@@ -129,6 +129,7 @@ def test_yaml_only_client_downloads_updates_and_returns_native_verdicts(
 @pytest.mark.parametrize(
     "content",
     [b"\xff", b"x" * (MAX_YAML_BYTES + 1), b"remote_policy: {}\n", b"a: &a [*a]\n"],
+    ids=["invalid-utf8", "oversized", "invalid-config", "yaml-alias"],
 )
 def test_yaml_file_boundaries_fail_before_network(
     tmp_path: Path, content: bytes
@@ -151,6 +152,33 @@ def test_yaml_path_must_be_a_regular_file(tmp_path: Path) -> None:
                 pytest.fail("A directory is not a policy configuration")
 
     asyncio.run(scenario())
+
+
+def test_nonregular_configuration_is_rejected_before_opening(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden(*arguments: object, **options: object) -> int:
+        pytest.fail("Nonregular configuration reached os.open")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(client_module.os, "open", forbidden)
+        with pytest.raises(PolicyValidationError):
+            client_module._read_config(tmp_path)
+
+
+def test_configuration_permission_errors_are_not_reclassified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "policies.yaml"
+    path.write_text("remote_policy: {}", encoding="utf-8")
+
+    def denied(*arguments: object, **options: object) -> int:
+        raise PermissionError("Configuration read denied")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(client_module.os, "open", denied)
+        with pytest.raises(PermissionError, match="read denied"):
+            client_module._read_config(path)
 
 
 def test_registry_and_injected_credentials_are_mutually_exclusive() -> None:

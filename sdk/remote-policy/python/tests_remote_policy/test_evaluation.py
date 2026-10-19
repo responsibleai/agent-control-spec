@@ -26,6 +26,87 @@ from .test_remote_policy import (
 )
 
 
+@pytest.mark.parametrize(
+    "wire,failure_code",
+    [
+        ('{"error":"resource_limit_failed"}', "resource_limit_failed"),
+        ('{"error":"evaluation_failed"}', "evaluation_failed"),
+        ('{"error":"PRIVATE_WORKER_STDOUT"}', "unknown"),
+        ("PRIVATE_WORKER_STDOUT", "unknown"),
+        ('{"error":"evaluation_failed","detail":"PRIVATE_WORKER_STDOUT"}', "unknown"),
+    ],
+    ids=["resource", "evaluation", "unknown", "invalid-json", "extra-fields"],
+)
+def test_worker_failure_logs_only_allowlisted_codes_and_drains(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    wire: str,
+    failure_code: str,
+) -> None:
+    async def scenario() -> None:
+        config = configuration(1)
+        actual_spawn = asyncio.create_subprocess_exec
+        processes: list[asyncio.subprocess.Process] = []
+
+        async def failed_worker(
+            *arguments: str, **options: object
+        ) -> asyncio.subprocess.Process:
+            process = await actual_spawn(
+                sys.executable,
+                "-I",
+                "-c",
+                "import sys; sys.stdin.buffer.read(); "
+                "sys.stderr.write('PRIVATE_WORKER_STDERR'); "
+                f"print({wire!r}); raise SystemExit(2)",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(tmp_path),
+                start_new_session=os.name == "posix",
+            )
+            processes.append(process)
+            return process
+
+        async with PolicyPoller(
+            config, MemorySource(config), clock=FakeClock()
+        ) as poller:
+            snapshot = poller.get_policy("agent0")
+            with monkeypatch.context() as scoped:
+                scoped.setattr(asyncio, "create_subprocess_exec", failed_worker)
+                for _ in range(2):
+                    with pytest.raises(PolicyUnavailable, match="could not evaluate"):
+                        await evaluate_policy_snapshot(
+                            snapshot, "pre_tool_call", context("agent0")
+                        )
+                    assert processes[-1].returncode == 2
+            failures = [
+                record
+                for record in caplog.records
+                if record.getMessage().startswith("policy_worker_failed")
+            ]
+            assert len(failures) == 2
+            for record in failures:
+                assert getattr(record, "failure_code", None) == failure_code
+                assert getattr(record, "exit_code", None) == 2
+                assert record.exc_info is None
+                assert record.args == (failure_code, 2)
+                assert record.getMessage() == (
+                    f"policy_worker_failed failure_code={failure_code} exit_code=2"
+                )
+            assert "PRIVATE_WORKER" not in caplog.text
+            verdict = await evaluate_policy_snapshot(
+                snapshot, "pre_tool_call", context("agent0")
+            )
+            assert verdict.decision.value == "allow"
+        assert not any(
+            task.get_name() == "acs-remote-policy-worker-drain"
+            for task in asyncio.all_tasks()
+        )
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize("failure", ["start", "timeout", "cancel", "late_failure"])
 def test_spawn_failure_is_bounded_and_releases_admission(
     monkeypatch: pytest.MonkeyPatch,

@@ -152,6 +152,19 @@ drains the child, retaining admission until it actually exits. This isolated
 single-shot path prioritizes safety over compilation caching or throughput.
 Do not suppress cleanup failures or treat caller timeout as proof work stopped.
 
+On Linux the worker's address-space cap is 1 GiB. On macOS it is 1 GiB above
+the process's existing virtual mappings, which include large runtime reservations.
+The macOS measurement uses the fixed system `ps` command with a one-second
+timeout. Missing/invalid measurements or failed limit setup stop evaluation;
+there is no unlimited fallback. POSIX CPU limits are five seconds soft and six
+seconds hard, and stricter inherited memory/CPU limits are never raised.
+Windows does not expose POSIX resource limits; the parent deadline, bounded
+input/output, worker admission, and native execution limits still apply.
+This subprocess is not a replacement for an OS/container security sandbox.
+Completed responses with nonzero worker exits log a fixed `failure_code`
+(`resource_limit_failed`, `evaluation_failed`, or `unknown`) and the `exit_code`;
+raw worker output and policy/context data are never included in that diagnostic.
+
 ### Custom pollers and sources
 
 Pass trusted host code, not YAML imports:

@@ -47,6 +47,8 @@ _T = TypeVar("_T")
 
 
 def _read_config(path: str | Path) -> PollerConfig:
+    if not stat.S_ISREG(os.stat(path).st_mode):
+        raise PolicyValidationError("config")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(path, flags)
     try:

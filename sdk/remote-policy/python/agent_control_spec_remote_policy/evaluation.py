@@ -277,6 +277,19 @@ async def _evaluate_admitted(
             async with asyncio.timeout_at(deadline):
                 await asyncio.gather(*tasks)
             if process.returncode != 0:
+                failure_code = {
+                    b'{"error":"resource_limit_failed"}': "resource_limit_failed",
+                    b'{"error":"evaluation_failed"}': "evaluation_failed",
+                }.get(stdout.result().strip(), "unknown")
+                _LOG.warning(
+                    "policy_worker_failed failure_code=%s exit_code=%s",
+                    failure_code,
+                    process.returncode,
+                    extra={
+                        "failure_code": failure_code,
+                        "exit_code": process.returncode,
+                    },
+                )
                 raise PolicyUnavailable("Policy worker could not evaluate")
             result = decode_json(stdout.result(), max_bytes=MAX_EVALUATION_BYTES)
             if not isinstance(result, dict):
