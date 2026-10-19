@@ -96,8 +96,10 @@ version first; bump the pin in a PR once CI is green on it, not during
 a release. maturin installs by hash from
 `.github/requirements/maturin.txt`, and `check-version-consistency.py`
 fails when that pin, `[build-system] requires` in
-`sdk/python/pyproject.toml` and `requirements-dev.lock` disagree; the
-header of the requirements file says how to regenerate it. npm is
+`sdk/python/pyproject.toml` and the `requirements-dev.lock` files under
+`sdk/python/` and `sdk/remote-policy/python/` disagree; the header of the
+core requirements file says how to regenerate it, and the section on
+dependency locks below covers the optional package's. npm is
 installed at an exact version in the publish step because the npm
 bundled with Node 22 predates trusted publishing. NuGet restores with
 `--locked-mode` against the committed
@@ -201,4 +203,17 @@ cannot install a release that does not exist yet.
 
 When changing `sdk/python/requirements-dev.in`, regenerate its lock with
 `uv pip compile requirements-dev.in -o requirements-dev.lock --universal --generate-hashes`
-from `sdk/python/`. The checkout tests use that lock, not the consumer pin.
+from `sdk/python/`. Core-only contributor environments use that lock; CI uses
+the optional lock described next.
+
+The Python CI job installs `sdk/remote-policy/python/requirements-dev.lock`, which
+also pins everything in `sdk/python/requirements-dev.in` through
+`-r ../../python/requirements-dev.in`. Change either `.in` file, then regenerate
+that lock from `sdk/remote-policy/python/` with
+`uv pip compile requirements-dev.in -o requirements-dev.lock --universal --generate-hashes --no-annotate --no-header`
+and review the diff. The committed file has no header or annotations so no
+machine-specific path can enter it; the command above is the one that produces
+that format, so run it where the index serves every pin and expect only the pins
+you changed to move. Then run `python scripts/check-version-consistency.py`: it
+fails if the maturin pins in the two locks, `.github/requirements/maturin.txt`
+and `sdk/python/pyproject.toml` disagree.

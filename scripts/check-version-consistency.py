@@ -28,9 +28,11 @@ why nothing noticed it drifting.
 PEP 440 spells SemVer pre-releases differently (0.4.0-alpha.1 ->
 0.4.0a1), so versions are compared after normalizing both spellings.
 
-The maturin build backend is pinned in three places that must agree:
+The maturin build backend is pinned in four places that must agree:
 sdk/python/pyproject.toml [build-system] requires (the sdist build),
-sdk/python/requirements-dev.lock (the CI editable install) and
+sdk/remote-policy/python/requirements-dev.lock (the CI editable install and
+the environment every CI Python test runs in),
+sdk/python/requirements-dev.lock (the core-only lock) and
 .github/requirements/maturin.txt (the hashed pin the release and CI wheel
 builds install). A wheel built by one maturin and an sdist declaring
 another once shipped in the same release.
@@ -55,6 +57,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MATURIN_PIN_FILES = (
     "sdk/python/requirements-dev.in",
     "sdk/python/requirements-dev.lock",
+    "sdk/remote-policy/python/requirements-dev.lock",
     ".github/requirements/maturin.txt",
 )
 
