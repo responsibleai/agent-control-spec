@@ -8,6 +8,13 @@ policy management stays outside the SDK.
 This example does **not** call a model. Decisions use the real ACS Rego engine,
 not mocked or scripted verdicts.
 
+The refund-limit example uses `RefundPolicyHTTPServer` in [server.py](server.py)
+as its local reference API.
+It returns a v1 `application/json` envelope containing the YAML `manifest` and
+inline Rego `bundles`, not separate YAML and Rego file responses. `PolicyServer`
+owns its thread and publishes example policy revisions. This loopback-only
+server does not implement production authentication.
+
 ## High-level architecture
 
 ```mermaid

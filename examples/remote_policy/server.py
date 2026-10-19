@@ -77,7 +77,9 @@ class _Published:
     etag: str
 
 
-class _PolicyHTTPServer(HTTPServer):
+class RefundPolicyHTTPServer(HTTPServer):
+    """Loopback example serving refund-limit policies in v1 JSON envelopes."""
+
     def __init__(self) -> None:
         self.policies: dict[tuple[str, str], _Published] = {}
         self.lock = threading.Lock()
@@ -93,7 +95,7 @@ class _Handler(BaseHTTPRequestHandler):
         _LOG.debug("reference_policy_request")
 
     def do_GET(self) -> None:
-        if not isinstance(self.server, _PolicyHTTPServer):
+        if not isinstance(self.server, RefundPolicyHTTPServer):
             raise TypeError("Reference handler has the wrong server")
         match = re.fullmatch(
             r"/v1/tenants/([A-Za-z0-9][A-Za-z0-9_.-]{0,127})"
@@ -131,7 +133,7 @@ class PolicyServer:
     ) -> None:
         self._agents: Mapping[str, AgentPolicy] = {a.agent_id: a for a in agents}
         self._lease_seconds = lease_seconds
-        self._server = _PolicyHTTPServer()
+        self._server = RefundPolicyHTTPServer()
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             kwargs={"poll_interval": 0.05},
