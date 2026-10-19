@@ -226,7 +226,11 @@ def _identifier(value: object, code: ValidationCode) -> str:
 def _number(value: object, code: ValidationCode) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise PolicyValidationError(code)
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:
+        # An integer beyond float range is invalid configuration, not a crash.
+        raise PolicyValidationError(code) from None
     if not math.isfinite(number):
         raise PolicyValidationError(code)
     return number
@@ -435,7 +439,8 @@ class PollerConfig:
         loader = _UniqueSafeLoader(text)
         try:
             raw: object = loader.get_single_data()
-        except yaml.YAMLError:
+        except (yaml.YAMLError, ValueError, OverflowError):
+            # SafeLoader raises a plain ValueError for scalars such as 2024-02-30.
             raise PolicyValidationError("config") from None
         finally:
             loader.dispose()
@@ -515,7 +520,7 @@ def remote_configuration_note(source: str) -> str | None:
             raw: object = loader.get_single_data()
         finally:
             loader.dispose()
-    except (PolicyValidationError, yaml.YAMLError):
+    except (PolicyValidationError, yaml.YAMLError, ValueError, OverflowError):
         return None
     if _is_object(raw) and "remote_policy" in raw:
         return "Remote configuration rejected (code=config; path=remote_policy)."

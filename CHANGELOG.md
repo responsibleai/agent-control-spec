@@ -10,6 +10,9 @@
   snapshot gate share the existing interceptor contract. Add trusted typed
   poller/source factories independent of authentication, single-use ownership,
   bounded cancellation/cleanup, and explicit lazy package capability checks.
+  Local manifests activate exactly as before: native activation runs first and
+  its error type and message are unchanged (a hint may be attached as a note),
+  and `remote_policy` YAML is recognized only after native loading fails.
   The direct `RemotePolicyClient` API remains supported; release requires a
   documented minimum compatible core and real mixed-archive verification.
   Remote evaluation currently has one process-wide worker and no queue;

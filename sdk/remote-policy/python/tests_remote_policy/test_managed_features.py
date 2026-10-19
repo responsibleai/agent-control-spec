@@ -18,7 +18,7 @@ import pytest
 from agent_control_spec import (
     ActivatedPolicy,
     AsyncAcsInterceptor,
-    ManifestInvalidError,
+    ManagedPolicyUsageError,
     RemotePolicyDependencyError,
 )
 from agent_control_spec_remote_policy import (
@@ -41,7 +41,9 @@ from agent_control_spec_remote_policy.poller import (
     PolicyPoller,
     PolicySource,
     PolicyUsageError,
+    PolicyValidationError,
     PollerConfig,
+    remote_configuration_note,
 )
 from agent_hooks import InterceptionEmitter
 
@@ -281,13 +283,85 @@ def test_remote_validation_has_safe_note_without_startup(
         pytest.fail("invalid configuration started resources")
 
     monkeypatch.setattr(client_module.HttpPolicySource, "from_config", forbidden)
-    with pytest.raises(ManifestInvalidError) as failure:
+    with pytest.raises(ValueError) as failure:
         ActivatedPolicy.activate(
             str(path), remote_loader=RemotePolicyFileLoader() if injected else None
         )
+    assert type(failure.value) is ValueError  # The native error with a safe note.
     notes = " ".join(failure.value.__notes__)
     assert "code=config" in notes and "path=remote_policy" in notes
     assert secret not in str(failure.value) + notes
+
+
+@pytest.mark.parametrize("scalar", ["2024-02-30", "2024-13-01", "2024-01-01T25:00:00Z"])
+def test_unconstructable_yaml_scalars_never_mask_the_native_error(
+    tmp_path: Path, scalar: str
+) -> None:
+    path = tmp_path / "manifest.yaml"
+    path.write_text(
+        'agent_control_specification_version: "0.4.0-alpha.1"\n'
+        f"metadata: {{created: {scalar}}}\npolices: {{}}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError) as native:
+        ActivatedPolicy(str(path))
+    with pytest.raises(ValueError) as unified:
+        ActivatedPolicy.activate(str(path))
+    assert type(unified.value) is type(native.value)
+    assert str(unified.value) == str(native.value)
+
+
+@pytest.mark.parametrize("scalar", ["2024-02-30", "2024-13-01"])
+def test_remote_configuration_parsers_reject_bad_scalars_with_typed_errors(
+    scalar: str,
+) -> None:
+    text = f"remote_policy: {{agents: [], created: {scalar}}}\n"
+    with pytest.raises(PolicyValidationError):
+        PollerConfig.from_yaml(text)
+    assert remote_configuration_note(text) is None
+
+
+def test_remote_activation_with_native_options_has_no_native_side_effects(
+    tmp_path: Path,
+) -> None:
+    path = write_config(tmp_path, configuration(1))
+    events: list[object] = []
+    with pytest.raises(ManagedPolicyUsageError):
+        ActivatedPolicy.activate(str(path), telemetry_sink=events.append)
+    assert events == []  # The native-first attempt emitted nothing before routing.
+
+
+_VALID_AGENTS = "  agents:\n    - {agent_id: a, tenant_id: t, policy_id: p}\n"
+
+
+def _oversized_number_config(field: str) -> str:
+    return (
+        f"remote_policy:\n{_VALID_AGENTS}"
+        f"  endpoint: https://policies.example.test\n  {field}: {'9' * 400}\n"
+    )
+
+
+@pytest.mark.parametrize("field", ["poll_interval_seconds", "request_timeout_seconds"])
+def test_integers_beyond_float_range_are_typed_validation_errors(field: str) -> None:
+    with pytest.raises(PolicyValidationError):
+        PollerConfig.from_yaml(_oversized_number_config(field))
+
+
+@pytest.mark.parametrize("field", ["poll_interval_seconds", "request_timeout_seconds"])
+@pytest.mark.parametrize("injected", [False, True])
+def test_oversized_numbers_never_mask_the_native_error(
+    tmp_path: Path, field: str, injected: bool
+) -> None:
+    path = tmp_path / "remote.yaml"
+    path.write_text(_oversized_number_config(field), encoding="utf-8")
+    with pytest.raises(ValueError) as native:
+        ActivatedPolicy(str(path))
+    with pytest.raises(ValueError) as unified:
+        ActivatedPolicy.activate(
+            str(path), remote_loader=RemotePolicyFileLoader() if injected else None
+        )
+    assert type(unified.value) is type(native.value)
+    assert str(unified.value) == str(native.value)
 
 
 def test_new_core_rejects_missing_optional_managed_capability(

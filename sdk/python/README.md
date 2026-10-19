@@ -411,7 +411,10 @@ the lower-level poller must supply those checks themselves. Keep the client
 or interceptor open for the application's lifetime. A later emitter/application
 await is not covered by the interceptor's final fence: re-evaluate if execution
 is deferred or another interceptor awaits afterwards.
-Existing local constructors and interceptors are unchanged.
+Existing local constructors and interceptors are unchanged. For a local manifest,
+`ActivatedPolicy.activate(path)` is the native constructor: it runs first and
+raises the same native `ValueError`s. `remote_policy` YAML is recognized only
+after native loading fails and the file is regular remote configuration.
 Managed integration requires capability 1 in both packages; mixed older versions
 fail explicitly for managed use while supported low-level optional imports stay
 usable. See the optional package's release compatibility gate.

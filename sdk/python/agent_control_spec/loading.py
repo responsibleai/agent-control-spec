@@ -1,8 +1,10 @@
 # Copyright (c) Microsoft. All rights reserved.
 """Core managed ports with no new mandatory third-party dependencies.
 
-Default discovery lazily imports the optional polling distribution after a local
-structural parse failure; trusted injected loaders supply their own backend.
+Native activation always runs first and its errors are raised unchanged. Default
+discovery lazily imports the optional polling distribution only after native
+activation reports a manifest load failure and the file is regular
+``remote_policy`` configuration; trusted injected loaders supply their own backend.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import os
 import stat
 import threading
@@ -23,6 +26,9 @@ MANAGED_ACTIVATION_API_VERSION = 1
 _START_TIMEOUT = 240.0
 _CLOSE_TIMEOUT = 30.0
 _T = TypeVar("_T")
+_LOG = logging.getLogger(__name__)
+# Routing is advisory: none of these may replace the native activation error.
+_CLASSIFIER_FAILURES = (ValueError, OverflowError, RecursionError, TypeError)
 
 
 class ManagedPolicyUsageError(RuntimeError):
@@ -273,82 +279,133 @@ def _read_source(path: str, cap: int) -> bytes:
         return stream.read(cap + 1)
 
 
+def _read_regular_source(path: str, cap: int) -> str | None:
+    """Read a regular UTF-8 file for routing only; never open a special file.
+
+    Native activation already read (or rejected) ``path``. A FIFO or device is
+    left alone: opening one here could block or consume data. Returns ``None``
+    when the file is special, unreadable, oversized or not UTF-8, so the native
+    error stands.
+    """
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            return None
+        raw = _read_source(path, cap)
+        return raw.decode("utf-8") if len(raw) <= cap else None
+    except (OSError, ValueError, OverflowError):  # UnicodeError is a ValueError.
+        return None
+
+
+def _optional_import_note(failure: ImportError) -> str:
+    if failure.name == "agent_control_spec_remote_policy":
+        return (
+            "If this is remote_policy YAML, install "
+            "agent-control-spec-remote-policy. Native parsing error preserved."
+        )
+    return (
+        "agent-control-spec-remote-policy is installed but could not be "
+        "imported; reinstall it. Native parsing error preserved."
+    )
+
+
 def _add_remote_note(source: str, error: ValueError) -> None:
+    """Attach a payload-free note for an established remote root; never raises."""
     try:
         from agent_control_spec_remote_policy import poller
-    except ModuleNotFoundError as failure:
-        if failure.name != "agent_control_spec_remote_policy":
-            raise
+
+        note = getattr(poller, "remote_configuration_note", None)
+        detail: object = note(source) if callable(note) else None
+    except ImportError:
         return
-    note = getattr(poller, "remote_configuration_note", None)
-    if callable(note):
-        detail: object = note(source)
-        if isinstance(detail, str):
-            error.add_note(detail)
+    except _CLASSIFIER_FAILURES as failure:
+        _LOG.debug(
+            "remote_configuration_note_failed error_type=%s", type(failure).__name__
+        )
+        return
+    if isinstance(detail, str):
+        error.add_note(detail)
 
 
 def prepare_managed(
     path: str,
     loader: RemotePolicyLoader | None,
     limits: Mapping[str, int] | None,
+    native_error: ValueError,
 ) -> ManagedActivation | None:
-    """Classify only structural failures; native activation errors never fallback."""
+    """Route a failed native activation to managed remote mode, if it is one.
+
+    Call only after native activation raised ``native_error`` while loading the
+    manifest. Returns a single-use activation only when ``path`` is a regular
+    UTF-8 file that the native grammar rejects and remote configuration
+    validation accepts. Every other outcome returns ``None`` so the caller
+    re-raises ``native_error`` unchanged, optionally with a hint added through
+    ``add_note``. Classification problems in this module never replace the native
+    error; exceptions raised by a host loader's own classifier are trusted host
+    code and propagate.
+
+    Raises:
+        ManagedPolicyUsageError: a host loader's classifier is not a synchronous
+            function returning ``bool``, which violates the loader contract.
+        RemotePolicyDependencyError: the file is valid remote configuration but
+            the installed optional distribution lacks the managed capability.
+    """
     from agent_control_spec import DEFAULT_LIMITS, ManifestInvalidError, parse_manifest
 
     cap = DEFAULT_LIMITS["max_merged_manifest_bytes"]
     if limits is not None:
         if not _is_mapping(limits):
             return None
-        cap = limits.get("max_merged_manifest_bytes", cap)
-        if not valid_positive_integer(cap):
+        requested = limits.get("max_merged_manifest_bytes", cap)
+        if not valid_positive_integer(requested):
             return None  # Native activation owns invalid-limit diagnostics.
-    try:
-        raw = _read_source(path, cap)
-        source = raw.decode("utf-8")
-    except (OSError, UnicodeError):
-        return None
-    if len(raw) > cap:
+        # Remote configuration is small: routing never reads beyond the default
+        # bound, even when a host raised the native manifest limit.
+        cap = min(cap, requested)
+    source = _read_regular_source(path, cap)
+    if source is None:
         return None
     try:
         parse_manifest(source, limits=limits)
-    except ManifestInvalidError as local_error:
-        if loader is not None:
-            classified = _checked_classifier(loader.is_remote_configuration(source))
-            if classified:
-                return ManagedActivation(source, loader)
-            _add_remote_note(source, local_error)
-            raise
-        try:
-            # This old-compatible low-level parser never imports managed ports.
-            from agent_control_spec_remote_policy.poller import (
-                PolicyValidationError,
-                PollerConfig,
-            )
-        except ModuleNotFoundError as error:
-            if error.name != "agent_control_spec_remote_policy":
-                raise
-            local_error.add_note(
-                "If this is remote_policy YAML, install "
-                "agent-control-spec-remote-policy. Native parsing error preserved."
-            )
-            raise local_error from None
-        try:
-            PollerConfig.from_yaml(source)
-        except PolicyValidationError:
-            # Only an established root receives a payload-free diagnostic.
-            _add_remote_note(source, local_error)
-            raise local_error from None
+    except ManifestInvalidError:
+        pass  # The native grammar rejects it: it may be remote configuration.
+    except _CLASSIFIER_FAILURES:
+        return None
+    else:
+        return None  # A valid local manifest: the native failure is not routing.
+    if loader is not None:
+        if _checked_classifier(loader.is_remote_configuration(source)):
+            return ManagedActivation(source, loader)
+        _add_remote_note(source, native_error)
+        return None
+    try:
+        # This old-compatible low-level parser never imports managed ports.
         import agent_control_spec_remote_policy as optional
+        from agent_control_spec_remote_policy.poller import (
+            PolicyValidationError,
+            PollerConfig,
+        )
+    except ImportError as failure:
+        native_error.add_note(_optional_import_note(failure))
+        return None
+    try:
+        PollerConfig.from_yaml(source)
+    except PolicyValidationError:
+        # Only an established root receives a payload-free diagnostic.
+        _add_remote_note(source, native_error)
+        return None
+    except _CLASSIFIER_FAILURES as failure:
+        _LOG.debug(
+            "remote_policy_classification_failed error_type=%s", type(failure).__name__
+        )
+        return None
+    if (
+        getattr(optional, "MANAGED_ACTIVATION_API_VERSION", None)
+        != MANAGED_ACTIVATION_API_VERSION
+    ):
+        raise RemotePolicyDependencyError(
+            "Remote activation requires a matching "
+            "agent-control-spec-remote-policy with managed activation API 1"
+        ) from None
+    from agent_control_spec_remote_policy.integration import RemotePolicyFileLoader
 
-        if (
-            getattr(optional, "MANAGED_ACTIVATION_API_VERSION", None)
-            != MANAGED_ACTIVATION_API_VERSION
-        ):
-            raise RemotePolicyDependencyError(
-                "Remote activation requires a matching "
-                "agent-control-spec-remote-policy with managed activation API 1"
-            ) from None
-        from agent_control_spec_remote_policy.integration import RemotePolicyFileLoader
-
-        return ManagedActivation(source, RemotePolicyFileLoader())
-    return None
+    return ManagedActivation(source, RemotePolicyFileLoader())

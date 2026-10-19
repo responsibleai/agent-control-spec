@@ -18,7 +18,6 @@ import pytest
 from agent_control_spec import (
     ActivatedPolicy,
     AsyncAcsInterceptor,
-    ManifestInvalidError,
 )
 from agent_control_spec_remote_policy import RemotePolicyFileLoader
 from agent_control_spec_remote_policy import client as client_module
@@ -423,12 +422,16 @@ def test_invalid_or_mixed_root_never_opens_a_loader(
 ) -> None:
     path = tmp_path / "invalid.yaml"
     path.write_text(content, encoding="utf-8")
+    with pytest.raises(ValueError) as native:
+        ActivatedPolicy(str(path))
 
     async def scenario() -> None:
-        with pytest.raises(ManifestInvalidError):
+        with pytest.raises(ValueError) as failure:
             policy = ActivatedPolicy.activate(str(path))
             async with AsyncAcsInterceptor(policy):
                 pytest.fail("Invalid YAML yielded a control")
+        assert type(failure.value) is type(native.value)
+        assert str(failure.value) == str(native.value)
 
     asyncio.run(scenario())
 

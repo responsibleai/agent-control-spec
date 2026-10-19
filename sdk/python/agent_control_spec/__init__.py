@@ -366,35 +366,43 @@ class ActivatedPolicy:
     ) -> ActivatedPolicy:
         """Activate the manifest at ``manifest_path``.
 
-        Local manifests retain synchronous native activation. Remote YAML only
-        configures a single-use handle: enter AsyncAcsInterceptor asynchronously
-        to fetch initial policies and poll. No synchronous network work occurs.
-        ``remote_loader`` is trusted host injection, never executable YAML.
+        Native activation runs first, exactly as the constructor does, and its
+        errors are raised unchanged (``ValueError`` for manifest problems). Only
+        when native loading fails and the file is regular ``remote_policy`` YAML
+        does this return a single-use handle: enter AsyncAcsInterceptor
+        asynchronously to fetch initial policies and poll. No synchronous network
+        work occurs. ``remote_loader`` is trusted host injection, never
+        executable YAML.
         """
-        managed = prepare_managed(manifest_path, remote_loader, limits)
-        if managed is not None:
-            if (
-                annotator_dispatcher is not None
-                or policy_dispatcher is not None
-                or telemetry_sink is not None
-                or perf_telemetry != "off"
-                or limits is not None
-            ):
-                raise ManagedPolicyUsageError(
-                    "Remote activation cannot honor native dispatchers, telemetry or limits"
-                )
-            policy = cls.__new__(cls)
-            policy._handle = None
-            policy._managed = managed
-            return policy
-        return cls(
-            manifest_path,
-            annotator_dispatcher=annotator_dispatcher,
-            policy_dispatcher=policy_dispatcher,
-            telemetry_sink=telemetry_sink,
-            perf_telemetry=perf_telemetry,
-            limits=limits,
-        )
+        try:
+            return cls(
+                manifest_path,
+                annotator_dispatcher=annotator_dispatcher,
+                policy_dispatcher=policy_dispatcher,
+                telemetry_sink=telemetry_sink,
+                perf_telemetry=perf_telemetry,
+                limits=limits,
+            )
+        except ValueError as native_error:
+            managed = prepare_managed(
+                manifest_path, remote_loader, limits, native_error
+            )
+            if managed is None:
+                raise
+        if (
+            annotator_dispatcher is not None
+            or policy_dispatcher is not None
+            or telemetry_sink is not None
+            or perf_telemetry != "off"
+            or limits is not None
+        ):
+            raise ManagedPolicyUsageError(
+                "Remote activation cannot honor native dispatchers, telemetry or limits"
+            )
+        policy = cls.__new__(cls)
+        policy._handle = None
+        policy._managed = managed
+        return policy
 
     @classmethod
     def from_memory(
