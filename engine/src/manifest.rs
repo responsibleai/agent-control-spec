@@ -840,11 +840,10 @@ impl Manifest {
                 strict_booleans: true,
                 no_schema: true,
                 reject_unsupported_tags: true,
-                reject_non_finite_typeless_float: true,
+                non_finite_float_policy: serde_saphyr::NonFiniteFloatPolicy::Reject,
                 duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
                 merge_keys: serde_saphyr::MergeKeyPolicy::AsOrdinary,
                 with_snippet: false,
-                emit_comments: false,
                 alias_limits: serde_saphyr::alias_limits! {
                     max_total_replayed_events: limits.max_manifest_events,
                     max_replay_stack_depth: limits.max_manifest_depth,
