@@ -260,6 +260,14 @@ impl ActivatedPolicy {
         &self.runtime
     }
 
+    /// The runtime as an owned handle, for the interceptor's worker
+    /// path: the worker outlives the call that started it, so it needs
+    /// its own reference. Clones the `Arc`, never the manifest.
+    #[cfg(feature = "tokio")]
+    pub(crate) fn shared_runtime(&self) -> Arc<Runtime> {
+        Arc::clone(&self.runtime)
+    }
+
     /// The manifest this version activated, for a host that reports or
     /// diffs policy versions.
     pub fn manifest(&self) -> &Manifest {

@@ -11,6 +11,11 @@
 //! annotators, and the normalization of raw policy output into
 //! agent-hooks verdicts. [`AcsInterceptor`] is the integration
 //! surface a host registers with its agent-hooks emitter.
+//!
+//! With the `tokio` feature, and a tokio runtime on the calling thread,
+//! `AcsInterceptor::intercept` evaluates on `tokio::task::spawn_blocking`,
+//! so the emitter's timeout can fire while a slow dispatcher is still
+//! running.
 
 pub type JsonValue = serde_json::Value;
 

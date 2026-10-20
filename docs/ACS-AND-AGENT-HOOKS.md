@@ -112,10 +112,12 @@ If your controls should judge the original request independently, use
 `parallel/strictest` instead. In this example that would deny a request for
 150: the order check would see 150, not the proposed cap of 100.
 
-`AcsInterceptor` runs synchronously. Before using this path with blocking
-policies in an async service, follow the
+The Python `AcsInterceptor` runs synchronously. Before using this path with
+blocking policies in an async service, follow the
 [SDK's async guidance](../sdk/python/README.md#activating-a-policy-version).
 Awaiting the emitter does not make synchronous policy evaluation nonblocking.
+In Rust with the `tokio` feature, in .NET and in Node, `intercept` evaluates
+on a worker, so the emitter's timeout can fire while it waits.
 
 ## 4. Execute only after the combined decision permits it
 

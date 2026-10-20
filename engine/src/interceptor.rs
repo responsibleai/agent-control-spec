@@ -17,6 +17,7 @@ use crate::{runtime::Runtime, RuntimeError};
 use agent_hooks::{AgentContext, Interceptor, Verdict};
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
+use std::sync::Arc;
 
 /// Wraps a [`Runtime`] as an agent-hooks [`Interceptor`].
 pub struct AcsInterceptor {
@@ -31,7 +32,7 @@ pub struct AcsInterceptor {
 /// on the emitter path gets the readied policy rather than a second copy
 /// that would load and compile the bundle again.
 enum RuntimeSource {
-    Owned(Box<Runtime>),
+    Owned(Arc<Runtime>),
     Activated(crate::ActivatedPolicy),
 }
 
@@ -42,12 +43,22 @@ impl RuntimeSource {
             Self::Activated(policy) => policy.runtime(),
         }
     }
+
+    /// An owned handle for the worker path. Both variants hold an
+    /// `Arc`, so this clones a pointer, never the manifest.
+    #[cfg(feature = "tokio")]
+    fn shared_runtime(&self) -> Arc<Runtime> {
+        match self {
+            Self::Owned(runtime) => Arc::clone(runtime),
+            Self::Activated(policy) => policy.shared_runtime(),
+        }
+    }
 }
 
 impl AcsInterceptor {
     pub fn new(runtime: Runtime) -> Self {
         Self {
-            runtime: RuntimeSource::Owned(Box::new(runtime)),
+            runtime: RuntimeSource::Owned(Arc::new(runtime)),
             name: "acs".to_string(),
         }
     }
@@ -71,13 +82,53 @@ impl AcsInterceptor {
     pub fn runtime(&self) -> &Runtime {
         self.runtime.runtime()
     }
+
+    /// Evaluates off the calling thread when a tokio runtime is on it,
+    /// so the future yields and the emitter's timeout can fire. With no
+    /// runtime on the thread, such as under a hand-rolled executor,
+    /// evaluation runs inline as it does without the feature.
+    ///
+    /// After the emitter drops this future on timeout the worker keeps
+    /// running until the engine returns. It owns its own `Arc` to the
+    /// runtime and the snapshot, so nothing it touches is freed early,
+    /// and it holds a thread of the runtime's blocking pool, which
+    /// `Runtime::drop` waits for; a host that must exit on time uses
+    /// `shutdown_timeout` or `shutdown_background`.
+    #[cfg(feature = "tokio")]
+    async fn evaluate_snapshot(&self, snapshot: JsonValue) -> Verdict {
+        let Ok(handle) = tokio::runtime::Handle::try_current() else {
+            return self.runtime.runtime().evaluate(&snapshot).verdict;
+        };
+        let runtime = self.runtime.shared_runtime();
+        match handle
+            .spawn_blocking(move || runtime.evaluate(&snapshot).verdict)
+            .await
+        {
+            Ok(verdict) => verdict,
+            // The engine panicked on the worker. Raise it here so the
+            // emitter's panic isolation records
+            // `host_error:interceptor_failed`, as it would for an inline
+            // panic. The interceptor mints no reason of its own for this:
+            // the reserved-reason registry has none for a failed worker.
+            Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+            // The runtime is shutting down and dropped the task before it
+            // ran. Same treatment: the emitter catches the panic and fails
+            // closed.
+            Err(_) => panic!("ACS evaluation worker was cancelled by runtime shutdown"),
+        }
+    }
+
+    #[cfg(not(feature = "tokio"))]
+    async fn evaluate_snapshot(&self, snapshot: JsonValue) -> Verdict {
+        self.runtime.runtime().evaluate(&snapshot).verdict
+    }
 }
 
 #[async_trait]
 impl Interceptor for AcsInterceptor {
     async fn intercept(&self, context: &AgentContext) -> Verdict {
         let snapshot = JsonValue::Object(context.clone());
-        self.runtime.runtime().evaluate(&snapshot).verdict
+        self.evaluate_snapshot(snapshot).await
     }
 
     fn name(&self) -> Option<String> {

@@ -4,6 +4,7 @@
 // agent-hooks verdicts, fail-closed on every failure path, and the
 // interceptor registers cleanly with an agent-hooks emitter.
 
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using AgentHooks;
 using Xunit;
@@ -106,6 +107,92 @@ public sealed class AcsInterceptorTests
         var ex = Assert.Throws<AgentControlSpecNativeException>(
             () => AcsInterceptor.FromPath("/nonexistent/manifest.yaml"));
         Assert.Contains("manifest", ex.Message);
+    }
+
+    // A custom policy answered by a host dispatcher: nothing is read from
+    // disk during evaluation, so the directory can go once the interceptor
+    // is built.
+    private static string WriteBlockingManifest(string dir)
+    {
+        var manifest = Path.Combine(dir, "manifest.yaml");
+        File.WriteAllText(manifest, """
+            agent_control_specification_version: "0.4.0-alpha.1"
+            policies:
+              gate:
+                type: custom
+                adapter: host
+            intervention_points:
+              input:
+                policy_target: "$.input"
+                policy:
+                  id: gate
+            """);
+        return manifest;
+    }
+
+    [Fact]
+    public async Task CancellationStopsTheWaitNotTheEvaluation()
+    {
+        // The token ends the caller's wait. It cannot reach into native
+        // code, so the dispatcher the engine is inside keeps running, the
+        // interceptor stays alive under it, and the call finishes once the
+        // dispatcher returns.
+        var dir = Directory.CreateTempSubdirectory("acs-cancel").FullName;
+        try
+        {
+            using var inDispatcher = new ManualResetEventSlim();
+            using var release = new ManualResetEventSlim();
+            using var finished = new ManualResetEventSlim();
+            var calls = 0;
+            var interceptor = AcsHostInterceptor.FromPath(
+                WriteBlockingManifest(dir),
+                policy: _ =>
+                {
+                    Interlocked.Increment(ref calls);
+                    inDispatcher.Set();
+                    release.Wait(TimeSpan.FromSeconds(10));
+                    finished.Set();
+                    return """{"decision":"allow"}""";
+                });
+            var ctx = Builder().Input("hello");
+
+            // Cancel only once the dispatcher is known to be blocked, so
+            // the test measures the wait ending and not a work item that
+            // never started.
+            using var cts = new CancellationTokenSource();
+            var call = interceptor.InterceptAsync(ctx, cts.Token).AsTask();
+            Assert.True(inDispatcher.Wait(TimeSpan.FromSeconds(10)), "the dispatcher never ran");
+            var sw = Stopwatch.StartNew();
+            cts.Cancel();
+            var cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => call);
+            sw.Stop();
+
+            Assert.Equal(cts.Token, cancelled.CancellationToken);
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"cancellation took {sw.Elapsed}");
+            Assert.False(finished.IsSet, "the dispatcher returned before the token fired");
+
+            // A token already cancelled never reaches the engine.
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await interceptor.InterceptAsync(ctx, new CancellationToken(canceled: true)));
+            Assert.Equal(1, Volatile.Read(ref calls));
+
+            release.Set();
+            Assert.True(finished.Wait(TimeSpan.FromSeconds(10)), "the abandoned call did not finish");
+            interceptor.Dispose();
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void MaxConcurrencyMustBeAtLeastOne()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => AcsInterceptor.FromPath(Manifest, maxConcurrency: 0));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => AcsHostInterceptor.FromPath(Manifest, maxConcurrency: -1));
     }
 
     [Fact]

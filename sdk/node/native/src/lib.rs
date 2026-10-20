@@ -23,16 +23,26 @@ use agent_control_spec::{
     PreparedPolicyInvocation, Runtime, RuntimeError, SegmentOutcome, StreamError, StreamSession,
     StreamSourceType, StreamSpan, StreamTrack, SUPPORTED_VERSIONS,
 };
-use napi::bindgen_prelude::{External, FnArgs, FunctionRef, Utf16String};
-use napi::Env;
+use napi::bindgen_prelude::{
+    CallbackContext, External, FnArgs, FunctionRef, JsValuesTupleIntoVec, Null, Object, PromiseRaw,
+    Unknown, Utf16String,
+};
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::{Env, JsValue, Status};
 use napi_derive::napi;
 use serde_json::Value;
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::panic::AssertUnwindSafe;
+use std::sync::{mpsc, Arc, Mutex};
 
+/// Handle to one runtime.
+///
+/// The runtime is shared, not owned: every `intercept_async` call clones
+/// the `Arc` into its task, so an evaluation still running on a worker
+/// keeps the engine alive after JS has dropped the handle.
 pub struct Handle {
-    runtime: Runtime,
+    runtime: Arc<Runtime>,
 }
 
 /// Handle to one activated policy version.
@@ -69,27 +79,22 @@ fn decode(what: &str, value: &Utf16String) -> napi::Result<String> {
 // ---------------------------------------------------------------------
 // Host dispatcher plumbing (annotator, policy, telemetry).
 //
-// The engine calls a dispatcher SYNCHRONOUSLY from inside its
-// evaluation, on whichever thread called into it. Every napi entry
-// point that drives evaluation (`intercept`, `policy_evaluate`) runs
-// on the JS thread, so a callback fired inside the engine is on the
-// same JS thread as the caller and can call the JS function directly
-// through a `Function` handle. That handle is scope-bound, so we hold a
-// `FunctionRef` (Send + Sync) and `borrow_back` it against the current
-// napi `Env` when the engine asks. The env is stored in a thread-local
-// set by each entry point for the duration of the call, so a dispatcher
-// invoked from a different thread errors out rather than reaching into
-// V8 off-thread.
-//
-// A ThreadsafeFunction would be wrong here: it dispatches ASYNCHRONOUSLY
-// to the JS thread, which deadlocks when the JS thread is already
-// blocked in the engine call that produced the callback.
+// The engine calls a dispatcher synchronously from inside its
+// evaluation, on whichever thread runs the evaluation. On the JS
+// thread (`intercept`, `policy_evaluate`) the entry point publishes its
+// napi `Env` in a thread-local and the dispatcher calls the JS function
+// directly; a ThreadsafeFunction cannot serve that path, since it
+// queues the call for the JS thread, which is blocked inside the
+// engine. On an evaluation thread (`intercept_async`) no env exists, so
+// the dispatcher posts the call through a ThreadsafeFunction and blocks
+// on a channel until the JS thread, which is free, answers. One
+// dispatcher serves both entry points; the published env decides.
 // ---------------------------------------------------------------------
 
 thread_local! {
     // Set only while a napi entry point that drives engine evaluation
-    // is on the stack. A dispatcher invoked with no env available is
-    // treated as a host failure so the engine fails closed.
+    // on the JS thread is on the stack. Null on an evaluation thread,
+    // which sends a host function call through its threadsafe path.
     static CURRENT_ENV: Cell<napi::sys::napi_env> =
         const { Cell::new(std::ptr::null_mut()) };
 }
@@ -117,26 +122,190 @@ impl Drop for EnvScope {
     }
 }
 
-fn with_current_env<T>(
-    what: &str,
-    kind: fn(String) -> RuntimeError,
-    f: impl FnOnce(&Env) -> Result<T, RuntimeError>,
-) -> Result<T, RuntimeError> {
-    let raw = CURRENT_ENV.with(|c| c.get());
-    if raw.is_null() {
-        return Err(kind(format!(
-            "host {what} was invoked without a live napi env; this dispatcher can only be \
-             called from a napi entry point on the JS thread"
+/// What a host function answered: the UTF-16 code units of its string
+/// result, or the text of the failure. The surrogate check and the JSON
+/// parse stay with the dispatcher that knows which `runtime_error:*`
+/// kind the failure maps to.
+type HostAnswer = Result<Utf16String, String>;
+
+/// A host JS function the engine can reach from either thread it runs on.
+struct HostFunction<Args: JsValuesTupleIntoVec + 'static> {
+    /// Borrowed back against the published env on the JS thread.
+    direct: FunctionRef<Args, Unknown<'static>>,
+    /// Posted to the JS thread from an evaluation thread. Weak, so
+    /// holding a handle does not keep the Node process alive; the
+    /// pending promise already keeps the loop alive while an evaluation
+    /// is in flight.
+    threadsafe: ThreadsafeFunction<Args, Unknown<'static>, Args, Status, false, true>,
+    /// The JS thread, recorded at construction. A call that reaches this
+    /// function on that thread with no env published cannot be posted:
+    /// the thread would wait on itself. It fails closed instead.
+    js_thread: std::thread::ThreadId,
+}
+
+impl<Args: JsValuesTupleIntoVec + 'static> HostFunction<Args> {
+    fn new(env: &Env, direct: FunctionRef<Args, Unknown<'static>>) -> napi::Result<Self> {
+        let threadsafe = direct
+            .borrow_back(env)?
+            .build_threadsafe_function::<Args>()
+            .weak::<true>()
+            .build()?;
+        Ok(Self {
+            direct,
+            threadsafe,
+            js_thread: std::thread::current().id(),
+        })
+    }
+
+    /// Call the function with `args` and wait for its string result.
+    /// `what` names the function in failure text.
+    fn call(&self, what: &str, args: Args) -> HostAnswer {
+        let raw = CURRENT_ENV.with(|c| c.get());
+        if raw.is_null() {
+            if std::thread::current().id() == self.js_thread {
+                return Err(format!(
+                    "host {what} was reached on the JS thread outside an evaluation entry point"
+                ));
+            }
+            return self.call_from_worker(what, args);
+        }
+        // SAFETY: `raw` was captured by `EnvScope::enter` from the napi
+        // entry point currently on the stack, on this same JS thread.
+        let env = Env::from_raw(raw);
+        self.call_on_js_thread(what, &env, args)
+    }
+
+    fn call_on_js_thread(&self, what: &str, env: &Env, args: Args) -> HostAnswer {
+        let func = self
+            .direct
+            .borrow_back(env)
+            .map_err(|e| format!("reacquire host {what}: {e}"))?;
+        let value = func
+            .call(args)
+            .map_err(|e| format!("host {what} threw: {e}"))?;
+        // The JS thread is inside the engine call; nothing could run a
+        // Promise's continuation before the engine needs the answer.
+        if value
+            .is_promise()
+            .map_err(|e| format!("host {what} result: {e}"))?
+        {
+            return Err(format!(
+                "host {what} returned a Promise on the synchronous path; an async dispatcher \
+                 needs intercept(), not interceptSync() or evaluate()"
+            ));
+        }
+        string_answer(what, &value)
+    }
+
+    fn call_from_worker(&self, what: &str, args: Args) -> HostAnswer {
+        let (tx, rx) = mpsc::channel::<HostAnswer>();
+        let name = what.to_string();
+        let status = self.threadsafe.call_with_return_value(
+            args,
+            ThreadsafeFunctionCallMode::NonBlocking,
+            move |returned, _env| {
+                deliver(&name, returned, tx);
+                Ok(())
+            },
+        );
+        if status != Status::Ok {
+            // `Closing`: the env is tearing down and no JS will run again.
+            return Err(format!(
+                "host {what} could not be posted to the JS thread: {status:?}"
+            ));
+        }
+        // Blocks this thread until the JS thread answers. Nothing here
+        // can bound that wait: a host function that never returns or
+        // never settles holds the thread, as it would hold the JS thread
+        // on the synchronous path.
+        rx.recv()
+            .map_err(|_| format!("host {what} went away before it answered"))?
+    }
+}
+
+/// Runs on the JS thread once a posted host function has returned. Sends
+/// the answer to the waiting worker now, or when a returned Promise
+/// settles. Every path sends exactly once or drops every sender, so the
+/// worker never waits on a call that already finished.
+fn deliver(what: &str, returned: napi::Result<Unknown<'static>>, tx: mpsc::Sender<HostAnswer>) {
+    let value = match returned {
+        Ok(value) => value,
+        Err(e) => {
+            let _ = tx.send(Err(format!("host {what} threw: {e}")));
+            return;
+        }
+    };
+    match value.is_promise() {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = tx.send(string_answer(what, &value));
+            return;
+        }
+        Err(e) => {
+            let _ = tx.send(Err(format!("host {what} result: {e}")));
+            return;
+        }
+    }
+    // SAFETY: `is_promise` held, and `PromiseRaw` only wraps the value.
+    let promise = match unsafe { value.cast::<PromiseRaw<Utf16String>>() } {
+        Ok(promise) => promise,
+        Err(e) => {
+            let _ = tx.send(Err(format!("host {what} result: {e}")));
+            return;
+        }
+    };
+    let on_rejected = tx.clone();
+    let on_failure = tx.clone();
+    let fulfilled_name = what.to_string();
+    let rejected_name = what.to_string();
+    // `then` converts the settled value to a string; a non-string makes
+    // the chained promise reject, so the `catch` below sees it too.
+    let attached = promise
+        .then(move |settled: CallbackContext<Utf16String>| {
+            let _ = tx.send(Ok(settled.value));
+            Ok(Null)
+        })
+        .and_then(|chained| {
+            chained.catch(move |rejection: CallbackContext<Unknown<'_>>| {
+                let _ = on_rejected.send(Err(format!(
+                    "host {rejected_name} rejected: {}",
+                    describe(rejection.value)
+                )));
+                Ok(Null)
+            })
+        });
+    if let Err(e) = attached {
+        let _ = on_failure.send(Err(format!(
+            "host {fulfilled_name} returned a Promise that could not be awaited: {e}"
         )));
     }
-    // SAFETY: `raw` was captured by `EnvScope::enter` from the napi
-    // entry point currently on the stack, on this same JS thread.
-    let env = Env::from_raw(raw);
-    f(&env)
+}
+
+/// Text for a value JS threw or rejected with: an Error's message, else
+/// the value coerced to a string, else its kind.
+fn describe(value: Unknown<'_>) -> String {
+    let reason = napi::Error::from_unknown_without_coercion(value).reason;
+    if !reason.is_empty() {
+        return reason;
+    }
+    value
+        .coerce_to_string()
+        .and_then(|text| text.into_utf8())
+        .and_then(|text| text.into_owned())
+        .unwrap_or_else(|_| "a value with no message".to_string())
+}
+
+/// Read a host function's return value as the UTF-16 code units of its
+/// string result. A non-string fails closed.
+fn string_answer(what: &str, value: &Unknown<'_>) -> HostAnswer {
+    // SAFETY: the conversion checks the value's type and fails for a
+    // non-string instead of reading it as one.
+    unsafe { value.cast::<Utf16String>() }
+        .map_err(|e| format!("host {what} returned a non-string: {e}"))
 }
 
 struct NodeAnnotatorDispatcher {
-    func: FunctionRef<FnArgs<(String, String, String)>, Utf16String>,
+    func: HostFunction<FnArgs<(String, String, String)>>,
 }
 
 impl AnnotatorDispatcher for NodeAnnotatorDispatcher {
@@ -152,42 +321,33 @@ impl AnnotatorDispatcher for NodeAnnotatorDispatcher {
         let policy_input_json = serde_json::to_string(preliminary_policy_input).map_err(|e| {
             RuntimeError::AnnotationFailed(format!("serialize preliminary policy input: {e}"))
         })?;
-        with_current_env(
-            "annotator dispatcher",
-            RuntimeError::AnnotationFailed,
-            |env| {
-                let func = self.func.borrow_back(env).map_err(|e| {
-                    RuntimeError::AnnotationFailed(format!("reacquire annotator function: {e}"))
-                })?;
-                let raw = func
-                    .call(FnArgs {
-                        data: (
-                            annotator_name.to_string(),
-                            invocation_json,
-                            policy_input_json,
-                        ),
-                    })
-                    .map_err(|e| {
-                        RuntimeError::AnnotationFailed(format!(
-                            "host annotator dispatcher threw: {e}"
-                        ))
-                    })?;
-                // Strict: an unpaired surrogate in the result fails the
-                // dispatch closed instead of becoming U+FFFD.
-                let raw = decode("host annotator dispatcher result", &raw)
-                    .map_err(|e| RuntimeError::AnnotationFailed(e.reason))?;
-                serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
-                    RuntimeError::AnnotationFailed(format!(
-                        "host annotator dispatcher returned non-JSON: {e}"
-                    ))
-                })
-            },
-        )
+        let raw = self
+            .func
+            .call(
+                "annotator dispatcher",
+                FnArgs {
+                    data: (
+                        annotator_name.to_string(),
+                        invocation_json,
+                        policy_input_json,
+                    ),
+                },
+            )
+            .map_err(RuntimeError::AnnotationFailed)?;
+        // Strict: an unpaired surrogate in the result fails the
+        // dispatch closed instead of becoming U+FFFD.
+        let raw = decode("host annotator dispatcher result", &raw)
+            .map_err(|e| RuntimeError::AnnotationFailed(e.reason))?;
+        serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
+            RuntimeError::AnnotationFailed(format!(
+                "host annotator dispatcher returned non-JSON: {e}"
+            ))
+        })
     }
 }
 
 struct NodePolicyDispatcher {
-    func: FunctionRef<FnArgs<(String,)>, Utf16String>,
+    func: HostFunction<FnArgs<(String,)>>,
 }
 
 impl PolicyDispatcher for NodePolicyDispatcher {
@@ -195,36 +355,27 @@ impl PolicyDispatcher for NodePolicyDispatcher {
         let invocation_json = serde_json::to_string(invocation).map_err(|e| {
             RuntimeError::PolicyInvocationFailed(format!("serialize policy invocation: {e}"))
         })?;
-        with_current_env(
-            "policy dispatcher",
-            RuntimeError::PolicyInvocationFailed,
-            |env| {
-                let func = self.func.borrow_back(env).map_err(|e| {
-                    RuntimeError::PolicyInvocationFailed(format!("reacquire policy function: {e}"))
-                })?;
-                let raw = func
-                    .call(FnArgs {
-                        data: (invocation_json,),
-                    })
-                    .map_err(|e| {
-                        RuntimeError::PolicyInvocationFailed(format!(
-                            "host policy dispatcher threw: {e}"
-                        ))
-                    })?;
-                let raw = decode("host policy dispatcher result", &raw)
-                    .map_err(|e| RuntimeError::PolicyInvocationFailed(e.reason))?;
-                serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
-                    RuntimeError::PolicyInvocationFailed(format!(
-                        "host policy dispatcher returned non-JSON: {e}"
-                    ))
-                })
-            },
-        )
+        let raw = self
+            .func
+            .call(
+                "policy dispatcher",
+                FnArgs {
+                    data: (invocation_json,),
+                },
+            )
+            .map_err(RuntimeError::PolicyInvocationFailed)?;
+        let raw = decode("host policy dispatcher result", &raw)
+            .map_err(|e| RuntimeError::PolicyInvocationFailed(e.reason))?;
+        serde_json::from_str::<JsonValue>(&raw).map_err(|e| {
+            RuntimeError::PolicyInvocationFailed(format!(
+                "host policy dispatcher returned non-JSON: {e}"
+            ))
+        })
     }
 }
 
 struct NodeTelemetrySink {
-    func: FunctionRef<FnArgs<(String,)>, ()>,
+    func: HostFunction<FnArgs<(String,)>>,
 }
 
 impl TelemetrySink for NodeTelemetrySink {
@@ -233,23 +384,14 @@ impl TelemetrySink for NodeTelemetrySink {
         // `wire::telemetry_event_json`. Every binding then hands the
         // sink the same JSON, and a sink written for one language reads
         // the same fields in another. A sink cannot fail an
-        // evaluation, so every step drops on error rather than
-        // propagating.
+        // evaluation, so whatever it returns or throws is dropped. The
+        // call still waits for the sink on both paths, so the decision
+        // event reaches the host before the verdict does.
         let payload = wire::telemetry_event_json(&event);
         let Ok(json) = serde_json::to_string(&payload) else {
             return;
         };
-        let raw = CURRENT_ENV.with(|c| c.get());
-        if raw.is_null() {
-            return;
-        }
-        // SAFETY: same as `with_current_env`; the sink is called from
-        // engine code that is itself running inside a napi entry point.
-        let env = Env::from_raw(raw);
-        let Ok(func) = self.func.borrow_back(&env) else {
-            return;
-        };
-        let _: napi::Result<()> = func.call(FnArgs { data: (json,) });
+        let _ = self.func.call("telemetry sink", FnArgs { data: (json,) });
     }
 }
 
@@ -304,43 +446,76 @@ pub fn default_limits() -> napi::Result<String> {
 // Kept private so they never leak into the TS declaration; napi-derive
 // still sees the expanded types on the entry points that take them as
 // arguments (aliases are not expanded through the `#[napi]` macro).
-type NodeAnnotatorFn = FunctionRef<FnArgs<(String, String, String)>, Utf16String>;
-type NodePolicyFn = FunctionRef<FnArgs<(String,)>, Utf16String>;
-type NodeTelemetryFn = FunctionRef<FnArgs<(String,)>, ()>;
+// The return type is `Unknown` because a callback may answer with a
+// string or, on the worker path, a Promise of one; the host function
+// reads it either way.
+type NodeAnnotatorFn = FunctionRef<FnArgs<(String, String, String)>, Unknown<'static>>;
+type NodePolicyFn = FunctionRef<FnArgs<(String,)>, Unknown<'static>>;
+type NodeTelemetryFn = FunctionRef<FnArgs<(String,)>, Unknown<'static>>;
 
-fn build_annotator(dispatcher: Option<NodeAnnotatorFn>) -> Arc<dyn AnnotatorDispatcher> {
-    build_annotator_with_limits(dispatcher, Limits::default())
+fn build_annotator(
+    env: &Env,
+    dispatcher: Option<NodeAnnotatorFn>,
+) -> napi::Result<Arc<dyn AnnotatorDispatcher>> {
+    build_annotator_with_limits(env, dispatcher, Limits::default())
 }
 
 fn build_annotator_with_limits(
+    env: &Env,
     dispatcher: Option<NodeAnnotatorFn>,
     limits: Limits,
-) -> Arc<dyn AnnotatorDispatcher> {
-    match dispatcher {
-        Some(func) => Arc::new(NodeAnnotatorDispatcher { func }),
+) -> napi::Result<Arc<dyn AnnotatorDispatcher>> {
+    Ok(match dispatcher {
+        Some(func) => Arc::new(NodeAnnotatorDispatcher {
+            func: HostFunction::new(env, func)?,
+        }),
         None => default_annotator_dispatcher_with_limits(limits),
-    }
+    })
 }
 
-fn build_policy(dispatcher: Option<NodePolicyFn>) -> Arc<dyn PolicyDispatcher> {
-    build_policy_with_limits(dispatcher, Limits::default())
+fn build_policy(
+    env: &Env,
+    dispatcher: Option<NodePolicyFn>,
+) -> napi::Result<Arc<dyn PolicyDispatcher>> {
+    build_policy_with_limits(env, dispatcher, Limits::default())
 }
 
 fn build_policy_with_limits(
+    env: &Env,
     dispatcher: Option<NodePolicyFn>,
     limits: Limits,
-) -> Arc<dyn PolicyDispatcher> {
-    match dispatcher {
-        Some(func) => Arc::new(NodePolicyDispatcher { func }),
+) -> napi::Result<Arc<dyn PolicyDispatcher>> {
+    Ok(match dispatcher {
+        Some(func) => Arc::new(NodePolicyDispatcher {
+            func: HostFunction::new(env, func)?,
+        }),
         None => Arc::new(BindingPolicyDispatcher::with_limits(limits)),
-    }
+    })
 }
 
-fn build_telemetry(sink: Option<NodeTelemetryFn>) -> Arc<dyn TelemetrySink> {
-    match sink {
-        Some(func) => Arc::new(NodeTelemetrySink { func }),
+fn build_telemetry(
+    env: &Env,
+    sink: Option<NodeTelemetryFn>,
+) -> napi::Result<Arc<dyn TelemetrySink>> {
+    Ok(match sink {
+        Some(func) => Arc::new(NodeTelemetrySink {
+            func: HostFunction::new(env, func)?,
+        }),
         None => Arc::new(NoopTelemetrySink),
+    })
+}
+
+/// Decode `context_json` and require a JSON object. Runs on the JS
+/// thread for every evaluation entry point, so a boundary problem throws
+/// synchronously whichever one the caller used.
+fn context_snapshot(context_json: &Utf16String) -> napi::Result<Value> {
+    let context_json = decode("context_json", context_json)?;
+    let snapshot: Value = serde_json::from_str(&context_json)
+        .map_err(|e| err(format!("context_json does not parse: {e}")))?;
+    if !snapshot.is_object() {
+        return Err(err("context_json must be a JSON object".to_string()));
     }
+    Ok(snapshot)
 }
 
 /// Build a runtime handle from a manifest path using the zero-config
@@ -356,7 +531,9 @@ pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Hand
         Arc::new(BindingPolicyDispatcher::new()),
     )
     .map_err(|e| err(format!("{e}")))?;
-    Ok(External::new(Handle { runtime }))
+    Ok(External::new(Handle {
+        runtime: Arc::new(runtime),
+    }))
 }
 
 /// Build a runtime handle from a manifest path, optionally overriding
@@ -378,18 +555,24 @@ pub fn interceptor_new(manifest_path: Utf16String) -> napi::Result<External<Hand
 /// and the bundled dispatchers alike. A field present but not a
 /// non-negative integer is a hard ERROR, not a silently-kept default.
 ///
-/// Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
-/// engine's evaluation. A callback that throws surfaces as a fail-closed
+/// Callbacks run on the JS thread. Under `intercept` and
+/// `policy_evaluate` the engine calls them synchronously from inside
+/// the evaluation and they must return a string. Under
+/// `intercept_async` the evaluation runs on a thread of its own, the
+/// call is posted to the JS thread, and a callback may return a string
+/// or a Promise of one. A callback that throws, rejects, or returns a
+/// Promise on the synchronous path surfaces as a fail-closed
 /// `runtime_error:*` deny (annotator → `annotation_failed`, policy →
 /// `policy_invocation_failed`) rather than silently reading as "no
 /// annotation".
 #[napi]
 #[allow(clippy::type_complexity)]
 pub fn interceptor_new_with_hooks(
+    env: Env,
     manifest_path: Utf16String,
-    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Utf16String>>,
-    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Utf16String>>,
-    telemetry_sink: Option<FunctionRef<FnArgs<(String,)>, ()>>,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Unknown<'static>>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Unknown<'static>>>,
+    telemetry_sink: Option<FunctionRef<FnArgs<(String,)>, Unknown<'static>>>,
     perf_telemetry: Option<Utf16String>,
     limits_json: Option<Utf16String>,
 ) -> napi::Result<External<Handle>> {
@@ -400,9 +583,12 @@ pub fn interceptor_new_with_hooks(
     // and the URL caps apply while the `extends` chain is resolved.
     let manifest =
         Manifest::from_path_with_limits(&manifest_path, limits).map_err(|e| err(format!("{e}")))?;
-    let annotations = build_annotator_with_limits(annotator_dispatcher, limits);
-    let policy = build_policy_with_limits(policy_dispatcher, limits);
-    let telemetry = build_telemetry(telemetry_sink);
+    let annotations = build_annotator_with_limits(&env, annotator_dispatcher, limits)?;
+    let policy = build_policy_with_limits(&env, policy_dispatcher, limits)?;
+    let telemetry = build_telemetry(&env, telemetry_sink)?;
+    // Construction runs on the JS thread; should the engine ever reach a
+    // host callback while building, the direct path is the right one.
+    let _scope = EnvScope::enter(&env);
     let runtime = Runtime::with_telemetry_perf_and_limits(
         manifest,
         annotations,
@@ -412,29 +598,87 @@ pub fn interceptor_new_with_hooks(
         limits,
     )
     .map_err(|e| err(format!("{e}")))?;
-    Ok(External::new(Handle { runtime }))
+    Ok(External::new(Handle {
+        runtime: Arc::new(runtime),
+    }))
 }
 
-/// Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) and
-/// return the verdict as wire JSON.
+/// Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) on
+/// the calling JS thread and return the verdict as wire JSON.
+///
+/// The call blocks the JS thread until the engine returns, so no timer
+/// can preempt it. `intercept_async` is the preemptable entry point.
 #[napi]
 pub fn intercept(
     env: Env,
     handle: &External<Handle>,
     context_json: Utf16String,
 ) -> napi::Result<String> {
-    let context_json = decode("context_json", &context_json)?;
-    let snapshot: Value = serde_json::from_str(&context_json)
-        .map_err(|e| err(format!("context_json does not parse: {e}")))?;
-    if !snapshot.is_object() {
-        return Err(err("context_json must be a JSON object".to_string()));
-    }
+    let snapshot = context_snapshot(&context_json)?;
     // The engine may call a host dispatcher synchronously from inside
     // `evaluate`; the scope publishes the current napi env for that
     // callback and is torn down before we return.
     let _scope = EnvScope::enter(&env);
     let verdict = handle.runtime.evaluate(&snapshot).verdict;
     serde_json::to_string(&verdict).map_err(|e| err(format!("verdict serialization failed: {e}")))
+}
+
+/// Evaluate one agent context on a thread of its own and resolve the
+/// verdict as wire JSON.
+///
+/// The context is decoded and checked here, on the JS thread, so a
+/// boundary problem throws synchronously as it does for `intercept`.
+/// Evaluation then runs off the JS thread, which stays free to run
+/// timers and host callbacks, so an agent-hooks emitter timeout can
+/// preempt a slow evaluation. The promise rejects only if the engine
+/// panics or no thread could be started; every evaluation failure is a
+/// fail-closed `deny` verdict.
+///
+/// The thread is the binding's own, not a libuv worker. A hung
+/// dispatcher then holds one thread rather than a share of the pool
+/// that fs, dns and zlib use, and `process.exit()` does not wait for
+/// it, as it would for a worker. Abandoning the promise does not stop
+/// the evaluation; the pending promise keeps the process alive until
+/// the engine returns.
+#[napi(ts_return_type = "Promise<string>")]
+pub fn intercept_async<'env>(
+    env: &'env Env,
+    handle: &External<Handle>,
+    context_json: Utf16String,
+) -> napi::Result<Object<'env>> {
+    let snapshot = context_snapshot(&context_json)?;
+    let (deferred, promise) = env.create_deferred::<String, _>()?;
+    let runtime = Arc::clone(&handle.runtime);
+    // Clones of a deferred share one promise: the first to settle wins
+    // and the other is a no-op. This clone settles it if no thread
+    // could be started, since the closure, and the deferred inside it,
+    // are dropped unsettled in that case.
+    let unstarted = deferred.clone();
+    let spawned = std::thread::Builder::new()
+        .name("acs-evaluation".to_string())
+        .spawn(move || {
+            // No napi env is published on this thread, so host
+            // dispatchers take their threadsafe path. The engine turns
+            // every evaluation failure, including a panicking
+            // dispatcher, into a fail-closed deny; a panic that still
+            // escapes rejects the promise, which the emitter records as
+            // `host_error:interceptor_failed`.
+            let outcome =
+                std::panic::catch_unwind(AssertUnwindSafe(|| runtime.evaluate(&snapshot).verdict))
+                    .map_err(|_| err("engine panicked during evaluation".to_string()))
+                    .and_then(|verdict| {
+                        serde_json::to_string(&verdict)
+                            .map_err(|e| err(format!("verdict serialization failed: {e}")))
+                    });
+            match outcome {
+                Ok(wire) => deferred.resolve(move |_env: Env| Ok(wire)),
+                Err(error) => deferred.reject(error),
+            }
+        });
+    if let Err(e) = spawned {
+        unstarted.reject(err(format!("could not start an evaluation thread: {e}")));
+    }
+    Ok(promise)
 }
 
 // ---------------------------------------------------------------------
@@ -511,18 +755,23 @@ pub fn policy_activate_from_memory(
 
 /// Activate the manifest at `manifest_path` against host-supplied
 /// dispatchers. See `interceptor_new_with_hooks` for the callback
-/// contract.
+/// contract; `policy_evaluate` is the synchronous path, so these
+/// callbacks must return a string.
 #[napi]
 #[allow(clippy::type_complexity)]
 pub fn policy_activate_with_hooks(
+    env: Env,
     manifest_path: Utf16String,
-    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Utf16String>>,
-    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Utf16String>>,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Unknown<'static>>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Unknown<'static>>>,
 ) -> napi::Result<External<PolicyHandle>> {
     let manifest_path = decode("manifest_path", &manifest_path)?;
     let manifest = Manifest::from_path(&manifest_path).map_err(|e| err(format!("{e}")))?;
-    let annotations = build_annotator(annotator_dispatcher);
-    let policy = build_policy(policy_dispatcher);
+    let annotations = build_annotator(&env, annotator_dispatcher)?;
+    let policy = build_policy(&env, policy_dispatcher)?;
+    // Activation warms policies on the JS thread; a dispatcher reached
+    // while warming takes the direct path.
+    let _scope = EnvScope::enter(&env);
     let handle = ActivatedPolicy::activate_with(manifest, annotations, policy)
         .map_err(|e| err(format!("{e}")))?;
     Ok(External::new(PolicyHandle { policy: handle }))
@@ -533,17 +782,19 @@ pub fn policy_activate_with_hooks(
 #[napi]
 #[allow(clippy::type_complexity)]
 pub fn policy_activate_from_memory_with_hooks(
+    env: Env,
     manifest_yaml: Utf16String,
     bundles_json: Utf16String,
-    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Utf16String>>,
-    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Utf16String>>,
+    annotator_dispatcher: Option<FunctionRef<FnArgs<(String, String, String)>, Unknown<'static>>>,
+    policy_dispatcher: Option<FunctionRef<FnArgs<(String,)>, Unknown<'static>>>,
 ) -> napi::Result<External<PolicyHandle>> {
     let manifest_yaml = decode("manifest_yaml", &manifest_yaml)?;
     let bundles_json = decode("bundles_json", &bundles_json)?;
     let bundles: BTreeMap<String, InMemoryRegoBundle> = serde_json::from_str(&bundles_json)
         .map_err(|e| err(format!("bundles_json does not parse: {e}")))?;
-    let annotations = build_annotator(annotator_dispatcher);
-    let policy = build_policy(policy_dispatcher);
+    let annotations = build_annotator(&env, annotator_dispatcher)?;
+    let policy = build_policy(&env, policy_dispatcher)?;
+    let _scope = EnvScope::enter(&env);
     let handle =
         ActivatedPolicy::activate_from_memory_with(&manifest_yaml, bundles, annotations, policy)
             .map_err(|e| err(format!("{e}")))?;
@@ -572,12 +823,7 @@ pub fn policy_evaluate(
     let point: InterceptionPoint = point_raw
         .parse()
         .map_err(|_| err(format!("unknown intervention point '{point_raw}'")))?;
-    let context_json = decode("context_json", &context_json)?;
-    let snapshot: Value = serde_json::from_str(&context_json)
-        .map_err(|e| err(format!("context_json does not parse: {e}")))?;
-    if !snapshot.is_object() {
-        return Err(err("context_json must be a JSON object".to_string()));
-    }
+    let snapshot = context_snapshot(&context_json)?;
     let _scope = EnvScope::enter(&env);
     let verdict = handle.policy.evaluate(point, snapshot).verdict;
     serde_json::to_string(&verdict).map_err(|e| err(format!("verdict serialization failed: {e}")))

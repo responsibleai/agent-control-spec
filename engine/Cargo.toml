@@ -60,6 +60,18 @@ perspective = ["default-dispatchers"]
 llama_guard = ["default-dispatchers"]
 lakera_guard = ["default-dispatchers"]
 auto = ["default-dispatchers"]
+# `tokio` lets the agent-hooks emitter's timeout bound an evaluation:
+# `AcsInterceptor::intercept` runs the engine on
+# `tokio::task::spawn_blocking` whenever a tokio runtime is on the calling
+# thread, so the future yields and the emitter's `tokio::time::timeout`
+# can fire, and the feature turns on `agent-hooks-sdk/tokio-timeout`,
+# which is what makes the emitter enforce `set_timeout` at all. An
+# evaluation the emitter abandons keeps its blocking thread until the
+# dispatcher returns, and `Runtime::drop` waits for it, so a host that
+# must exit on time shuts its runtime down with `shutdown_timeout` or
+# `shutdown_background`. Off by default: the FFI, Node and Python crates
+# keep a tokio-free build and evaluate inline.
+tokio = ["dep:tokio", "agent-hooks-sdk/tokio-timeout"]
 
 [dependencies]
 agent-hooks-sdk = "0.1.0-beta.2"
@@ -78,6 +90,7 @@ cedar-policy = { version = "4", optional = true }
 # compiled AST marker with the resolved Cargo.lock version before any release.
 regorus = { version = "0.12", features = ["arc"], optional = true }
 tempfile = { version = "3.20", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
 
 [dev-dependencies]
 serde-saphyr = { version = "1.2", default-features = false, features = ["serialize", "deserialize"] }

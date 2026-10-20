@@ -174,9 +174,10 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     // them only after the native interceptor is freed. Dropping them
     // earlier is the classic way to turn a working callback into an
     // intermittent crash under load.
-    private readonly InterceptorHandle _handle;
+    private readonly Evaluation _evaluation;
 
-    private AcsHostInterceptor(InterceptorHandle handle) => _handle = handle;
+    private AcsHostInterceptor(InterceptorHandle handle, int maxConcurrency) =>
+        _evaluation = new Evaluation(handle, this, maxConcurrency);
 
     private delegate IntPtr NativeAnnotator(
         IntPtr ctx, IntPtr name, IntPtr invocation, IntPtr input, out IntPtr errOut);
@@ -204,14 +205,20 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     /// (the <c>extends</c> chain), evaluation and the bundled
     /// dispatchers alike.
     /// </param>
+    /// <param name="maxConcurrency">
+    /// Evaluations allowed in flight at once; a call past the cap is denied
+    /// without evaluation. Must be at least 1.
+    /// </param>
     public static AcsHostInterceptor FromPath(
         string manifestPath,
         AnnotatorDispatcher? annotator = null,
         PolicyDispatcher? policy = null,
         TelemetrySink? telemetry = null,
         PerfTelemetry perfTelemetry = PerfTelemetry.Off,
-        string? limits = null)
+        string? limits = null,
+        int maxConcurrency = AcsInterceptor.DefaultMaxConcurrency)
     {
+        Evaluation.CheckMaxConcurrency(maxConcurrency);
         var pinned = new List<Delegate>();
 
         // Freed by the native side through this callback, so the string a
@@ -291,18 +298,21 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
             limits);
 
         handle.Pin(pinned);
-        return new AcsHostInterceptor(handle);
+        return new AcsHostInterceptor(handle, maxConcurrency);
     }
 
     /// <summary>Evaluate one agent context.</summary>
-    public ValueTask<Verdict> InterceptAsync(AgentContext context, CancellationToken ct = default)
-    {
-        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
-        var wire = Native.Intercept(_handle, context.Json.ToJsonString());
-        var parsed = System.Text.Json.Nodes.JsonNode.Parse(wire) as System.Text.Json.Nodes.JsonObject
-            ?? throw new AgentControlSpecNativeException("engine returned a non-object verdict");
-        return ValueTask.FromResult(Verdict.FromWire(parsed));
-    }
+    /// <remarks>
+    /// The engine and the host delegates run on a thread of their own, so
+    /// a delegate must be safe to call from any thread, and an awaiting
+    /// agent-hooks emitter can enforce its timeout. Cancelling
+    /// <paramref name="ct"/> ends the wait, not the engine call or the
+    /// delegate it is inside; once <c>maxConcurrency</c> evaluations are
+    /// in flight, further calls return a deny with
+    /// <c>runtime_error:acs_async_capacity_exceeded</c> without evaluating.
+    /// </remarks>
+    public ValueTask<Verdict> InterceptAsync(AgentContext context, CancellationToken ct = default) =>
+        _evaluation.InterceptAsync(context, ct);
 
     /// <summary>
     /// Marks the interceptor closed. A call already in flight on another
@@ -310,5 +320,5 @@ public sealed class AcsHostInterceptor : IInterceptor, IDisposable
     /// returns, and the callback delegates are released after it. Later
     /// calls throw <see cref="ObjectDisposedException"/>.
     /// </summary>
-    public void Dispose() => _handle.Dispose();
+    public void Dispose() => _evaluation.Dispose();
 }

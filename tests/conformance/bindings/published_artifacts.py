@@ -244,7 +244,7 @@ const fs = require('fs');
 const M = %s;
 function hook(d) {
   const i = acs.AcsInterceptor.fromPath(M, { annotatorDispatcher: d });
-  const v = i.intercept({ interception_point: 'input', input: 'hi' });
+  const v = i.interceptSync({ interception_point: 'input', input: 'hi' });
   return [String(v.decision).toLowerCase(), v.reason ?? null];
 }
 let calls = 0;
@@ -268,7 +268,7 @@ console.log(JSON.stringify({
   artifacts_bad_rego: acs.validateArtifacts(%s, %s).length,
   limits_capped_denies: String(acs.AcsInterceptor
     .fromPath(M, { annotatorDispatcher: () => ({ severity: 1 }), limits: %s })
-    .intercept({ interception_point: 'input', input: %s }).decision).toLowerCase() === 'deny',
+    .interceptSync({ interception_point: 'input', input: %s }).decision).toLowerCase() === 'deny',
 }));
 """
 

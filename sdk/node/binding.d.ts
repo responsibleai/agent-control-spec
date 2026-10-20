@@ -25,10 +25,34 @@ export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-was
 export declare function defaultLimits(): string
 
 /**
- * Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) and
- * return the verdict as wire JSON.
+ * Evaluate one agent context (JSON object per AGENT-HOOKS-0.1 §4) on
+ * the calling JS thread and return the verdict as wire JSON.
+ *
+ * The call blocks the JS thread until the engine returns, so no timer
+ * can preempt it. `intercept_async` is the preemptable entry point.
  */
 export declare function intercept(handle: ExternalObject<Handle>, contextJson: string): string
+
+/**
+ * Evaluate one agent context on a thread of its own and resolve the
+ * verdict as wire JSON.
+ *
+ * The context is decoded and checked here, on the JS thread, so a
+ * boundary problem throws synchronously as it does for `intercept`.
+ * Evaluation then runs off the JS thread, which stays free to run
+ * timers and host callbacks, so an agent-hooks emitter timeout can
+ * preempt a slow evaluation. The promise rejects only if the engine
+ * panics or no thread could be started; every evaluation failure is a
+ * fail-closed `deny` verdict.
+ *
+ * The thread is the binding's own, not a libuv worker. A hung
+ * dispatcher then holds one thread rather than a share of the pool
+ * that fs, dns and zlib use, and `process.exit()` does not wait for
+ * it, as it would for a worker. Abandoning the promise does not stop
+ * the evaluation; the pending promise keeps the process alive until
+ * the engine returns.
+ */
+export declare function interceptAsync(handle: ExternalObject<Handle>, contextJson: string): Promise<string>
 
 /**
  * Build a runtime handle from a manifest path using the zero-config
@@ -57,13 +81,18 @@ export declare function interceptorNew(manifestPath: string): ExternalObject<Han
  * and the bundled dispatchers alike. A field present but not a
  * non-negative integer is a hard ERROR, not a silently-kept default.
  *
- * Callbacks are called SYNCHRONOUSLY on the JS thread from inside the
- * engine's evaluation. A callback that throws surfaces as a fail-closed
+ * Callbacks run on the JS thread. Under `intercept` and
+ * `policy_evaluate` the engine calls them synchronously from inside
+ * the evaluation and they must return a string. Under
+ * `intercept_async` the evaluation runs on a thread of its own, the
+ * call is posted to the JS thread, and a callback may return a string
+ * or a Promise of one. A callback that throws, rejects, or returns a
+ * Promise on the synchronous path surfaces as a fail-closed
  * `runtime_error:*` deny (annotator → `annotation_failed`, policy →
  * `policy_invocation_failed`) rather than silently reading as "no
  * annotation".
  */
-export declare function interceptorNewWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null, telemetrySink?: ((arg0: string) => void) | undefined | null, perfTelemetry?: string | undefined | null, limitsJson?: string | undefined | null): ExternalObject<Handle>
+export declare function interceptorNewWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => unknown) | undefined | null, policyDispatcher?: ((arg0: string) => unknown) | undefined | null, telemetrySink?: ((arg0: string) => unknown) | undefined | null, perfTelemetry?: string | undefined | null, limitsJson?: string | undefined | null): ExternalObject<Handle>
 
 /**
  * Compose a chain of manifest YAML documents (outermost base first)
@@ -125,14 +154,15 @@ export declare function policyActivateFromMemory(manifestYaml: string, bundlesJs
  * Activate a manifest and its Rego from memory against host-supplied
  * dispatchers.
  */
-export declare function policyActivateFromMemoryWithHooks(manifestYaml: string, bundlesJson: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null): ExternalObject<PolicyHandle>
+export declare function policyActivateFromMemoryWithHooks(manifestYaml: string, bundlesJson: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => unknown) | undefined | null, policyDispatcher?: ((arg0: string) => unknown) | undefined | null): ExternalObject<PolicyHandle>
 
 /**
  * Activate the manifest at `manifest_path` against host-supplied
  * dispatchers. See `interceptor_new_with_hooks` for the callback
- * contract.
+ * contract; `policy_evaluate` is the synchronous path, so these
+ * callbacks must return a string.
  */
-export declare function policyActivateWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => string) | undefined | null, policyDispatcher?: ((arg0: string) => string) | undefined | null): ExternalObject<PolicyHandle>
+export declare function policyActivateWithHooks(manifestPath: string, annotatorDispatcher?: ((arg0: string, arg1: string, arg2: string) => unknown) | undefined | null, policyDispatcher?: ((arg0: string) => unknown) | undefined | null): ExternalObject<PolicyHandle>
 
 /**
  * Evaluate one intervention point against an activated policy and

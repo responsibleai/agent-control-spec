@@ -14,7 +14,6 @@
 // obligations - is defined by AGENT-HOOKS-0.1 and consumed from the
 // ResponsibleAI.AgentHooks package.
 
-using System.Text.Json.Nodes;
 using AgentHooks;
 
 namespace AgentControlSpec;
@@ -22,9 +21,17 @@ namespace AgentControlSpec;
 /// <summary>Wraps the ACS engine as an agent-hooks interceptor.</summary>
 public sealed class AcsInterceptor : IInterceptor, IDisposable
 {
-    private readonly InterceptorHandle _handle;
+    /// <summary>
+    /// Evaluations <see cref="InterceptAsync"/> may have in flight at once
+    /// unless <see cref="FromPath"/> is given another cap. The Python
+    /// async adapter uses the same default.
+    /// </summary>
+    public const int DefaultMaxConcurrency = 8;
 
-    private AcsInterceptor(InterceptorHandle handle) => _handle = handle;
+    private readonly Evaluation _evaluation;
+
+    private AcsInterceptor(InterceptorHandle handle, int maxConcurrency) =>
+        _evaluation = new Evaluation(handle, this, maxConcurrency);
 
     /// <summary>
     /// Build an interceptor from a manifest path using the zero-config
@@ -33,35 +40,52 @@ public sealed class AcsInterceptor : IInterceptor, IDisposable
     /// their embedded verdict. Custom policies require a host
     /// dispatcher and fail closed under this construction.
     /// </summary>
-    public static AcsInterceptor FromPath(string manifestPath, string? name = null)
+    /// <param name="manifestPath">Manifest to load.</param>
+    /// <param name="name">Payload-free identifier for the record's verdicts[].name, or null for the engine's.</param>
+    /// <param name="maxConcurrency">
+    /// Evaluations allowed in flight at once; a call past the cap is denied
+    /// without evaluation. Must be at least 1.
+    /// </param>
+    public static AcsInterceptor FromPath(
+        string manifestPath, string? name = null, int maxConcurrency = DefaultMaxConcurrency)
     {
-        var interceptor = new AcsInterceptor(Native.InterceptorNew(manifestPath));
+        Evaluation.CheckMaxConcurrency(maxConcurrency);
+        var interceptor = new AcsInterceptor(Native.InterceptorNew(manifestPath), maxConcurrency);
         if (name is not null)
-            Native.SetName(interceptor._handle, name);
+            Native.SetName(interceptor._evaluation.Handle, name);
         return interceptor;
     }
 
     /// <summary>Payload-free identifier for the record's verdicts[].name.</summary>
-    public string Name => Native.Name(_handle);
+    public string Name
+    {
+        get
+        {
+            _evaluation.ThrowIfDisposed();
+            return Native.Name(_evaluation.Handle);
+        }
+    }
 
     /// <summary>
     /// Evaluate one agent context. Evaluation failures return a
     /// fail-closed deny verdict (runtime_error:* reason); this method
-    /// throws only on boundary problems.
+    /// throws only on boundary problems and on cancellation.
     /// </summary>
-    public ValueTask<Verdict> InterceptAsync(AgentContext context, CancellationToken ct = default)
-    {
-        ObjectDisposedException.ThrowIf(_handle.IsClosed, this);
-        var wire = Native.Intercept(_handle, context.Json.ToJsonString());
-        var parsed = JsonNode.Parse(wire) as JsonObject
-            ?? throw new AgentControlSpecNativeException("engine returned a non-object verdict");
-        return ValueTask.FromResult(Verdict.FromWire(parsed));
-    }
+    /// <remarks>
+    /// The engine runs on a thread of its own, so an awaiting agent-hooks
+    /// emitter can enforce its timeout; cancelling <paramref name="ct"/>
+    /// ends the wait, not the engine call, which runs on until every
+    /// dispatcher returns. Once <c>maxConcurrency</c> evaluations are in
+    /// flight, further calls return a deny with
+    /// <c>runtime_error:acs_async_capacity_exceeded</c> without evaluating.
+    /// </remarks>
+    public ValueTask<Verdict> InterceptAsync(AgentContext context, CancellationToken ct = default) =>
+        _evaluation.InterceptAsync(context, ct);
 
     /// <summary>
     /// Marks the interceptor closed. A call already in flight on another
     /// thread finishes first; the native free runs when the last such call
     /// returns. Later calls throw <see cref="ObjectDisposedException"/>.
     /// </summary>
-    public void Dispose() => _handle.Dispose();
+    public void Dispose() => _evaluation.Dispose();
 }
