@@ -3,6 +3,34 @@
 ## Unreleased
 
 - Examples: the legacy example set that predates the extraction (23 manifests with their apps and policies) is removed. It targeted the earlier API and no longer loaded; the remaining examples are unchanged.
+- Node: `AcsInterceptor.intercept` runs the evaluation on a thread of its
+  own and returns a Promise, so the agent-hooks emitter timeout can
+  preempt the engine and any dispatcher that awaits, with
+  `host_error:interceptor_timeout`. Host annotator and policy dispatchers
+  may return a Promise on that path. Breaking for direct callers:
+  `intercept` returns a Promise; code that read the verdict synchronously
+  moves to `interceptSync`, which keeps the inline call. `maxConcurrency`
+  (default 8) caps in-flight evaluations, denying the rest with the
+  registered `runtime_error:acs_async_capacity_exceeded`. Part of #144.
+- .NET: `AcsInterceptor.InterceptAsync` and `AcsHostInterceptor.InterceptAsync`
+  run the engine on a thread of its own and honor the cancellation token,
+  so the agent-hooks emitter's timeout can preempt a slow or hung dispatcher
+  and fail closed on time. Cancellation ends the wait, not the engine call,
+  which runs on until its dispatchers return. Host annotator and policy
+  delegates run on that thread too, so they must be safe to call from any
+  thread. `maxConcurrency` (default 8) caps in-flight evaluations, denying
+  the rest with the registered `runtime_error:acs_async_capacity_exceeded`.
+  Part of #144.
+- The Rust `AcsInterceptor` yields to the agent-hooks emitter's timeout.
+  Behind the new `tokio` feature (off by default) `intercept` runs the
+  evaluation on `tokio::task::spawn_blocking` when a tokio runtime is on
+  the calling thread, and the feature turns on
+  `agent-hooks-sdk/tokio-timeout` so the emitter enforces `set_timeout`.
+  A dispatcher that blocks past the deadline now costs a worker thread,
+  not the emission: the record says `host_error:interceptor_timeout` on
+  time, and the evaluation already running finishes on the worker.
+  Without the feature, or outside a runtime, evaluation runs inline as
+  before. Part of #144.
 
 - Reject unknown policy-output members before typed verdict conversion. Unknown
   root, warning and transform members now fail closed with
