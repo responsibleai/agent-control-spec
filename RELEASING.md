@@ -41,8 +41,8 @@ the tag's publication set. The tag workflow does not publish the generator.
 
 4. The tag run publishes: crates.io `agent-control-spec`, PyPI
    `agent-control-spec` and optional `agent-control-spec-remote-policy`,
-   npm `@responsibleai/agent-control-spec` plus
-   four platform packages, NuGet `ResponsibleAI.AgentControlSpec`.
+   npm `@responsibleai/agent-control-spec` plus the five platform
+   packages under `sdk/node/npm/`, NuGet `ResponsibleAI.AgentControlSpec`.
    Each artifact carries the LICENSE text and a build provenance
    attestation; the npm attestation covers the exact tarballs the
    workflow publishes. A final job creates the GitHub Release for the
@@ -80,15 +80,33 @@ the tag's publication set. The tag workflow does not publish the generator.
      skips what exists. Upload steps run only for a pushed tag, so no dry run
      exercises them: read their order in `release.yml` before tagging.
 
+   Before the tag that first publishes a platform package new to npm
+   (`@responsibleai/agent-control-spec-linux-arm64-gnu` after 0.4.0-beta.1),
+   bootstrap it the way the first five packages were. npm configures a
+   trusted publisher from the package's settings page, so the package must
+   exist: publish its first version by hand from an interactive npm login
+   with 2FA (the dry run's `node-binding-<target>` artifact holds the
+   binary; copy it into `sdk/node/npm/<platform>/` and `npm publish` from
+   there). Then configure the publisher: this repository, `release.yml`, the
+   `release` environment, "Allow npm dist-tag" on (step 5). The loader's
+   publisher grants nothing to a different package. A publisher
+   configuration that has not published within two days of being created
+   expires, and the tag run skips a version that already exists, so create
+   it at most two days before the tag that publishes the next version
+   through it. The publish step uploads platform packages before the loader,
+   so a missing publisher fails there with no loader tarball uploaded; fix it
+   and re-run the failed job, which skips what exists.
+
 5. npm dist-tags. The workflow publishes every version under
    `latest`, pre-releases included, so a plain `npm install` gets the
    newest release. For a pre-release it also adds a channel tag from
    the label: `alpha` for `-alpha.N`, `beta` for `-beta.N`, `rc` for
    `-rc.N`, `next` for any other label. Stable versions carry only
-   `latest`. The channel tag relies on "Allow npm dist-tag" being enabled on the trusted publisher configuration (npmjs.com > package > Settings > Trusted Publisher) of every package, which it is today for
+   `latest`. The channel tag relies on "Allow npm dist-tag" being enabled on the trusted publisher configuration (npmjs.com > package > Settings > Trusted Publisher) of every package: the loader and each platform package under `sdk/node/npm/`. It is on today for every package already on the registry; set it when configuring the publisher of a new platform package (step 4). The packages are
 
    - `@responsibleai/agent-control-spec`
    - `@responsibleai/agent-control-spec-linux-x64-gnu`
+   - `@responsibleai/agent-control-spec-linux-arm64-gnu`
    - `@responsibleai/agent-control-spec-darwin-x64`
    - `@responsibleai/agent-control-spec-darwin-arm64`
    - `@responsibleai/agent-control-spec-win32-x64-msvc`
@@ -100,8 +118,8 @@ the tag's publication set. The tag workflow does not publish the generator.
    V=<version>
    TAG=<alpha|beta|rc|next>
    for p in agent-control-spec agent-control-spec-linux-x64-gnu \
-            agent-control-spec-darwin-x64 agent-control-spec-darwin-arm64 \
-            agent-control-spec-win32-x64-msvc; do
+            agent-control-spec-linux-arm64-gnu agent-control-spec-darwin-x64 \
+            agent-control-spec-darwin-arm64 agent-control-spec-win32-x64-msvc; do
      npm dist-tag add "@responsibleai/$p@$V" "$TAG"
    done
    ```
@@ -154,8 +172,8 @@ cargo yank --version "$V" agent-control-spec  # crates.io
 # PyPI: Manage project -> Releases -> <version> -> Options -> Yank
 #       (web interface only; twine has no yank command)
 for p in agent-control-spec agent-control-spec-linux-x64-gnu \
-         agent-control-spec-darwin-x64 agent-control-spec-darwin-arm64 \
-         agent-control-spec-win32-x64-msvc; do
+         agent-control-spec-linux-arm64-gnu agent-control-spec-darwin-x64 \
+         agent-control-spec-darwin-arm64 agent-control-spec-win32-x64-msvc; do
   npm deprecate "@responsibleai/$p@$V" "Withdrawn: <reason>. Use <fixed version>."
 done
 # NuGet: Manage package -> Listing -> untick "List in search results"

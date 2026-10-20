@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Node: the release builds a Linux arm64 (glibc) binary on an arm64
+  runner, the way the .NET package already gets `linux-arm64`, and
+  ships it as `@responsibleai/agent-control-spec-linux-arm64-gnu`, the
+  fifth platform package. The README lists what `npm install` provides:
+  the platform packages by name, the Node.js floor and the source build
+  command. No musl binary yet: `@responsibleai/agent-hooks` ships none,
+  so one here would not make an Alpine install work. Part of #138.
 - Examples: the legacy example set that predates the extraction (23 manifests with their apps and policies) is removed. It targeted the earlier API and no longer loaded; the remaining examples are unchanged.
 - Node: `AcsInterceptor.intercept` runs the evaluation on a thread of its
   own and returns a Promise, so the agent-hooks emitter timeout can

@@ -1,0 +1,28 @@
+{
+  "name": "@responsibleai/agent-control-spec-linux-arm64-gnu",
+  "version": "0.4.0-beta.1",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "agent-control-spec.linux-arm64-gnu.node",
+  "files": [
+    "agent-control-spec.linux-arm64-gnu.node",
+    "LICENSE"
+  ],
+  "description": "Prebuilt linux-arm64-gnu native binary for @responsibleai/agent-control-spec.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/responsibleai/agent-control-spec.git",
+    "directory": "sdk/node"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

@@ -15,8 +15,23 @@ A plain install gets the newest release, pre-releases included. The
 channel tags `alpha`, `beta` and `rc` exist for pinning to one line
 (`@responsibleai/agent-control-spec@beta`); or pin an exact published
 version such as `@0.4.0-beta.1`. Check what the tags resolve to with
-`npm view @responsibleai/agent-control-spec dist-tags`. The package
-pulls in `@responsibleai/agent-hooks` as a dependency.
+`npm view @responsibleai/agent-control-spec dist-tags`.
+
+What the install provides:
+
+- The loader package and one prebuilt native binary, the optional
+  dependency that matches the host:
+  - `@responsibleai/agent-control-spec-linux-x64-gnu`: Linux x64, glibc
+  - `@responsibleai/agent-control-spec-linux-arm64-gnu`: Linux arm64, glibc
+  - `@responsibleai/agent-control-spec-darwin-x64`: macOS x64
+  - `@responsibleai/agent-control-spec-darwin-arm64`: macOS arm64
+  - `@responsibleai/agent-control-spec-win32-x64-msvc`: Windows x64
+- `@responsibleai/agent-hooks` as a dependency, with binaries for the
+  same five platforms.
+- Node.js 20 or newer.
+- No musl (Alpine) binary and no source build on install. Another
+  platform builds from a checkout: `npm ci && npm run build` in
+  `sdk/node`, with a Rust toolchain installed.
 
 ## Usage
 
