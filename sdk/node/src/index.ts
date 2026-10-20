@@ -24,38 +24,44 @@ import type {
 } from "@responsibleai/agent-hooks";
 
 
+// The JSON-string shape host callbacks take on the native boundary. A
+// Promise is accepted so an async dispatcher can serve `intercept`,
+// whose evaluation runs off the JS thread and waits for it; on the
+// synchronous entry points the native side fails a Promise closed.
+type WireAnnotatorDispatcher = (
+  name: string,
+  invocationJson: string,
+  policyInputJson: string,
+) => string | Promise<string>;
+type WirePolicyDispatcher = (invocationJson: string) => string | Promise<string>;
+
 // Generated loader for the native engine binding (napi).
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const native = require("../binding.js") as {
   interceptorNew(manifestPath: string): unknown;
   interceptorNewWithHooks(
     manifestPath: string,
-    annotatorDispatcher?:
-      | ((name: string, invocationJson: string, policyInputJson: string) => string)
-      | null,
-    policyDispatcher?: ((invocationJson: string) => string) | null,
+    annotatorDispatcher?: WireAnnotatorDispatcher | null,
+    policyDispatcher?: WirePolicyDispatcher | null,
     telemetrySink?: ((eventJson: string) => void) | null,
     perfTelemetry?: string | null,
     limitsJson?: string | null,
   ): unknown;
   intercept(handle: unknown, contextJson: string): string;
+  interceptAsync(handle: unknown, contextJson: string): Promise<string>;
   defaultLimits(): string;
   policyActivate(manifestPath: string): unknown;
   policyActivateFromMemory(manifestYaml: string, bundlesJson: string): unknown;
   policyActivateWithHooks(
     manifestPath: string,
-    annotatorDispatcher?:
-      | ((name: string, invocationJson: string, policyInputJson: string) => string)
-      | null,
-    policyDispatcher?: ((invocationJson: string) => string) | null,
+    annotatorDispatcher?: WireAnnotatorDispatcher | null,
+    policyDispatcher?: WirePolicyDispatcher | null,
   ): unknown;
   policyActivateFromMemoryWithHooks(
     manifestYaml: string,
     bundlesJson: string,
-    annotatorDispatcher?:
-      | ((name: string, invocationJson: string, policyInputJson: string) => string)
-      | null,
-    policyDispatcher?: ((invocationJson: string) => string) | null,
+    annotatorDispatcher?: WireAnnotatorDispatcher | null,
+    policyDispatcher?: WirePolicyDispatcher | null,
   ): unknown;
   policyEvaluate(handle: unknown, point: string, contextJson: string): string;
   policyInterventionPoints(handle: unknown): string[];
@@ -109,13 +115,6 @@ export type {
 // telemetry sink, perf telemetry level. The zero-config path stays
 // unchanged; a host that supplies any of these hooks gets the same
 // engine construction the Rust and .NET/FFI SDKs already expose.
-//
-// The dispatcher callbacks are called SYNCHRONOUSLY on the JS thread
-// from inside the engine's evaluation, which is legal here because the
-// engine call itself is driven by a napi function running on the JS
-// thread. A dispatcher that throws surfaces as a fail-closed
-// `runtime_error:*` deny; the engine never treats a thrown callback as
-// "no annotation".
 // ---------------------------------------------------------------------
 
 /**
@@ -184,11 +183,14 @@ export interface TelemetryEvent {
 /**
  * A host annotator dispatcher.
  *
- * Called synchronously from inside `intercept`/`evaluate`; return a
- * value the manifest's policy input merge shape expects (typically a
- * JSON object per the annotator's contract). Throwing fails the
- * surrounding evaluation closed with a `runtime_error:annotation_failed`
- * deny.
+ * Return a value the manifest's policy input merge shape expects
+ * (typically a JSON object per the annotator's contract), or a Promise
+ * of one. Under {@link AcsInterceptor.intercept} the engine waits for
+ * the Promise to settle. Under {@link AcsInterceptor.interceptSync} and
+ * {@link ActivatedPolicy.evaluate} the dispatcher is called
+ * synchronously on the JS thread, and a Promise returned there fails
+ * the evaluation closed. Throwing or rejecting fails the surrounding
+ * evaluation closed with a `runtime_error:annotation_failed` deny.
  *
  * With manifest contract `0.5.0-alpha.1`, `policyInput.annotations`
  * holds the full outputs of direct `needs` dependencies only, or is
@@ -203,24 +205,28 @@ export type AnnotatorDispatcher = (
   name: string,
   invocation: AnnotatorInvocation,
   policyInput: JsonValue,
-) => JsonValue;
+) => JsonValue | Promise<JsonValue>;
 
 /**
  * A host policy dispatcher.
  *
- * Called synchronously; return the policy output as JSON per the
- * engine's expected shape (a `decision` string plus any extras). A
- * throw fails the evaluation closed with a
- * `runtime_error:policy_invocation_failed` deny.
+ * Return the policy output as JSON per the engine's expected shape (a
+ * `decision` string plus any extras), or a Promise of it. The same
+ * thread rules as {@link AnnotatorDispatcher} apply: a Promise is
+ * awaited under {@link AcsInterceptor.intercept} and fails closed on
+ * the synchronous entry points. A throw or rejection fails the
+ * evaluation closed with a `runtime_error:policy_invocation_failed`
+ * deny.
  */
-export type PolicyDispatcher = (invocation: PolicyInvocation) => JsonValue;
+export type PolicyDispatcher = (invocation: PolicyInvocation) => JsonValue | Promise<JsonValue>;
 
 /**
  * A telemetry sink.
  *
- * Called synchronously with each event the engine emits at the
- * configured perf level. A sink cannot fail an evaluation; a throw
- * from the sink is swallowed to preserve that guarantee.
+ * Called on the JS thread with each event the engine emits at the
+ * configured perf level, before the evaluation that produced the event
+ * returns. A sink cannot fail an evaluation; a throw from the sink is
+ * swallowed to preserve that guarantee.
  */
 export type TelemetrySink = (event: TelemetryEvent) => void;
 
@@ -311,12 +317,28 @@ export interface HostHooks {
 
 // --- Bridges between the object-oriented TS surface and the JSON --------
 // string wire the native binding uses. Keeping the parse/serialize step
-// here means the native dispatcher signatures stay simple `String →
-// String` and every host callback sees objects, not text.
+// here means the native dispatcher signatures stay strings in, a string
+// (or a Promise of one) out, and every host callback sees objects, not
+// text.
 
-function wrapAnnotatorDispatcher(
-  dispatcher: AnnotatorDispatcher,
-): (name: string, invocationJson: string, policyInputJson: string) => string {
+function isThenable(value: unknown): value is PromiseLike<JsonValue> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+// Serialize a dispatcher's result now, or once its Promise settles. A
+// rejection stays a rejection: the native side reads it as the
+// dispatcher failing and denies closed.
+function serializeResult(result: JsonValue | Promise<JsonValue>): string | Promise<string> {
+  return isThenable(result)
+    ? Promise.resolve(result).then((value) => JSON.stringify(value ?? null))
+    : JSON.stringify(result ?? null);
+}
+
+function wrapAnnotatorDispatcher(dispatcher: AnnotatorDispatcher): WireAnnotatorDispatcher {
   return (name, invocationJson, policyInputJson) => {
     // A parse or a throwing dispatcher must propagate as a JS exception:
     // the native binding turns that into a fail-closed
@@ -325,18 +347,14 @@ function wrapAnnotatorDispatcher(
     // undefined".
     const invocation = JSON.parse(invocationJson) as AnnotatorInvocation;
     const policyInput = JSON.parse(policyInputJson) as JsonValue;
-    const result = dispatcher(name, invocation, policyInput);
-    return JSON.stringify(result ?? null);
+    return serializeResult(dispatcher(name, invocation, policyInput));
   };
 }
 
-function wrapPolicyDispatcher(
-  dispatcher: PolicyDispatcher,
-): (invocationJson: string) => string {
+function wrapPolicyDispatcher(dispatcher: PolicyDispatcher): WirePolicyDispatcher {
   return (invocationJson) => {
     const invocation = JSON.parse(invocationJson) as PolicyInvocation;
-    const result = dispatcher(invocation);
-    return JSON.stringify(result ?? null);
+    return serializeResult(dispatcher(invocation));
   };
 }
 
@@ -366,16 +384,41 @@ function hasHostHooks(options: HostHooks): boolean {
 export interface AcsInterceptorOptions extends HostHooks {
   /** Payload-free identifier recorded on the record's `verdicts[].name`. */
   name?: string;
+  /**
+   * Evaluations {@link AcsInterceptor.intercept} may have in flight at
+   * once. Each holds a thread of its own until the engine returns, so
+   * the cap bounds what a hung dispatcher can cost. A call past the cap
+   * is denied at once with `runtime_error:acs_async_capacity_exceeded`
+   * rather than queued. Default 8, as in the Python async adapter.
+   */
+  maxConcurrency?: number;
+}
+
+const DEFAULT_MAX_CONCURRENCY = 8;
+
+// `spec/reserved-reasons.json` registers this reason (producer
+// `sdk-adapter`) for exactly this cause, and the Python async adapter
+// returns it when its worker pool is saturated. No other reason is
+// minted here: a timeout is the emitter's to record.
+function capacityExceeded(limit: number): Verdict {
+  return {
+    decision: "deny",
+    reason: "runtime_error:acs_async_capacity_exceeded",
+    message: `ACS interceptor already has ${limit} evaluation(s) in flight (maxConcurrency); this call was denied without evaluation`,
+  };
 }
 
 /** Wraps the ACS engine as an agent-hooks {@link Interceptor}. */
 export class AcsInterceptor implements Interceptor {
   readonly name: string;
   private readonly handle: unknown;
+  private readonly maxConcurrency: number;
+  private inFlight = 0;
 
-  private constructor(handle: unknown, name: string) {
+  private constructor(handle: unknown, name: string, maxConcurrency: number) {
     this.handle = handle;
     this.name = name;
+    this.maxConcurrency = maxConcurrency;
   }
 
   /**
@@ -389,16 +432,20 @@ export class AcsInterceptor implements Interceptor {
    *
    * Supply `annotatorDispatcher`, `policyDispatcher`, `telemetrySink`,
    * `perfTelemetry`, or `limits` to override the engine's extension
-   * points and resource caps. Each callback is called synchronously on
-   * the JS thread from inside `intercept`. A callback that throws
-   * surfaces as a fail-closed `runtime_error:*` deny rather than
-   * reading as "no annotation". A `limits` mapping overrides only the
-   * fields it names; the rest keep the engine's defaults, see
-   * {@link DEFAULT_LIMITS}. The caps bound manifest loading (the
-   * `extends` chain), evaluation and the bundled dispatchers alike.
+   * points and resource caps. A callback that throws or rejects surfaces
+   * as a fail-closed `runtime_error:*` deny rather than reading as "no
+   * annotation". A `limits` mapping overrides only the fields it names;
+   * the rest keep the engine's defaults, see {@link DEFAULT_LIMITS}. The
+   * caps bound manifest loading (the `extends` chain), evaluation and
+   * the bundled dispatchers alike. `maxConcurrency` caps the
+   * evaluations {@link intercept} runs at once.
    */
   static fromPath(manifestPath: string, options: AcsInterceptorOptions = {}): AcsInterceptor {
     const name = options.name ?? "acs";
+    const maxConcurrency = options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+    if (!Number.isInteger(maxConcurrency) || maxConcurrency < 1) {
+      throw new RangeError(`maxConcurrency must be a positive integer, got ${maxConcurrency}`);
+    }
     const handle = hasHostHooks(options)
       ? native.interceptorNewWithHooks(
           manifestPath,
@@ -413,15 +460,58 @@ export class AcsInterceptor implements Interceptor {
           options.limits ? JSON.stringify(options.limits) : null,
         )
       : native.interceptorNew(manifestPath);
-    return new AcsInterceptor(handle, name);
+    return new AcsInterceptor(handle, name, maxConcurrency);
   }
 
   /**
-   * Evaluate one agent context. Evaluation failures return a
-   * fail-closed `deny` verdict (`runtime_error:*` reason); this method
-   * throws only on boundary problems (non-object context).
+   * Evaluate one agent context on a thread of its own.
+   *
+   * The engine runs off the JS thread and the verdict arrives as a
+   * Promise, so an agent-hooks emitter can time the call out with
+   * `host_error:interceptor_timeout` while the event loop keeps
+   * running. The timeout can preempt the engine's own work and a
+   * dispatcher that returns a pending Promise; a dispatcher that blocks
+   * the JS thread synchronously still delays the deny until it returns,
+   * so a synchronous dispatcher must be fast or return a Promise.
+   * Evaluation failures resolve to a fail-closed `deny` verdict
+   * (`runtime_error:*` reason). The Promise rejects only on a boundary
+   * problem (non-object context), an engine panic, or when no thread
+   * could be started.
+   *
+   * A timed-out or abandoned call keeps its thread until the engine
+   * returns: the timeout stops the wait, not the evaluation. Once
+   * {@link AcsInterceptorOptions.maxConcurrency} evaluations are in
+   * flight, further calls resolve at once to a deny with
+   * `runtime_error:acs_async_capacity_exceeded`.
    */
-  intercept(context: AgentContext): Verdict {
+  intercept(context: AgentContext): Promise<Verdict> {
+    if (this.inFlight >= this.maxConcurrency) {
+      return Promise.resolve(capacityExceeded(this.maxConcurrency));
+    }
+    let evaluation: Promise<string>;
+    try {
+      evaluation = native.interceptAsync(this.handle, JSON.stringify(context));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    this.inFlight += 1;
+    return evaluation
+      .then((wire) => JSON.parse(wire) as Verdict)
+      .finally(() => {
+        this.inFlight -= 1;
+      });
+  }
+
+  /**
+   * Evaluate one agent context inline on the JS thread.
+   *
+   * Blocks the event loop until the engine returns, so no timer and no
+   * emitter timeout can preempt it, and a dispatcher that returns a
+   * Promise fails closed. Evaluation failures return a fail-closed
+   * `deny` verdict (`runtime_error:*` reason); this method throws only
+   * on boundary problems (non-object context).
+   */
+  interceptSync(context: AgentContext): Verdict {
     return JSON.parse(native.intercept(this.handle, JSON.stringify(context))) as Verdict;
   }
 }
@@ -459,10 +549,17 @@ export interface RegoBundle {
  * only the annotator and policy dispatchers; telemetry and perf level
  * are configured on the interceptor path (see {@link AcsInterceptor})
  * because activation records no per-evaluation events itself.
+ *
+ * {@link ActivatedPolicy.evaluate} runs on the JS thread and calls these
+ * synchronously, so they return a value, not a Promise.
  */
 export interface ActivatedPolicyOptions {
-  annotatorDispatcher?: AnnotatorDispatcher;
-  policyDispatcher?: PolicyDispatcher;
+  annotatorDispatcher?: (
+    name: string,
+    invocation: AnnotatorInvocation,
+    policyInput: JsonValue,
+  ) => JsonValue;
+  policyDispatcher?: (invocation: PolicyInvocation) => JsonValue;
 }
 
 function hasActivationHooks(options: ActivatedPolicyOptions): boolean {
@@ -515,8 +612,8 @@ export class ActivatedPolicy {
    *
    * Supply `annotatorDispatcher` or `policyDispatcher` in `options` to
    * override the engine's extension points; each callback is called
-   * synchronously on the JS thread from inside `evaluate` and fails
-   * closed on throw.
+   * synchronously on the JS thread from inside `evaluate`, fails closed
+   * on throw, and cannot return a Promise.
    */
   static activate(
     manifestPath: string,
@@ -581,6 +678,7 @@ export class ActivatedPolicy {
   /**
    * Evaluate one intervention point. This is the hot path.
    *
+   * Runs inline on the JS thread, like {@link AcsInterceptor.interceptSync}.
    * Evaluation failures return a fail-closed `deny` verdict
    * (`runtime_error:*` reason), including a point this policy version
    * does not bind. Throws only on boundary problems (unknown point

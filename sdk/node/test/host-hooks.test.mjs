@@ -4,13 +4,14 @@
 // telemetry sink, perf telemetry level; and manifest tooling (parse,
 // chain, structured diagnostics).
 //
-// The engine calls dispatchers synchronously from inside `intercept`,
+// The engine calls dispatchers synchronously from inside `interceptSync`,
 // which is itself a napi call running on the JS thread. These tests
 // prove: (a) a JS callback IS invoked on that stack, (b) its return
 // value flows into the policy decision, (c) a throw fails closed with
 // a `runtime_error:*` deny (never "no annotation"), (d) telemetry
-// events reach a sink, and (e) the manifest tooling that authoring
-// tools need is reachable from Node.
+// events reach a sink, (e) the manifest tooling that authoring tools
+// need is reachable from Node, and (f) the async path behind
+// `intercept` reaches the same callbacks and awaits a Promise from them.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -35,6 +36,8 @@ const pinnedPromptManifest = path.join(sharedFixtures, "pinned-prompt.yaml");
 
 const builder = () =>
   new AgentContextBuilder({ agentId: "a", framework: "test", sessionId: "s" });
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // A manifest binding a custom policy that a host policy dispatcher
 // answers, and a classifier annotator whose value the dispatcher reads
@@ -129,7 +132,7 @@ test("host annotator dispatcher return value drives the policy verdict", () => {
     policyDispatcher,
   });
 
-  const angry = acs.intercept(builder().input("you are broken"));
+  const angry = acs.interceptSync(builder().input("you are broken"));
   assert.equal(angry.decision, "deny");
   assert.equal(angry.reason, "annotation_says_angry");
 
@@ -196,7 +199,7 @@ test("an annotation with needs runs after its dependency and sees it", () => {
     annotatorDispatcher,
     policyDispatcher,
   });
-  const verdict = acs.intercept(builder().input("leak"));
+  const verdict = acs.interceptSync(builder().input("leak"));
 
   assert.deepEqual(
     seen.map((call) => call.name),
@@ -226,7 +229,7 @@ test("a dependency that throws never runs the annotation that needs it", () => {
     policyDispatcher: () => ({ decision: "allow" }),
   });
 
-  const verdict = acs.intercept(builder().input("leak"));
+  const verdict = acs.interceptSync(builder().input("leak"));
   assert.deepEqual(seen, ["scan"]);
   assert.equal(verdict.decision, "deny");
   assert.equal(verdict.reason, "runtime_error:annotation_failed");
@@ -310,7 +313,7 @@ test("annotator dispatcher that throws fails closed with annotation_failed", () 
     policyDispatcher,
   });
 
-  const verdict = acs.intercept(builder().input("hi"));
+  const verdict = acs.interceptSync(builder().input("hi"));
   assert.equal(verdict.decision, "deny");
   assert.equal(verdict.reason, "runtime_error:annotation_failed");
   assert.equal(
@@ -335,8 +338,8 @@ test("no host hooks leaves the zero-config path bit-identical", () => {
     builder().output("final answer"),
   ]) {
     // Two independent Contexts of the same shape.
-    const a = zeroConfig.intercept(ctx);
-    const b = empty.intercept(ctx);
+    const a = zeroConfig.interceptSync(ctx);
+    const b = empty.interceptSync(ctx);
     assert.deepEqual(b, a);
   }
 });
@@ -353,7 +356,7 @@ test("telemetry sink receives Decision events; perf level round-trips", () => {
     telemetrySink: (event) => events.push(event),
     perfTelemetry: "off",
   });
-  const verdict = acs.intercept(builder().input("hello"));
+  const verdict = acs.interceptSync(builder().input("hello"));
   assert.equal(verdict.decision, "allow");
   assert.ok(events.length >= 1, "expected at least one telemetry event");
   const decision = events.find((e) => e.event_type === "decision");
@@ -369,7 +372,7 @@ test("telemetry sink receives Decision events; perf level round-trips", () => {
     });
     // Construction alone proves the level round-trips; also confirm
     // evaluation still works under it.
-    assert.equal(configured.intercept(builder().input("x")).decision, "allow");
+    assert.equal(configured.interceptSync(builder().input("x")).decision, "allow");
   }
 
   // An unknown level is a boundary problem, not a silent fallback.
@@ -467,9 +470,9 @@ intervention_points:
   const yamlPath = path.join(workdir, "merged-baseline.yaml");
   fs.writeFileSync(yamlPath, mergedYaml, "utf8");
   const acs = AcsInterceptor.fromPath(yamlPath);
-  assert.equal(acs.intercept(builder().input("hi")).decision, "allow");
+  assert.equal(acs.interceptSync(builder().input("hi")).decision, "allow");
   assert.equal(
-    acs.intercept(builder().preToolCall("t1", "search", { q: "x" })).decision,
+    acs.interceptSync(builder().preToolCall("t1", "search", { q: "x" })).decision,
     "deny",
   );
 
@@ -666,7 +669,7 @@ const { DEFAULT_LIMITS } = require("../dist/index.js");
 test("a lowered snapshot cap flips the verdict from allow to fail-closed deny", () => {
   const big = "x".repeat(4096);
   const permissive = AcsInterceptor.fromPath(fixtureManifestPath);
-  assert.equal(permissive.intercept(builder().input(big)).decision, "allow");
+  assert.equal(permissive.interceptSync(builder().input(big)).decision, "allow");
 
   // Same manifest, same context, but the cap is now smaller than the
   // canonicalized snapshot. A host that asked for the smaller bound and
@@ -674,7 +677,7 @@ test("a lowered snapshot cap flips the verdict from allow to fail-closed deny", 
   const capped = AcsInterceptor.fromPath(fixtureManifestPath, {
     limits: { max_snapshot_bytes: 64 },
   });
-  const verdict = capped.intercept(builder().input(big));
+  const verdict = capped.interceptSync(builder().input(big));
   assert.equal(verdict.decision, "deny");
   assert.ok(
     verdict.reason.startsWith("runtime_error:"),
@@ -695,7 +698,7 @@ test("the interceptor constructor resolves `extends` under the host's loader cap
     `agent_control_specification_version: "0.4.0-alpha.1"\nextends: ["limits-parent.yaml"]\n`,
     "utf8",
   );
-  assert.equal(AcsInterceptor.fromPath(child).intercept(builder().input("hi")).decision, "allow");
+  assert.equal(AcsInterceptor.fromPath(child).interceptSync(builder().input("hi")).decision, "allow");
   assert.throws(
     () => AcsInterceptor.fromPath(child, { limits: { max_extends_depth: 0 } }),
     /depth/,
@@ -712,10 +715,10 @@ test("no limits option matches the baseline zero-config path", () => {
     [builder().input("hi"), "allow"],
     [builder().preToolCall("t1", "search", { q: "x" }), "deny"],
   ]) {
-    const expected = baseline.intercept(ctx);
+    const expected = baseline.interceptSync(ctx);
     assert.equal(expected.decision, decision);
     for (const configured of [empty, explicitDefaults]) {
-      assert.deepEqual(configured.intercept(ctx), expected);
+      assert.deepEqual(configured.interceptSync(ctx), expected);
     }
   }
 });
@@ -735,7 +738,7 @@ for (const customPolicy of [false, true]) {
       limits,
       ...policyOptions,
     });
-    const verdict = defaults.intercept(builder().input("hello"));
+    const verdict = defaults.interceptSync(builder().input("hello"));
     assert.equal(verdict.decision, "deny");
     assert.equal(verdict.reason, "runtime_error:annotation_failed");
     assert.match(verdict.message, /timeout of 0 ms/);
@@ -750,7 +753,7 @@ for (const customPolicy of [false, true]) {
         return { label: "safe" };
       },
     });
-    assert.equal(custom.intercept(builder().input("hello")).decision, "allow");
+    assert.equal(custom.interceptSync(builder().input("hello")).decision, "allow");
     assert.equal(seen.length, 1);
     assert.equal(seen[0].name, "judge");
     assert.match(seen[0].invocation.system_prompt_url.url, /^https:\/\//);
@@ -788,7 +791,7 @@ test("overriding one limit leaves the others at their defaults", () => {
   const partial = AcsInterceptor.fromPath(fixtureManifestPath, {
     limits: { max_annotator_output_bytes: 8_388_608 },
   });
-  assert.equal(partial.intercept(builder().input(big)).decision, "allow");
+  assert.equal(partial.interceptSync(builder().input(big)).decision, "allow");
 
   // And when the second, untouched cap IS lowered on a separate
   // interceptor, it enforces — proving the field-by-field override
@@ -799,7 +802,7 @@ test("overriding one limit leaves the others at their defaults", () => {
       max_snapshot_bytes: 64,
     },
   });
-  const v = both.intercept(builder().input(big));
+  const v = both.interceptSync(builder().input(big));
   assert.equal(v.decision, "deny");
   assert.ok(v.reason.startsWith("runtime_error:"));
 });
@@ -905,11 +908,130 @@ intervention_points:
     },
   });
 
-  const verdict = acs.intercept(builder().input("hello"));
+  const verdict = acs.interceptSync(builder().input("hello"));
 
   assert.equal(verdict.decision, "allow");
   assert.equal(seen.length, 1);
   assert.equal(seen[0].name, "judge");
   assert.equal(seen[0].invocation.api_key_env, "ACS_NODE_LOCAL_TEST_KEY");
   assert.equal(Object.hasOwn(seen[0].invocation, "url_sourced"), false);
+});
+
+// ---------------------------------------------------------------------
+// 10. The async path. `intercept` evaluates on a thread of its own and
+// posts each host callback to the JS thread, so a callback may return a
+// Promise and the engine waits for it to settle. The synchronous path
+// cannot wait, so a Promise returned there fails closed. Every failure
+// shape (throw, rejection, Promise where none is allowed) is a
+// `runtime_error:*` deny, never "no annotation".
+// ---------------------------------------------------------------------
+
+test("async dispatchers resolve through intercept and drive the verdict", async () => {
+  const manifest = writeAnnotatorPolicyManifest(workdir);
+  const seen = [];
+  const acs = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher: async (name, invocation) => {
+      await sleep(5);
+      seen.push(name);
+      return { mood: invocation.from === "$target.content" ? "angry" : "calm" };
+    },
+    policyDispatcher: async (invocation) => {
+      await sleep(5);
+      seen.push("policy");
+      return invocation.input?.annotations?.mood?.mood === "angry"
+        ? { decision: "deny", reason: "annotation_says_angry" }
+        : { decision: "allow" };
+    },
+  });
+
+  const verdict = await acs.intercept(builder().input("you are broken"));
+  assert.equal(verdict.decision, "deny");
+  assert.equal(verdict.reason, "annotation_says_angry");
+  // The annotator's awaited output reached the policy, in order.
+  assert.deepEqual(seen, ["mood", "policy"]);
+});
+
+test("a Promise returned on the synchronous path fails closed", () => {
+  const manifest = writeAnnotatorPolicyManifest(workdir);
+  const asyncPolicy = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher: () => ({ mood: "calm" }),
+    policyDispatcher: async () => ({ decision: "allow" }),
+  });
+  const policyVerdict = asyncPolicy.interceptSync(builder().input("hi"));
+  assert.equal(policyVerdict.decision, "deny");
+  assert.equal(policyVerdict.reason, "runtime_error:policy_invocation_failed");
+
+  let policyCalled = false;
+  const asyncAnnotator = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher: async () => ({ mood: "calm" }),
+    policyDispatcher: () => {
+      policyCalled = true;
+      return { decision: "allow" };
+    },
+  });
+  const annotatorVerdict = asyncAnnotator.interceptSync(builder().input("hi"));
+  assert.equal(annotatorVerdict.decision, "deny");
+  assert.equal(annotatorVerdict.reason, "runtime_error:annotation_failed");
+  // The engine keeps an annotation failure's detail in the message, so
+  // the host can see which path it took.
+  assert.match(annotatorVerdict.message, /Promise on the synchronous path/);
+  assert.equal(policyCalled, false, "an annotation failure must stop evaluation");
+});
+
+test("a rejecting or throwing dispatcher fails the async path closed", async () => {
+  const manifest = writeAnnotatorPolicyManifest(workdir);
+  let policyCalled = false;
+  const rejecting = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher: async () => {
+      throw new Error("classifier unreachable");
+    },
+    policyDispatcher: () => {
+      policyCalled = true;
+      return { decision: "allow" };
+    },
+  });
+  const rejected = await rejecting.intercept(builder().input("hi"));
+  assert.equal(rejected.decision, "deny");
+  assert.equal(rejected.reason, "runtime_error:annotation_failed");
+  assert.match(rejected.message, /classifier unreachable/);
+  assert.equal(policyCalled, false, "policy dispatcher must not run after an annotator failure");
+
+  const throwing = AcsInterceptor.fromPath(manifest, {
+    annotatorDispatcher: () => ({ mood: "calm" }),
+    policyDispatcher: () => {
+      throw new Error("engine room on fire");
+    },
+  });
+  // A policy failure's message is the engine's fixed text; the reason
+  // code is the contract.
+  const thrown = await throwing.intercept(builder().input("hi"));
+  assert.equal(thrown.decision, "deny");
+  assert.equal(thrown.reason, "runtime_error:policy_invocation_failed");
+});
+
+test("the telemetry sink sees the decision before intercept resolves", async () => {
+  const events = [];
+  const acs = AcsInterceptor.fromPath(fixtureManifestPath, {
+    telemetrySink: (event) => events.push(event),
+  });
+  const verdict = await acs.intercept(builder().input("hello"));
+  assert.equal(verdict.decision, "allow");
+  const decision = events.find((e) => e.event_type === "decision");
+  assert.ok(decision, "the decision event must arrive before the verdict does");
+  assert.equal(decision.decision, "allow");
+  assert.equal(decision.policy_id, "allow_all");
+});
+
+test("a dispatcher on the async path can call interceptSync without deadlock", async () => {
+  // The evaluation thread waits on the JS thread; the JS thread runs a nested
+  // synchronous evaluation to completion and then answers. Nothing is
+  // waiting on anything that waits back.
+  const inner = AcsInterceptor.fromPath(fixtureManifestPath);
+  const outer = AcsInterceptor.fromPath(writePolicyOnlyManifest(workdir), {
+    policyDispatcher: () => ({
+      decision: inner.interceptSync(builder().input("nested")).decision,
+    }),
+  });
+  const verdict = await outer.intercept(builder().input("hi"));
+  assert.equal(verdict.decision, "allow");
 });

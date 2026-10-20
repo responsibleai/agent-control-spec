@@ -36,6 +36,11 @@ annotators make HTTPS calls during evaluation when the manifest declares
 annotators, and evaluation blocks for the annotator budget. A manifest
 with no annotators makes no network call.
 
+`intercept` evaluates on a thread of its own and returns a Promise, so
+the emitter's timeout can preempt the engine and any dispatcher that
+awaits, and host dispatchers may return a Promise; `interceptSync`
+evaluates inline on the JS thread, which nothing can preempt.
+
 ## Activating a policy version
 
 A host that pins a policy version and serves traffic against it wants

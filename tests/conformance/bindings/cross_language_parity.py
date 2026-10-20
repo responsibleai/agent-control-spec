@@ -804,8 +804,8 @@ function check(source) {{
 }}
 
 const interceptor = acs.AcsInterceptor.fromPath({json.dumps(str(MANIFEST))});
-const allow = interceptor.intercept({json.dumps(ALLOW_CONTEXT)});
-const deny = interceptor.intercept({json.dumps(DENY_CONTEXT)});
+const allow = interceptor.interceptSync({json.dumps(ALLOW_CONTEXT)});
+const deny = interceptor.interceptSync({json.dumps(DENY_CONTEXT)});
 
 const policy = acs.ActivatedPolicy.activate({json.dumps(str(MANIFEST))});
 const points = policy.interventionPoints().map((p) => String(p).toLowerCase());
@@ -822,7 +822,7 @@ const completion = session.finish();
 
 function hook(d) {{
   const i = acs.AcsInterceptor.fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: d }});
-  const v = i.intercept({{ interception_point: 'input', input: 'hello' }});
+  const v = i.interceptSync({{ interception_point: 'input', input: 'hello' }});
   return [String(v.decision).toLowerCase(), v.reason ?? null];
 }}
 function dependencyCase(path, blocked) {{
@@ -850,7 +850,7 @@ function dependencyCase(path, blocked) {{
     return {{ decision: judge.blocked ? 'deny' : 'allow', reason: judge.basis }};
   }};
   const runtime = acs.AcsInterceptor.fromPath(path, {{ annotatorDispatcher, policyDispatcher }});
-  const verdict = runtime.intercept({{ interception_point: 'input', input: {{ blocked }} }});
+  const verdict = runtime.interceptSync({{ interception_point: 'input', input: {{ blocked }} }});
   return {{ calls, judge, decision: String(verdict.decision).toLowerCase(), reason: verdict.reason ?? null }};
 }}
 const supportedVersions = [...acs.supportedManifestVersions()].sort();
@@ -882,10 +882,10 @@ const resDone = res.finish();
 const bigCtx = {{ interception_point: 'input', input: {json.dumps(BIG_INPUT)} }};
 const limDefault = acs.AcsInterceptor
   .fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: () => ({{ severity: 1 }}) }})
-  .intercept(bigCtx);
+  .interceptSync(bigCtx);
 const limCapped = acs.AcsInterceptor
   .fromPath({json.dumps(str(HOOKS_MANIFEST))}, {{ annotatorDispatcher: () => ({{ severity: 1 }}), limits: {json.dumps(SMALL_CAP)} }})
-  .intercept(bigCtx);
+  .interceptSync(bigCtx);
 
 console.log(JSON.stringify({{
   hook_benign_decision: b[0],
