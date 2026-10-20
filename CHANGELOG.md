@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Examples: the legacy example set that predates the extraction (23 manifests with their apps and policies) is removed. It targeted the earlier API and no longer loaded; the remaining examples are unchanged.
+
 - Reject unknown policy-output members before typed verdict conversion. Unknown
   root, warning and transform members now fail closed with
   `runtime_error:policy_output_invalid` instead of being silently discarded.
