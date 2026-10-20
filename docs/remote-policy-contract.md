@@ -406,6 +406,10 @@ identity; if cleanup itself also fails, the existing primary error still wins
 with safe diagnostic notes. Retained work is bounded and
 observed, and the failed registry rejects further opens. Aggregate normal
 shutdown is the poller's two drain phases plus one credential-cleanup budget.
+If scheduling delays exhaust the cleanup budget, even a cooperative owner may
+still be pending when the error is raised. `CredentialCloseError.retained_tasks`
+records that instant; `pending_task_count` falls to zero once the owner finishes,
+but the failed registry remains unavailable.
 Factories enter/exit in one structured owner task; their ContextVars do not
 become authentication-call state. Providers must be re-entrant for up to four
 concurrent requests and own their refresh synchronization.

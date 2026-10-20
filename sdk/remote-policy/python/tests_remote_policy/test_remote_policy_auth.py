@@ -36,6 +36,7 @@ from agent_control_spec_remote_policy.poller import (
     StartupError,
 )
 
+from .test_poller_schedule import VirtualTimeLoop, run_virtual
 from .test_remote_policy import configuration
 
 
@@ -494,9 +495,17 @@ def test_cleanup_error_is_safe_and_preserves_primary_identity(
     asyncio.run(scenario())
 
 
-def test_noncooperative_close_is_bounded_retained_observed_and_never_readmitted() -> (
-    None
-):
+def _stall_cleanup_loop() -> None:
+    """Consume the drain budget before the owner can handle cancellation."""
+    loop = asyncio.get_running_loop()
+    assert isinstance(loop, VirtualTimeLoop)
+    loop._virtual_time += 0.05
+
+
+@pytest.mark.parametrize("stall", [False, True])
+def test_noncooperative_close_is_bounded_retained_observed_and_never_readmitted(
+    stall: bool,
+) -> None:
     async def scenario() -> None:
         release, closing, cancelled = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -508,6 +517,8 @@ def test_noncooperative_close_is_bounded_retained_observed_and_never_readmitted(
                 yield SingleHeader()
             finally:
                 closing.set()
+                if stall:
+                    asyncio.get_running_loop().call_later(0.005, _stall_cleanup_loop)
                 while not release.is_set():
                     try:
                         await release.wait()
@@ -515,25 +526,30 @@ def test_noncooperative_close_is_bounded_retained_observed_and_never_readmitted(
                         cancelled.set()
 
         registry = CredentialProviderRegistry({"custom": factory})
-        with pytest.raises(CredentialCloseError) as failure:
-            async with registry.open(configured(timeout=0.02)):
-                pass
-        assert closing.is_set() and cancelled.is_set()
-        assert failure.value.retained_tasks == registry.pending_task_count == 1
-        for _ in range(3):
-            with pytest.raises(PolicyUsageError):
-                async with registry.open(configured()):
-                    pytest.fail("retained owner admitted another")
-        owner = registry._owner
-        assert owner is not None
-        release.set()
-        await asyncio.wait_for(asyncio.shield(owner), 1)
+        try:
+            with pytest.raises(CredentialCloseError) as failure:
+                async with registry.open(configured(timeout=0.02)):
+                    pass
+            owner = registry._owner
+            assert owner is not None and owner.cancelling() > 0
+            assert failure.value.retained_tasks == registry.pending_task_count == 1
+            await asyncio.wait_for(cancelled.wait(), 1)
+            assert closing.is_set() and registry.pending_task_count == 1
+            for _ in range(3):
+                with pytest.raises(PolicyUsageError):
+                    async with registry.open(configured()):
+                        pytest.fail("retained owner admitted another")
+        finally:
+            release.set()
+            owner = registry._owner
+            if owner is not None:
+                await asyncio.wait_for(asyncio.shield(owner), 1)
         assert registry.pending_task_count == 0
         with pytest.raises(PolicyUsageError):
             async with registry.open(configured()):
                 pytest.fail("failed registry recovered silently")
 
-    asyncio.run(scenario())
+    run_virtual(scenario())
 
 
 def test_entry_timeout_preserves_primary_when_partial_cleanup_fails(
@@ -608,9 +624,12 @@ def test_noncooperative_entry_is_retained_then_closed_without_late_publication()
     asyncio.run(scenario())
 
 
-def test_interrupted_cleanup_fails_closed_even_when_cancellation_drains_owner() -> None:
+@pytest.mark.parametrize("stall", [False, True])
+def test_interrupted_cleanup_fails_closed_even_when_cancellation_drains_owner(
+    stall: bool,
+) -> None:
     async def scenario() -> None:
-        exited = asyncio.Event()
+        release, exited = asyncio.Event(), asyncio.Event()
 
         @asynccontextmanager
         async def factory(
@@ -619,22 +638,38 @@ def test_interrupted_cleanup_fails_closed_even_when_cancellation_drains_owner() 
             try:
                 yield SingleHeader()
             finally:
+                if stall:
+                    asyncio.get_running_loop().call_later(0.005, _stall_cleanup_loop)
                 try:
-                    await asyncio.Event().wait()
+                    await release.wait()
                 finally:
                     exited.set()
 
         registry = CredentialProviderRegistry({"custom": factory})
-        with pytest.raises(CredentialCloseError) as failure:
-            async with registry.open(configured(timeout=0.02)):
-                pass
-        assert failure.value.retained_tasks == registry.pending_task_count == 0
-        assert exited.is_set()
+        try:
+            with pytest.raises(CredentialCloseError) as failure:
+                async with registry.open(configured(timeout=0.02)):
+                    pass
+            assert (
+                failure.value.retained_tasks
+                == registry.pending_task_count
+                == int(stall)
+            )
+            assert exited.is_set() is not stall
+            with pytest.raises(PolicyUsageError):
+                async with registry.open(configured()):
+                    pytest.fail("interrupted cleanup registry reused")
+        finally:
+            release.set()
+            owner = registry._owner
+            if owner is not None:
+                await asyncio.wait_for(asyncio.gather(owner, return_exceptions=True), 1)
+        assert exited.is_set() and registry.pending_task_count == 0
         with pytest.raises(PolicyUsageError):
             async with registry.open(configured()):
-                pytest.fail("interrupted cleanup registry reused")
+                pytest.fail("failed registry recovered after its owner drained")
 
-    asyncio.run(scenario())
+    run_virtual(scenario())
 
 
 def test_repeated_caller_cancellation_does_not_extend_close_deadline() -> None:

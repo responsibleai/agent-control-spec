@@ -46,6 +46,8 @@ class VirtualTimeLoop(asyncio.SelectorEventLoop):
 
     def __init__(self) -> None:
         super().__init__()
+        # Virtual timers must not inherit the host's early-dispatch tolerance.
+        self._clock_resolution = 1e-9
         self._virtual_time = 0.0
         self._idle_turns = 0
 
