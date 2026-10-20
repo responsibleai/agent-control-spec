@@ -378,7 +378,9 @@ provider or existing service API is assumed. No secret belongs in YAML.
 `remote_policy.credentials` selects a trusted credential factory and its
 non-secret provider options. Hosts can register factories for any platform;
 an optional Azure credential adapter is available through that package's `azure`
-extra. Installing the base SDK does not install polling, HTTP or cloud SDKs.
+extra. The default registry is empty: a `credential_ref` is refused unless the
+host registered the provider its YAML names. Installing the base SDK does not
+install polling, HTTP or cloud SDKs.
 `CredentialProviderRegistry.open(config)` supplies the existing source's
 credential mapping and owns factory cleanup. Request-aware providers can sign
 the final HTTP request; the old single-header interface remains supported.
@@ -389,8 +391,11 @@ policy source. See the
 Remote activations are **single-owner/single-use**, including an interceptor
 that is constructed and then closed without entry. Call `activate()` again for a
 new lifetime and use separate loaders/registries for concurrent lifetimes.
-Remote evaluation has one process-wide slot and no queue; saturation denies with
-`runtime_error:acs_async_capacity_exceeded`, not local default concurrency 8.
+Remote evaluation has one process-wide slot and no queue; every overlapping call
+denies with `runtime_error:acs_async_capacity_exceeded`, not local default
+concurrency 8. Each evaluation starts a fresh child process (median about 0.29
+seconds on a Linux developer laptop), so the ceiling is roughly 3 to 4 evaluations
+per second per process; measure your own host.
 Only strict scope/default admission arguments are accepted. Remote synchronous
 `evaluate`, `governs`, and `intervention_points` raise `ManagedPolicyUsageError`.
 Before READY, calls raise that usage error; closing/closed calls deny, including
@@ -417,7 +422,7 @@ raises the same native `ValueError`s. `remote_policy` YAML is recognized only
 after native loading fails and the file is regular remote configuration.
 Managed integration requires capability 1 in both packages; mixed older versions
 fail explicitly for managed use while supported low-level optional imports stay
-usable. See the optional package's release compatibility gate.
+usable. See the optional package's README for the version relationship.
 See the [contract and runnable remote-polling example](https://github.com/responsibleai/agent-control-spec/blob/main/examples/remote_policy/README.md)
 for checkout installation, authentication, leases and first-slice limitations.
 

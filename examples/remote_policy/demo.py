@@ -18,10 +18,12 @@ from typing import Literal
 from agent_control_spec import ActivatedPolicy, AsyncAcsInterceptor
 from agent_control_spec_remote_policy import (
     RemotePolicyClient,
+    RemotePolicyFileLoader,
     evaluate_policy_snapshot,
 )
 from agent_control_spec_remote_policy._worker import main as worker_main
 from agent_control_spec_remote_policy.auth import Credential, CredentialProviderRegistry
+from agent_control_spec_remote_policy.azure import azure_credential_factories
 from agent_control_spec_remote_policy.poller import (
     CredentialConfig,
     JsonValue,
@@ -176,6 +178,16 @@ async def local_demo(config: PollerConfig) -> None:
             )
 
 
+def _demo_registry() -> CredentialProviderRegistry:
+    """Register the Azure CLI factory so the README's `--remote` YAML example works.
+
+    The default registry is empty. A host must register every factory it allows,
+    and a registered factory lets the YAML choose its options and the endpoint
+    the credential is sent to. Keep the YAML as trusted as host code.
+    """
+    return CredentialProviderRegistry(azure_credential_factories())
+
+
 async def _poll_and_evaluate(
     config: PollerConfig,
     credentials: Mapping[str, Credential] | None = None,
@@ -219,7 +231,10 @@ async def configured_demo(
     ):
         raise PolicyValidationError("config")
     await _poll_and_evaluate(
-        config, registry=registry, watch_seconds=watch_seconds, label="Remote"
+        config,
+        registry=registry if registry is not None else _demo_registry(),
+        watch_seconds=watch_seconds,
+        label="Remote",
     )
 
 
@@ -237,7 +252,8 @@ async def managed_demo(
         or not 0 <= watch_seconds <= 3600
     ):
         raise PolicyValidationError("config")
-    policy = ActivatedPolicy.activate(str(path))
+    loader = RemotePolicyFileLoader(registry=_demo_registry())
+    policy = ActivatedPolicy.activate(str(path), remote_loader=loader)
     ledger: list[dict[str, JsonValue]] = []
     async with AsyncAcsInterceptor(policy) as control:
         # agent-hooks b2 annotates sync Interceptor but supports async at runtime.
@@ -289,7 +305,7 @@ async def azure_demo(
                 )
             },
         )
-        async with CredentialProviderRegistry().open(remote) as credentials:
+        async with _demo_registry().open(remote) as credentials:
             await _poll_and_evaluate(
                 remote, credentials, watch_seconds=watch_seconds, label="Azure"
             )

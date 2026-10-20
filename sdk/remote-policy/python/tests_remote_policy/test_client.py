@@ -351,7 +351,7 @@ def test_native_engine_error_stays_a_deny_verdict() -> None:
 
 
 def test_client_freezes_host_context_and_rejects_parallel_admission(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     async def scenario() -> None:
         config = configuration(1)
@@ -382,6 +382,12 @@ def test_client_freezes_host_context_and_rejects_parallel_admission(
             original.clear()
             with pytest.raises(PolicyUnavailable, match="busy"):
                 await policies.evaluate("agent0", "pre_tool_call", context("agent0"))
+            busy = [
+                record
+                for record in caplog.records
+                if record.getMessage().startswith("policy_worker_busy")
+            ]
+            assert [getattr(record, "agent_id", None) for record in busy] == ["agent0"]
             release.set()
             assert (await operation).decision.value == "allow"
 

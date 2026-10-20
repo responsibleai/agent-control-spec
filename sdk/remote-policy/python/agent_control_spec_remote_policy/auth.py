@@ -339,6 +339,12 @@ def _observe_owner(owner: asyncio.Task[None]) -> None:
 class CredentialProviderRegistry:
     """Immutable factory allow-list; one bounded provider owner per source registry.
 
+    The default allow-list is empty: a ``credential_ref`` is refused, before any
+    credential is acquired, unless trusted host code registered the provider its
+    YAML names. A registered factory receives the YAML's options and the YAML
+    chooses the endpoint that credential is sent to, so register only factories
+    whose configuration the YAML author is trusted to control.
+
     Factories enter/exit in one task. ContextVars set there are not an
     authentication context: providers keep shared state on their instance.
     """
@@ -347,9 +353,7 @@ class CredentialProviderRegistry:
         self, providers: Mapping[str, CredentialProviderFactory] | None = None
     ) -> None:
         if providers is None:
-            from .azure import azure_credential_factories
-
-            providers = azure_credential_factories()
+            providers = MappingProxyType({})
         raw: object = providers
         if not isinstance(raw, Mapping) or len(raw) > 32:
             raise PolicyValidationError("config")

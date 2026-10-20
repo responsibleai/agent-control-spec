@@ -41,6 +41,15 @@ Every pin in sdk/python/requirements-dev.in must appear in
 sdk/python/requirements-dev.lock. CI installs from the lock, so a bump
 to the .in that leaves the lock behind is never exercised until the lock
 is regenerated (RELEASING.md).
+
+The polling package's setuptools build backend is pinned in three places that
+must agree: its pyproject.toml [build-system] requires, its
+requirements-dev.lock and .github/requirements/setuptools.txt, the hashed pin
+the release workflow installs before building without isolation.
+
+The polling package requires the core release it is published with: its
+``agent-control-spec`` requirement is derived from the core version, never
+written down separately, so it cannot name a release without managed activation.
 """
 
 from __future__ import annotations
@@ -60,6 +69,11 @@ MATURIN_PIN_FILES = (
     "sdk/remote-policy/python/requirements-dev.lock",
     ".github/requirements/maturin.txt",
 )
+# The files that pin the polling package's setuptools besides its pyproject.toml.
+SETUPTOOLS_PIN_FILES = (
+    "sdk/remote-policy/python/requirements-dev.lock",
+    ".github/requirements/setuptools.txt",
+)
 
 
 def normalize(version: str) -> str:
@@ -70,6 +84,15 @@ def normalize(version: str) -> str:
         word = {"a": "alpha", "b": "beta", "rc": "rc"}[m.group(2)]
         return f"{m.group(1)}-{word}.{m.group(3)}"
     return v
+
+
+def sdk_requirement(core_version: str) -> str:
+    """The polling package's core requirement, derived from the core's version."""
+    m = re.match(r"(\d+)\.(\d+)\.\d+", core_version)
+    assert m, f"unrecognized core version {core_version!r}"
+    major, minor = int(m.group(1)), int(m.group(2))
+    ceiling = f"0.{minor + 1}" if major == 0 else str(major + 1)
+    return f"agent-control-spec>={core_version},<{ceiling}"
 
 
 def read_versions() -> dict[str, str]:
@@ -102,8 +125,10 @@ def read_versions() -> dict[str, str]:
         (ROOT / "sdk/remote-policy/python/pyproject.toml").read_text(encoding="utf-8")
     )["project"]
     versions["sdk/remote-policy/python/pyproject.toml"] = remote["version"]
-    assert "agent-control-spec>=0.4.0b1,<0.5" in remote["dependencies"], (
-        "polling package SDK floor must name the first supported beta SDK"
+    floor = sdk_requirement(versions["sdk/python/pyproject.toml"])
+    assert floor in remote["dependencies"], (
+        f"polling package must require {floor}: it ships with the core release "
+        "that carries the managed activation API"
     )
 
     generator = tomllib.loads(
@@ -133,18 +158,19 @@ def read_versions() -> dict[str, str]:
     return versions
 
 
-def read_maturin_pins() -> dict[str, str]:
+def read_pins(name: str, pyproject: str, files: tuple[str, ...]) -> dict[str, str]:
+    """Read one build backend's exact pin from its pyproject and every file."""
     pins: dict[str, str] = {}
-    build = tomllib.loads(
-        (ROOT / "sdk/python/pyproject.toml").read_text(encoding="utf-8")
-    )["build-system"]["requires"]
-    pinned = [r for r in build if re.fullmatch(r"maturin==[\w.]+", r)]
-    assert len(pinned) == 1, "pyproject [build-system] must pin maturin exactly"
-    pins["sdk/python/pyproject.toml"] = pinned[0].split("==")[1]
-    for relative in MATURIN_PIN_FILES:
+    build = tomllib.loads((ROOT / pyproject).read_text(encoding="utf-8"))[
+        "build-system"
+    ]["requires"]
+    pinned = [r for r in build if re.fullmatch(rf"{name}==[\w.]+", r)]
+    assert len(pinned) == 1, f"{pyproject} [build-system] must pin {name} exactly"
+    pins[pyproject] = pinned[0].split("==")[1]
+    for relative in files:
         text = (ROOT / relative).read_text(encoding="utf-8")
-        m = re.search(r"^maturin==([\w.]+)", text, re.MULTILINE)
-        assert m, f"no maturin pin in {relative}"
+        m = re.search(rf"^{name}==([\w.]+)", text, re.MULTILINE)
+        assert m, f"no {name} pin in {relative}"
         pins[relative] = m.group(1)
     return pins
 
@@ -174,7 +200,16 @@ def stale_dev_lock_pins() -> list[str]:
 def main() -> int:
     try:
         versions = read_versions()
-        maturin = read_maturin_pins()
+        backends = {
+            "maturin": read_pins(
+                "maturin", "sdk/python/pyproject.toml", MATURIN_PIN_FILES
+            ),
+            "setuptools": read_pins(
+                "setuptools",
+                "sdk/remote-policy/python/pyproject.toml",
+                SETUPTOOLS_PIN_FILES,
+            ),
+        }
         stale = stale_dev_lock_pins()
     except FileNotFoundError as exc:
         print(
@@ -186,11 +221,12 @@ def main() -> int:
         for pin in stale:
             print(f"  {pin}")
         return 1
-    if len(set(maturin.values())) != 1:
-        print("::error::maturin pins disagree:")
-        for path, version in maturin.items():
-            print(f"  {path}: {version}")
-        return 1
+    for name, pins in backends.items():
+        if len(set(pins.values())) != 1:
+            print(f"::error::{name} pins disagree:")
+            for path, version in pins.items():
+                print(f"  {path}: {version}")
+            return 1
     regorus = {}
     for relative in ("Cargo.lock", "sdk/python/Cargo.lock"):
         lock = tomllib.loads((ROOT / relative).read_text(encoding="utf-8"))
@@ -207,7 +243,8 @@ def main() -> int:
     normalized = {path: normalize(v) for path, v in versions.items()}
     if len(set(normalized.values())) == 1:
         print(f"package version surfaces agree: {next(iter(normalized.values()))}")
-        print(f"maturin pins agree: {next(iter(maturin.values()))}")
+        for name, pins in backends.items():
+            print(f"{name} pins agree: {next(iter(pins.values()))}")
         return 0
     print("::error::version surfaces disagree:")
     for path, raw in versions.items():

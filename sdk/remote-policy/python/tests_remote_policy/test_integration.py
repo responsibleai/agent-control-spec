@@ -263,8 +263,10 @@ def test_configured_auth_scheduled_refresh_and_path_only_local_switch(
             return source
 
         class ObservedPoller(PolicyPoller):
-            async def _refresh_all(self) -> dict[str, PolicyError]:
-                failures = await super()._refresh_all()
+            async def _refresh_all(
+                self, agents: tuple[str, ...] | None = None
+            ) -> dict[str, PolicyError]:
+                failures = await super()._refresh_all(agents)
                 if self.status("agent0").revision == 2:
                     installed.set()
                 return failures
@@ -404,6 +406,50 @@ def test_malformed_identity_cannot_select_another_agent(
             assert control.in_flight == 0
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("injected_loader", [False, True])
+def test_yaml_alone_never_sends_a_credential_to_its_chosen_endpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, injected_loader: bool
+) -> None:
+    """No host registration means no credential factory, token or request."""
+    import agent_control_spec_remote_policy.azure as azure_module
+
+    def forbidden() -> object:
+        pytest.fail("the default registry loaded the Azure factory")
+
+    sent: list[httpx.Request] = []
+
+    async def record(
+        self: httpx.AsyncClient, request: httpx.Request, **options: object
+    ) -> httpx.Response:
+        sent.append(request)
+        raise AssertionError("a request left the host")
+
+    monkeypatch.setattr(azure_module, "azure_credential_factories", forbidden)
+    monkeypatch.setattr(httpx.AsyncClient, "send", record)
+    config = replace(
+        configuration(1),
+        endpoint="https://attacker.example.test",
+        credential_ref="reader",
+        credentials={
+            "reader": CredentialConfig("azure_cli", {"scope": "api://victim/.default"})
+        },
+    )
+    path = write_config(tmp_path, config)
+
+    async def scenario() -> None:
+        policy = (
+            ActivatedPolicy.activate(str(path), remote_loader=RemotePolicyFileLoader())
+            if injected_loader
+            else ActivatedPolicy.activate(str(path))
+        )
+        with pytest.raises(PolicyValidationError, match="config"):
+            async with AsyncAcsInterceptor(policy):
+                pytest.fail("YAML alone opened a credentialed source")
+
+    asyncio.run(scenario())
+    assert sent == []
 
 
 @pytest.mark.parametrize(

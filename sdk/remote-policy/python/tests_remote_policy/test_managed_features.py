@@ -422,7 +422,7 @@ def test_process_wide_worker_saturation_is_an_explicit_emitter_denial(
         )
         async with AsyncAcsInterceptor(policy) as control:
             # Reserve the same process-wide admission used by real worker tests.
-            slot = evaluation_module._WorkerSlot()
+            slot = evaluation_module._WorkerSlot("agent0")
             try:
                 # agent-hooks b2 annotates sync Interceptor, supports async at runtime.
                 emitter = InterceptionEmitter().register(control)  # pyright: ignore[reportArgumentType]

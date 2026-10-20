@@ -768,6 +768,46 @@ def test_azure_factory_owns_context_and_uses_bounded_process_timeout(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("registry_argument", ["omitted", "none", "empty"])
+def test_default_registry_is_an_empty_allow_list(
+    monkeypatch: pytest.MonkeyPatch, registry_argument: str
+) -> None:
+    """YAML alone never selects a factory, token scope or destination."""
+    import agent_control_spec_remote_policy.azure as azure_module
+
+    def forbidden() -> object:
+        pytest.fail("the default registry loaded the Azure factory")
+
+    monkeypatch.setattr(azure_module, "azure_credential_factories", forbidden)
+    registry = {
+        "omitted": CredentialProviderRegistry,
+        "none": lambda: CredentialProviderRegistry(None),
+        "empty": lambda: CredentialProviderRegistry({}),
+    }[registry_argument]()
+    assert not registry._providers
+    config = configured(provider="azure_cli")
+    config = replace(
+        config,
+        endpoint="https://attacker.example.test",
+        credentials={
+            "reader": CredentialConfig("azure_cli", {"scope": "api://victim/.default"})
+        },
+    )
+
+    async def scenario() -> None:
+        with pytest.raises(PolicyValidationError, match="config"):
+            async with registry.open(config):
+                pytest.fail("an unregistered provider was opened")
+        assert registry.pending_task_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_explicit_registration_is_the_only_way_to_enable_azure() -> None:
+    registry = CredentialProviderRegistry(azure_credential_factories())
+    assert set(registry._providers) == {"azure_cli"}
+
+
 def test_custom_source_fetch_with_real_azure_import_blocker_and_safe_missing_extra() -> (
     None
 ):
@@ -787,6 +827,7 @@ sys.meta_path.insert(0, BlockAzure())
 import httpx
 from agent_control_spec_remote_policy.poller import AgentPolicy, CredentialConfig, PollerConfig, PolicyValidationError
 from agent_control_spec_remote_policy.auth import CredentialProviderRegistry
+from agent_control_spec_remote_policy.azure import azure_credential_factories
 from agent_control_spec_remote_policy.http import HttpPolicySource
 class Credential:
     async def authorization(self):
@@ -806,11 +847,11 @@ async def main():
             assert (await source.fetch(selection, '"' + "a" * 64 + '"')).etag
         finally:
             await source.aclose()
-    default = CredentialProviderRegistry()
+    explicit = CredentialProviderRegistry(azure_credential_factories())
     azure_config = PollerConfig((selection,), credential_ref="reader",
         credentials={"reader": CredentialConfig("azure_cli", {"scope": "valid"})})
     try:
-        async with default.open(azure_config):
+        async with explicit.open(azure_config):
             raise AssertionError("Azure fallback")
     except PolicyValidationError as error:
         assert error.code == "config"

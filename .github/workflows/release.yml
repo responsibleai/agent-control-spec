@@ -102,7 +102,11 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Build wheel + sdist
         # maturin is installed by hash from the pinned requirements file,
-        # the same version pyproject.toml declares for the sdist build.
+        # the same version pyproject.toml declares for the sdist build. The
+        # optional polling package builds without isolation in an environment
+        # holding only its setuptools pin, installed by hash the same way, so
+        # no build backend is resolved at release time. It builds into its own
+        # directory so that it can be published before the base package.
         run: |
           uv venv "$RUNNER_TEMP/maturin-venv"
           uv pip install --python "$RUNNER_TEMP/maturin-venv/bin/python" \
@@ -112,7 +116,12 @@ jobs:
           maturin --version
           maturin build --release --locked -m sdk/python/Cargo.toml -o dist
           maturin sdist -m sdk/python/Cargo.toml -o dist
-          uv build sdk/remote-policy/python --out-dir dist
+          uv venv "$RUNNER_TEMP/setuptools-venv"
+          uv pip install --python "$RUNNER_TEMP/setuptools-venv/bin/python" \
+            --require-hashes -r .github/requirements/setuptools.txt
+          uv build sdk/remote-policy/python --no-build-isolation \
+            --python "$RUNNER_TEMP/setuptools-venv/bin/python" \
+            --out-dir dist-remote-policy
       - name: SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -127,7 +136,17 @@ jobs:
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
         with:
-          subject-path: dist/*
+          subject-path: |
+            dist/*
+            dist-remote-policy/*
+      - name: Publish the optional polling package to PyPI (trusted publishing)
+        # First on purpose: a missing pending publisher for this new project
+        # name fails here, before any file of the base package is uploaded.
+        if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1
+        with:
+          packages-dir: dist-remote-policy
+          skip-existing: true
       - name: Publish to PyPI (trusted publishing)
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1
@@ -135,7 +154,11 @@ jobs:
           packages-dir: dist
           skip-existing: true
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with: { name: python-dist, path: dist/* }
+        with:
+          name: python-dist
+          path: |
+            dist/*
+            dist-remote-policy/*
 
   rust:
     needs: preflight

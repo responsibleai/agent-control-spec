@@ -51,11 +51,34 @@ the tag's publication set. The tag workflow does not publish the generator.
    skipped and an existing release gets its SBOMs re-uploaded, so a
    re-run after a partial failure is safe.
 
-   Before the polling package's first publication, configure its own PyPI
-   trusted publisher for this repository, `release.yml` and the `release`
-   environment. The base package's publisher does not grant permission to a
-   different distribution. Adding this workflow configuration does not create
-   that publisher or publish a package.
+   Before the tag that first publishes the polling package
+   `agent-control-spec-remote-policy`, finish these gates in the release PR or
+   the project settings:
+
+   - Bump every version surface as in step 1. The polling package requires the
+     core release it ships with: set its `agent-control-spec` requirement in
+     `sdk/remote-policy/python/pyproject.toml` to the version being released
+     (`>=<version>,<next minor>`). `scripts/check-version-consistency.py`
+     derives the expected requirement from the core version and fails until they
+     match, so the script itself needs no edit. The first core release that
+     carries the managed activation API (`MANAGED_ACTIVATION_API_VERSION == 1`)
+     must be a new version, never one already published. Never republish
+     changed bytes under a published version.
+   - Verify real installed archives: the new core with the new polling package,
+     and the new core on its own.
+   - Remove the unreleased markers: the opening sentence of
+     `docs/remote-policy-contract.md`, the "Remote policies (unreleased)" heading
+     in `sdk/python/README.md`, and the checkout-only install notes in
+     `sdk/remote-policy/python/README.md` and `examples/remote_policy/README.md`.
+   - Register a PyPI pending publisher for the new project name, for this
+     repository, `release.yml` and the `release` environment. The base package's
+     publisher does not grant permission to a different distribution, and adding
+     the workflow configuration does not create that publisher or publish a
+     package. The polling package uploads in its own step before the base
+     package, so a missing publisher fails that step before any file of the base
+     package is uploaded; fix the publisher and re-run the failed job, which
+     skips what exists. Upload steps run only for a pushed tag, so no dry run
+     exercises them: read their order in `release.yml` before tagging.
 
 5. npm dist-tags. The workflow publishes every version under
    `latest`, pre-releases included, so a plain `npm install` gets the
@@ -99,7 +122,11 @@ fails when that pin, `[build-system] requires` in
 `sdk/python/pyproject.toml` and the `requirements-dev.lock` files under
 `sdk/python/` and `sdk/remote-policy/python/` disagree; the header of the
 core requirements file says how to regenerate it, and the section on
-dependency locks below covers the optional package's. npm is
+dependency locks below covers the optional package's. The optional polling
+package builds without isolation against setuptools installed by hash from
+`.github/requirements/setuptools.txt`; the same script fails when that pin,
+`[build-system] requires` in `sdk/remote-policy/python/pyproject.toml` and the
+setuptools pin in the optional lock disagree. npm is
 installed at an exact version in the publish step because the npm
 bundled with Node 22 predates trusted publishing. NuGet restores with
 `--locked-mode` against the committed
@@ -216,4 +243,6 @@ machine-specific path can enter it; the command above is the one that produces
 that format, so run it where the index serves every pin and expect only the pins
 you changed to move. Then run `python scripts/check-version-consistency.py`: it
 fails if the maturin pins in the two locks, `.github/requirements/maturin.txt`
-and `sdk/python/pyproject.toml` disagree.
+and `sdk/python/pyproject.toml` disagree, or if the setuptools pins in the optional
+lock, `.github/requirements/setuptools.txt` and the polling package's
+`pyproject.toml` disagree.

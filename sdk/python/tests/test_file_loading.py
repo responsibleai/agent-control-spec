@@ -83,20 +83,29 @@ def test_relative_extends_remains_within_native_manifest_root(tmp_path: Path) ->
     )
 
 
-@pytest.mark.parametrize("kind", ["local", "malformed", "remote"])
+REMOTE_CONFIGURATION = (
+    "remote_policy:\n  agents:\n    - {agent_id: a, tenant_id: t, policy_id: p}\n"
+)
+
+
+@pytest.mark.parametrize(
+    "kind,content,hint",
+    [
+        ("local", None, False),
+        ("malformed", "invalid: [\n", False),
+        ("typo", VALID_MANIFEST.replace("policies:", "polices:"), False),
+        ("remote", REMOTE_CONFIGURATION, True),
+        ("remote-indented", "\n  remote_policy:\n    agents: []\n", True),
+        ("remote-quoted", '{"remote_policy": {"agents": []}}', True),
+    ],
+)
 def test_core_only_consumer_and_missing_optional_hint(
-    tmp_path: Path, kind: str
+    tmp_path: Path, kind: str, content: str | None, hint: bool
 ) -> None:
     path = LOCAL
-    if kind != "local":
+    if content is not None:
         path = tmp_path / "configuration.yaml"
-        path.write_text(
-            "invalid: [\n"
-            if kind == "malformed"
-            else "remote_policy:\n  agents:\n"
-            "    - {agent_id: a, tenant_id: t, policy_id: p}\n",
-            encoding="utf-8",
-        )
+        path.write_text(content, encoding="utf-8")
     script = """
 import asyncio
 import importlib.abc
@@ -119,14 +128,24 @@ async def run():
     except ValueError as error:
         assert sys.argv[2] != "local"
         assert type(error) is ValueError  # the native error, not a wrapper
-        assert "agent-control-spec-remote-policy" in " ".join(error.__notes__)
+        notes = " ".join(getattr(error, "__notes__", []))
+        # Only a file that looks like remote configuration earns the hint.
+        assert ("agent-control-spec-remote-policy" in notes) == (sys.argv[3] == "hint")
     assert not any(name.startswith(("agent_control_spec_remote_policy", "httpx",
                                    "yaml", "azure")) for name in sys.modules)
 
 asyncio.run(run())
 """
     subprocess.run(
-        [sys.executable, "-I", "-c", script, str(path), kind],
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            script,
+            str(path),
+            kind,
+            "hint" if hint else "none",
+        ],
         check=True,
         capture_output=True,
         timeout=30,

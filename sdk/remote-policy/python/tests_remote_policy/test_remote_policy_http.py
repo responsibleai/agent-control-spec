@@ -8,7 +8,7 @@ import asyncio
 import hashlib
 import hmac
 import time
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import TracebackType
@@ -117,7 +117,7 @@ def test_authenticated_scope_conditional_headers_and_credential_ownership() -> N
     [
         "http://example.test",
         "http://localhost:8000",
-        "file:///private/policy",
+        "file:policy.yaml",
         "https://user:password@example.test",
         "https://example.test?token=secret",
         "https://example.test#fragment",
@@ -232,7 +232,24 @@ def test_header_encoding_and_size_contract(headers: dict[str, str]) -> None:
     asyncio.run(scenario())
 
 
-def test_stream_bound_without_content_length_and_bad_304_body() -> None:
+class CountingStream(httpx.AsyncByteStream):
+    """Offer chunks of the given sizes with no declared length; count the pulls."""
+
+    def __init__(self, sizes: Sequence[int]) -> None:
+        self.sizes = tuple(sizes)
+        self.pulled = 0
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        for size in self.sizes:
+            self.pulled += 1
+            yield b"x" * size
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_declared_length_bound_and_bad_304_body() -> None:
     async def scenario() -> None:
         selection = configuration(1).agents[0]
         expected = reply(document(selection))
@@ -240,6 +257,8 @@ def test_stream_bound_without_content_length_and_bad_304_body() -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             if "If-None-Match" in request.headers:
                 return response(selection, status=304, content=b"unexpected")
+            # httpx derives Content-Length from bytes content, so this response
+            # is rejected by the header check before any chunk is read.
             return response(
                 selection,
                 content=b"x" * (1024 * 1024 + 1),
@@ -259,6 +278,79 @@ def test_stream_bound_without_content_length_and_bad_304_body() -> None:
                 await source.fetch(selection, expected.etag)
         finally:
             await source.aclose()
+
+    asyncio.run(scenario())
+
+
+MEBIBYTE = 1024 * 1024
+CHUNK = 65536  # The source reads the response body in chunks of this size.
+
+
+def streamed_source(
+    stream: CountingStream, etag: str
+) -> tuple[HttpPolicySource, list[httpx.Response]]:
+    built: list[httpx.Response] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        result = httpx.Response(
+            200,
+            headers={"Content-Type": "application/json", "ETag": etag},
+            stream=stream,
+        )
+        built.append(result)
+        return result
+
+    source = HttpPolicySource(
+        "https://policies.example.test",
+        Bearer(),
+        transport=httpx.MockTransport(handler),
+    )
+    return source, built
+
+
+def test_stream_bound_without_content_length() -> None:
+    async def scenario() -> None:
+        selection = configuration(1).agents[0]
+        expected = reply(document(selection))
+        stream = CountingStream([CHUNK] * 64)  # 4 MiB offered, 1 MiB allowed
+        source, built = streamed_source(stream, expected.etag)
+        try:
+            with pytest.raises(PolicySourceError) as failure:
+                await source.fetch(selection, None)
+        finally:
+            await source.aclose()
+        assert failure.value.code == "body_too_large"
+        # Only the per-chunk cap can have rejected it: no length was declared.
+        # Sixteen chunks are exactly 1 MiB; the seventeenth crosses the limit and
+        # nothing more is read.
+        assert "Content-Length" not in built[0].headers
+        assert stream.pulled == MEBIBYTE // CHUNK + 1
+        assert stream.closed
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "extra,accepted", [(0, True), (1, False)], ids=["one-mebibyte", "one-byte-over"]
+)
+def test_stream_bound_is_exactly_one_mebibyte(extra: int, accepted: bool) -> None:
+    async def scenario() -> None:
+        selection = configuration(1).agents[0]
+        expected = reply(document(selection))
+        sizes = [CHUNK] * (MEBIBYTE // CHUNK) + ([extra] if extra else [])
+        stream = CountingStream(sizes)
+        source, _ = streamed_source(stream, expected.etag)
+        try:
+            if accepted:
+                result = await source.fetch(selection, None)
+                assert isinstance(result, Changed) and len(result.body) == MEBIBYTE
+            else:
+                with pytest.raises(PolicySourceError) as failure:
+                    await source.fetch(selection, None)
+                assert failure.value.code == "body_too_large"
+        finally:
+            await source.aclose()
+        assert stream.pulled == len(sizes)
 
     asyncio.run(scenario())
 

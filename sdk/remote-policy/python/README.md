@@ -98,8 +98,13 @@ Native engine errors remain fail-closed deny verdicts with `runtime_error:*` rea
 An activation is single-owner/single-use, even if its interceptor is closed
 without entering. Call `activate()` again for a new lifetime. Use separate loaders
 and credential registries for concurrent lifetimes. Remote evaluation has one
-process-wide slot/no queue and returns `runtime_error:acs_async_capacity_exceeded`
-at capacity; it does not inherit local concurrency 8. Remote mode requires strict
+process-wide slot and no queue, unlike local mode's default concurrency of 8.
+Every overlapping call, for another agent or another interceptor, returns
+`runtime_error:acs_async_capacity_exceeded`, and the warning log names the agent.
+Each evaluation starts a fresh isolated child process: on a Linux developer laptop
+with the sample policy the median was about 0.29 seconds, so the ceiling is
+roughly 3 to 4 evaluations per second per process. Measure your own host and
+policy. Remote mode requires strict
 scope and rejects non-default local admission options/native dispatchers or
 telemetry it cannot honor. Synchronous remote evaluation/introspection raises
 `ManagedPolicyUsageError`; pre-READY use is an error, while closing/closed use
@@ -123,10 +128,16 @@ This final check does not make a later emitter/application await atomic with the
 effect. Re-evaluate if execution is deferred or a later interceptor awaits.
 
 The YAML uses the existing `remote_policy` schema; the filename is not fixed.
-Configure a provider already registered in trusted host code, such as the optional
-`azure_cli` adapter. Custom providers use
+Configure a provider that trusted host code has registered, such as the optional
+`azure_cli` adapter. The default credential registry is empty: a `credential_ref`
+is refused unless the host registered the provider its YAML names, so a YAML file
+alone never selects a credential factory. Register providers with
+`RemotePolicyFileLoader(registry=CredentialProviderRegistry(factories))` or
 `RemotePolicyClient.open(path, registry=CredentialProviderRegistry(factories))`;
 YAML never imports or executes provider code. No AWS signer is bundled.
+Whoever can write the YAML controls the options a registered factory receives
+(the Azure CLI factory's token `scope`) and the `endpoint` that receives the
+resulting credential, so treat it as trusted host configuration.
 The native base SDK still has no dependency on this optional client.
 
 The existing `RemotePolicyClient.open(path)` remains supported: its
@@ -230,12 +241,10 @@ Missing optional install preserves the native parser error with an install hint.
 Recognized invalid remote roots preserve the native error type with a safe
 `code=config; path=remote_policy` diagnostic, not configuration contents.
 
-Before publishing managed activation, the release owner must assign and document
-the **minimum core release shipping capability 1**, select compatible optional
-release metadata, and pass actual old/new installed-archive checks. Current
-`0.4.0b1` metadata is not proof every earlier archive has that capability.
-Do not republish changed bytes under an already published version; no unrelated
-cross-language version bump is part of this feature.
+The polling package requires the core release it is published with, which is the
+first release that carries capability 1. A core published earlier does not, so
+`0.4.0b1` metadata is not proof an archive has that capability. The release
+checklist is in [RELEASING.md](../../../RELEASING.md).
 
 ### Reusable credential interfaces
 
@@ -263,8 +272,9 @@ signing; the HMAC test double is not an AWS implementation.
 ### Customer-owned signer, Azure, and switching back to local files
 
 The same host setup supports a customer-owned request signer and the optional
-Azure adapter. An explicit registry **replaces** the defaults; include the Azure
-factories when both provider keys should be available:
+Azure adapter. The default registry is empty and an explicit registry is the
+complete allow-list, so register every provider key the YAML may name, including
+the Azure factories when you want them:
 
 ```python
 from agent_control_spec import ActivatedPolicy
@@ -348,25 +358,10 @@ scheduled revision update, real local Rego evaluation through agent-hooks,
 path-only local switching and cleanup. This verifies the extension contract,
 not AWS IAM signature compatibility or live Azure/AWS authorization.
 
-`azure_credential_factories()` supplies the explicit `azure_cli` factory.
-The facade and default registry do not import Azure SDKs until Azure credential
-acquisition is needed. Azure SDKs are optional, not a fallback for custom providers.
-
-## Migration from the unreleased in-tree feature
-
-There are no compatibility shims or polling extras in the native SDK. Replace:
-
-| Previous import | Standalone import |
-| --- | --- |
-| `agent_control_spec.remote_policy` | `agent_control_spec_remote_policy.poller` |
-| `agent_control_spec.remote_policy_auth` | `agent_control_spec_remote_policy.auth` |
-| `agent_control_spec.remote_policy_http` | `agent_control_spec_remote_policy.http` |
-| `agent_control_spec.remote_policy_azure` | `agent_control_spec_remote_policy.azure` |
-
-Replace native `[remote-policy]`/`[azure]` installation requirements with the new
-distribution (and its `[azure]` extra when needed). Manifest parsing, manifest
-version discovery, validation, and evaluation remain imports from
-`agent_control_spec`, not from the optional package.
+`azure_credential_factories()` supplies the explicit `azure_cli` factory; nothing
+registers it for you. Importing the package or registering the factory does not
+import Azure SDKs until Azure credential acquisition is needed. Azure SDKs are
+optional, not a fallback for custom providers.
 
 ## Development and isolation checks
 

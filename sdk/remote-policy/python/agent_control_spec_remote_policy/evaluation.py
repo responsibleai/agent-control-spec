@@ -32,9 +32,13 @@ _WORKER_ADMISSION = threading.BoundedSemaphore(1)
 
 
 class _WorkerSlot:
-    def __init__(self) -> None:
+    def __init__(self, agent_id: str) -> None:
         if not _WORKER_ADMISSION.acquire(blocking=False):
-            _LOG.warning("policy_worker_busy")
+            _LOG.warning(
+                "policy_worker_busy agent=%s",
+                agent_id,
+                extra={"event": "policy_worker_busy", "agent_id": agent_id},
+            )
             raise PolicyCapacityError("Remote policy evaluator is busy")
         self.deferred = False
         self._released = False
@@ -196,7 +200,7 @@ async def evaluate_policy_snapshot(
         or not 0 < timeout_seconds <= 30
     ):
         raise PolicyValidationError("config")
-    slot = _WorkerSlot()
+    slot = _WorkerSlot(snapshot.selection.agent_id)
     try:
         return await _evaluate_admitted(
             snapshot, point, context, timeout_seconds=timeout_seconds, slot=slot

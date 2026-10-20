@@ -194,8 +194,10 @@ class RemotePolicyClient:
 
         Keep the context open while serving agents. It closes the poller/source
         before registry-owned credentials, including startup failure and
-        cancellation. Injected credentials remain caller-owned. An explicit
-        registry is a complete trusted allow-list, not executable YAML.
+        cancellation. Injected credentials remain caller-owned. Without a registry
+        or credentials no provider is allowed: a YAML ``credential_ref`` is
+        refused. An explicit registry is the complete trusted allow-list, not
+        executable YAML.
         """
         if registry is not None and credentials is not None:
             raise PolicyValidationError("config")
@@ -405,7 +407,11 @@ class RemotePolicyClient:
         """Return a snapshot-bound completion; caller must gate after its last await."""
         snapshot = self.get_policy(agent_id)
         if self._evaluation is not None and not self._evaluation.done():
-            _LOG.warning("policy_worker_busy")
+            _LOG.warning(
+                "policy_worker_busy agent=%s",
+                agent_id,
+                extra={"event": "policy_worker_busy", "agent_id": agent_id},
+            )
             raise PolicyCapacityError("Remote policy evaluator is busy")
         try:
             captured = decode_json(

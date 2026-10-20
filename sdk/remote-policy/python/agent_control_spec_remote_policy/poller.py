@@ -82,6 +82,10 @@ MAX_EVALUATION_BYTES = 2 * MAX_POLICY_BYTES
 MAX_YAML_BYTES = 64 * 1024
 MAX_AGENTS = 32
 MAX_CONCURRENT_FETCHES = 4
+# Slack kept between the last lease-aware request ending and the lease expiring.
+LEASE_REFRESH_MARGIN_SECONDS = 1.0
+# Slack at or below this is spent: it absorbs rounding so no attempt repeats.
+_LEASE_SLACK_EPSILON = 1e-6
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
 _QUERY = re.compile(r"data(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
 _ETAG = re.compile(r'"[0-9a-f]{64}"')
@@ -234,6 +238,40 @@ def _number(value: object, code: ValidationCode) -> float:
     if not math.isfinite(number):
         raise PolicyValidationError(code)
     return number
+
+
+def _lease_refresh_delay(
+    remaining: float, interval: float, timeout: float, not_before: float = 0.0
+) -> float | None:
+    """Seconds to wait before the next lease-aware refresh, or None for none.
+
+    A lease that still spans an interval plus one request needs nothing beyond
+    the fixed-rate poll. Within that last stretch, the window, the poller also
+    refreshes at halving distances from the latest start that lets a request of
+    ``timeout`` seconds end before expiry. The first attempt is timed from the
+    moment the window opens, even when that is still in the future, so a
+    fixed-rate poll that does not land in the window cannot skip it. Each wait is
+    at least ``timeout`` until the remaining slack is smaller than two timeouts;
+    then one last attempt is made at the latest start, ``timeout + margin``
+    before the lease expires, even if a slow earlier request left less slack
+    than a full timeout. Attempts are bounded: about
+    ``log2((interval + timeout) / timeout)`` per lease.
+
+    ``not_before`` is the least delay the caller accepts. It carries the spacing
+    between one agent's attempts across revisions, which this per-lease schedule
+    cannot see: a service that keeps issuing newer revisions with almost expired
+    leases would otherwise restart the schedule on every reply. An attempt that
+    cannot keep the spacing and still start by the latest start is skipped, and
+    the fixed-rate poll decides.
+    """
+    window = interval + timeout
+    latest = remaining - timeout - LEASE_REFRESH_MARGIN_SECONDS
+    slack = min(remaining, window) - timeout - LEASE_REFRESH_MARGIN_SECONDS
+    if slack <= _LEASE_SLACK_EPSILON or not_before > latest + _LEASE_SLACK_EPSILON:
+        return None
+    half = slack / 2
+    delay = max(remaining - window, 0.0) + (half if half >= timeout else slack)
+    return max(delay, not_before)
 
 
 class _YamlReader(Protocol):
@@ -905,6 +943,9 @@ class PolicyPoller:
         self._flights: dict[str, asyncio.Task[PolicySnapshot]] = {}
         self._requests: dict[str, asyncio.Task[Changed | NotModified]] = {}
         self._scheduler: asyncio.Task[None] | None = None
+        # Set when a refresh installs or fences a snapshot, so the scheduler
+        # re-plans lease-aware attempts instead of sleeping on a stale deadline.
+        self._replan = asyncio.Event()
         self._closing: asyncio.Task[None] | None = None
         self._source_closing: asyncio.Task[None] | None = None
 
@@ -992,7 +1033,7 @@ class PolicyPoller:
         )
 
     async def start(self) -> None:
-        """Download all required policies before starting the fixed-rate scheduler."""
+        """Download all required policies, then start the lease-aware scheduler."""
         loop = self._bind()
         if self._phase != "created":
             raise PolicyUsageError("Remote policy poller is single-use")
@@ -1049,8 +1090,10 @@ class PolicyPoller:
                 entry.state, entry.error = "failed", "internal"
                 self._audit("policy_internal_failure", entry, error=True)
 
-    async def _refresh_all(self) -> dict[str, PolicyError]:
-        agents = tuple(self._entries)
+    async def _refresh_all(
+        self, agents: tuple[str, ...] | None = None
+    ) -> dict[str, PolicyError]:
+        agents = tuple(self._entries) if agents is None else agents
         results = await asyncio.gather(
             *(asyncio.shield(self._flight(agent)) for agent in agents),
             return_exceptions=True,
@@ -1067,17 +1110,91 @@ class PolicyPoller:
                 )
         return failures
 
+    def _plan_lease_refreshes(
+        self,
+        due: dict[str, tuple[float, float]],
+        attempted: Mapping[str, float],
+        now: float,
+    ) -> None:
+        """Schedule an extra refresh for each snapshot nearing the end of its lease.
+
+        ``due`` maps an agent to ``(event-loop time, lease deadline)``. A plan is
+        kept while the snapshot it was made for is still the current one, and may
+        be far in the future: the first attempt waits for the window to open.
+        ``attempted`` holds the policy-clock time each agent's last extra attempt
+        started; it outlives snapshots, so a new revision never shortens the
+        spacing. The remaining lease and the spacing are both measured from one
+        policy-clock sample, so they cannot disagree by the time between reads.
+        """
+        interval = self.config.poll_interval_seconds
+        timeout = self.config.request_timeout_seconds
+        current = self._clock.monotonic()
+        for agent_id, entry in self._entries.items():
+            snapshot = entry.snapshot
+            if snapshot is None:
+                due.pop(agent_id, None)
+                continue
+            planned = due.get(agent_id)
+            if planned is not None and planned[1] == snapshot.monotonic_deadline:
+                continue
+            due.pop(agent_id, None)
+            started = attempted.get(agent_id)
+            delay = _lease_refresh_delay(
+                snapshot.monotonic_deadline - current,
+                interval,
+                timeout,
+                0.0 if started is None else started + timeout - current,
+            )
+            if delay is not None:
+                due[agent_id] = (now + delay, snapshot.monotonic_deadline)
+
     async def _run(self) -> None:
         loop = self._bind()
         interval = self.config.poll_interval_seconds
         next_poll = loop.time() + interval
+        due: dict[str, tuple[float, float]] = {}
+        attempted: dict[str, float] = {}
         while True:
-            await asyncio.sleep(max(0, next_poll - loop.time()))
-            await self._refresh_all()
-            next_poll += interval
-            now = loop.time()
-            if next_poll <= now:
-                next_poll += (math.floor((now - next_poll) / interval) + 1) * interval
+            self._plan_lease_refreshes(due, attempted, loop.time())
+            self._replan.clear()
+            lease_wake = min((when for when, _ in due.values()), default=math.inf)
+            regular = next_poll <= lease_wake
+            try:
+                async with asyncio.timeout(
+                    max(0, min(next_poll, lease_wake) - loop.time())
+                ):
+                    await self._replan.wait()
+            except TimeoutError:
+                pass
+            else:
+                continue  # A snapshot changed before anything was due: plan again.
+            # Something is due. A change signaled in the turn the timer fired does
+            # not defer it, so replan signals can never starve the fixed-rate poll;
+            # a plan made for a snapshot replaced or fenced since is skipped below.
+            if regular:
+                await self._refresh_all()
+                next_poll += interval
+                now = loop.time()
+                if next_poll <= now:
+                    next_poll += (
+                        math.floor((now - next_poll) / interval) + 1
+                    ) * interval
+            else:
+                now = loop.time()
+                cutoff = max(lease_wake, now)
+                ready = tuple(
+                    agent
+                    for agent, (when, deadline) in due.items()
+                    if when <= cutoff and self._lease_deadline(agent) == deadline
+                )
+                for agent in ready:
+                    del due[agent]
+                    attempted[agent] = self._clock.monotonic()
+                await self._refresh_all(ready)
+
+    def _lease_deadline(self, agent_id: str) -> float | None:
+        snapshot = self._entries[agent_id].snapshot
+        return None if snapshot is None else snapshot.monotonic_deadline
 
     def _scheduler_finished(self, task: asyncio.Task[None]) -> None:
         if (
@@ -1113,6 +1230,7 @@ class PolicyPoller:
         changed = entry.snapshot is not None or entry.error != code
         entry.snapshot = None
         entry.state, entry.error = "unavailable", code
+        self._replan.set()
         if changed:
             self._audit("policy_fenced", entry, error=True)
 
@@ -1199,6 +1317,7 @@ class PolicyPoller:
             )
             entry.state, entry.error = "active", None
             entry.last_success = self._clock.utcnow()
+            self._replan.set()
             self._audit("policy_installed", entry)
             return candidate
         except (PolicySourceError, PolicyValidationError, PolicyUnavailable) as failure:

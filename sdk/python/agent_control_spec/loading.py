@@ -14,6 +14,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import stat
 import threading
 from collections.abc import Callable, Mapping
@@ -29,6 +30,8 @@ _T = TypeVar("_T")
 _LOG = logging.getLogger(__name__)
 # Routing is advisory: none of these may replace the native activation error.
 _CLASSIFIER_FAILURES = (ValueError, OverflowError, RecursionError, TypeError)
+# A cheap hint-only filter: YAML or JSON text with a ``remote_policy`` key.
+_REMOTE_ROOT = re.compile(r"""^[ \t{]*["']?remote_policy["']?[ \t]*:""", re.MULTILINE)
 
 
 class ManagedPolicyUsageError(RuntimeError):
@@ -385,7 +388,10 @@ def prepare_managed(
             PollerConfig,
         )
     except ImportError as failure:
-        native_error.add_note(_optional_import_note(failure))
+        # Hint only when the file plausibly is remote configuration: a plain
+        # typo in a local manifest keeps exactly the native error.
+        if _REMOTE_ROOT.search(source) is not None:
+            native_error.add_note(_optional_import_note(failure))
         return None
     try:
         PollerConfig.from_yaml(source)

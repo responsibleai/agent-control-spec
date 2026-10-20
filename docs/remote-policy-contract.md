@@ -1,9 +1,9 @@
 # Remote policy download contract v1
 
-**Unreleased optional Python package.** Install `agent-control-spec-remote-policy`
-separately from the base SDK; its import namespace is
-`agent_control_spec_remote_policy`. This is a new provider-neutral distribution
-contract, not an existing cloud provider's management API.
+This is an optional Python package that has not been released yet. Install
+`agent-control-spec-remote-policy` separately from the base SDK; its import
+namespace is `agent_control_spec_remote_policy`. This is a new provider-neutral
+distribution contract, not an existing cloud provider's management API.
 Policy creation, updates, inheritance, authorization, and storage remain the
 backend's responsibility. The SDK only downloads complete artifacts and caches
 them **in memory**, independently for each configured agent.
@@ -16,7 +16,7 @@ flowchart LR
         Storage[("Policy storage")] --> API["Authenticated policy API"]
     end
     subgraph Host["Trusted agent host"]
-        Auth["Customer signer or Azure authentication"]
+        Auth["Customer-owned signer or token provider"]
         Download["Policy download and configured refresh"]
         Policy["Validated policy in memory"]
         Evaluate["Local ACS evaluation"]
@@ -39,6 +39,15 @@ host enforcement. See the
 
 ## Configuration and lifecycle
 
+The lifecycle decision is that `ActivatedPolicy.activate(path)` stays synchronous
+and never touches the network, and that readiness moves to the asynchronous
+context entry. A synchronous `activate()` therefore cannot return a policy whose
+first snapshot already exists. The host learns that the policy is ready when
+`async with AsyncAcsInterceptor(policy)` returns, and evaluation before then
+raises `ManagedPolicyUsageError`. The alternative, an asynchronous `activate()`
+for remote files only, would give local and remote policies different call shapes
+and end the path-only switch back to a local manifest.
+
 Use `ActivatedPolicy.activate(path)` then `async with AsyncAcsInterceptor(policy)`
 for either local ACS or remote-policy YAML. Remote activation captures validated
 configuration synchronously, without network work. Async entry opens configured
@@ -56,8 +65,13 @@ The v1 artifact contract/restricted ACS profile below are unchanged.
 
 Remote activation is single-owner/single-use. Call `activate()` again for a new
 lifetime; use separate loaders/registries for concurrent lifetimes. There is one
-process-wide evaluation slot/no queue, not local default concurrency 8; capacity
-denies with `runtime_error:acs_async_capacity_exceeded`. Before READY, evaluation
+process-wide evaluation slot and no queue, unlike local mode's default
+concurrency of 8. Every overlapping call, for another agent or another
+interceptor, is denied with `runtime_error:acs_async_capacity_exceeded`, and the
+warning log names the agent. Each evaluation starts a fresh isolated child
+process: on a Linux developer laptop with the sample policy the median was about
+0.29 seconds, so the ceiling is roughly 3 to 4 evaluations per second per
+process. Measure your own host and policy. Before READY, evaluation
 raises `ManagedPolicyUsageError`; close returns closed denials, including pending
 calls unless their caller requested cancellation. Remote synchronous evaluation/
 introspection and incompatible local overrides raise clear usage errors.
@@ -110,7 +124,8 @@ are positive, at most 120 seconds, and below the interval.
 
 - `PolicyPoller(config, source)` has no background work until `await start()`.
 - Startup downloads **all** required agents or raises `StartupError` and closes.
-- Refreshes run at a fixed-rate **300-second default**, skipping missed periods.
+- Refreshes run at a fixed rate (**300-second default**), skipping missed periods,
+  plus extra refreshes as a lease nears its end ([freshness](#freshness-failures-and-ownership)).
 - `await refresh(agent_id)` forces a shared, single-flight refresh.
 - `get_policy(agent_id)` returns a current immutable `PolicySnapshot`, or raises
   `PolicyUnavailable`. `bundles()` returns a fresh copy, not mutable cache data.
@@ -152,9 +167,9 @@ Managed integration uses capability 1 in both distributions and lazy optional
 exports. Old-core/new-optional low-level imports remain supported; managed access
 fails explicitly. New-core/old-optional valid remote activation raises
 `RemotePolicyDependencyError`, while local activation remains available.
-Before release, document the exact minimum core version shipping that capability
-and verify actual old/new installed archives; do not infer it from reused
-`0.4.0b1` development metadata or bump unrelated language packages here.
+The polling package requires the core release it is published with, which is the
+first release that carries capability 1. An older published core does not.
+The release checklist is in [RELEASING.md](../RELEASING.md).
 
 ## HTTP request and response
 
@@ -163,8 +178,13 @@ GET {endpoint}/v1/tenants/{tenant_id}/policies/{policy_id}
 Authorization: <host-provided value>
 Accept: application/json
 Accept-Encoding: identity
+X-Request-ID: <32 random hexadecimal characters>
 If-None-Match: "<previous-sha256>"
 ```
+
+The client sends a fresh `X-Request-ID` on every request so a request can be
+found in service logs. It is correlation only: it carries no identity or
+authorization, and the service must not trust or require it.
 
 Send `If-None-Match` **only while an active, unexpired snapshot exists**. Recovery
 after expiration or an authorization fence uses an unconditional GET.
@@ -214,7 +234,7 @@ characters. No expression, indexing or call. Reject disk/URL bundles, adapter
 and unknown binding fields. Native empty defaults for `extends`, `annotators`,
 and point `annotations` are harmless and allowed; nonempty values are rejected.
 
-**A downloaded snapshot is not an activated or prepared policy.** Do not feed
+A downloaded snapshot is not an activated or prepared policy. Do not feed
 untrusted Rego into host in-process `ActivatedPolicy.from_memory`. Use a reviewed
 isolation/evaluation adapter and fail closed on errors. The
 [reference example](../examples/remote_policy/README.md) evaluates the actual
@@ -224,9 +244,43 @@ high-throughput hot-swap interceptor.
 ## Freshness, failures and ownership
 
 Lease duration must be at least `2 * interval + timeout`, at most 24 hours.
-Recommend **15-minute leases**. The service must publish renewal with a greater
-revision before expiration. Changing any bytes, including expiration, requires
-a larger revision.
+Recommend **15-minute leases**. Changing any bytes, including expiration,
+requires a larger revision.
+
+A `304` and an identical `200` never extend a lease: only a newer revision does.
+The publish cadence is therefore a requirement of this contract, not a tuning
+option. The service must issue each next revision, with a greater `revision` and
+new `issued_at` and `expires_at`, no later than
+
+```text
+lease - 2 * poll_interval - request_timeout
+```
+
+after the previous one. With a 900-second lease, a 300-second interval and a
+10-second timeout that is 290 seconds. Within that bound two fixed-rate polls
+fall between the new revision and the old expiry, so one failed poll does not
+fail the agent closed. A service that publishes every 600 seconds against that
+900-second lease can fail every agent closed for up to 300 seconds after one
+transient `5xx`; at 890 seconds it can miss the lease boundary with no error at
+all.
+
+The poller also refreshes early as a lease ends. Beginning `poll_interval +
+request_timeout` before expiry it targets extra attempts for that agent at
+halving distances. The last target is `request_timeout + 1 second` before
+expiry, even if a slow earlier request left less than a full timeout. At the
+defaults that is at most five extra attempts in the final 310 seconds. The times
+are targets, not guarantees: attempts share one scheduler with the fixed-rate
+poll, so a poll still running when an attempt falls due delays it until the poll
+ends, and slack under a microsecond counts as spent. A failed attempt is retried
+while the snapshot is still valid, and any refresh that installs a different
+snapshot replans the attempts at once, without delaying a poll or an attempt
+that is already due. Extra attempts for one agent start at least one
+`request_timeout` apart even across revisions, so a service that keeps
+issuing newer revisions with nearly expired leases cannot make the poller hammer
+it; an attempt that cannot keep that spacing and still start by the last target
+is skipped, and the next fixed-rate poll decides. This absorbs a late or retried
+publication. It does not replace the cadence above: a service that publishes
+after the last attempt still fails the agent closed until it does.
 
 `304` must echo the requested ETag and contain no body. It **never extends the
 lease**. An identical `200` body and ETag skip repeat artifact decoding and
@@ -240,6 +294,7 @@ delete/recreate at a lower revision needs an explicit trusted operator restart.
 |---|---|
 | `401/403/404/410` | Fence that agent immediately; no automatic token retry |
 | `429/5xx`, transport timeout | Surface error; retain only still-valid previous artifacts |
+| Protocol violation: redirect, unexpected status, `Content-Encoding`, weak or missing `ETag`, wrong `Content-Type`, body over 1 MiB, or a `304` with a body | Surface a `PolicySourceError` of kind `protocol`; never follow, retry or decode the response; retain only still-valid previous artifacts |
 | Malformed/scope-mismatched candidate | Reject candidate; never replace a valid snapshot |
 | Expired, absent, changed-during-evaluation | Raise; host must not execute |
 | Unexpected scheduler failure/cancellation | Fence access |
@@ -280,10 +335,18 @@ These fields belong inside `remote_policy`, alongside the endpoint and agents.
 `CredentialProviderRegistry.open(config)` opens only the selected named factory
 and supplies a read-only reference-to-provider mapping for
 `HttpPolicySource.from_config`. Register `custom_platform` in trusted host code;
-it is an example registry key, not a built-in provider. An explicit host registry
-is the complete allow-list of trusted factories. Unknown references/kinds fail
-without fallback. YAML never names executable modules, commands or arbitrary
+it is an example registry key, not a built-in provider. The registry is the
+complete allow-list of trusted factories and is empty by default: a
+`credential_ref` that names a provider the host did not register is refused
+before any credential is acquired or request is sent. Unknown references/kinds
+fail without fallback. YAML never names executable modules, commands or arbitrary
 classes. See the [custom-provider example](../examples/remote_policy/README.md#custom-providers).
+
+A registered factory is given the YAML's options, and the YAML chooses the
+`endpoint` that receives the resulting credential. Whoever can write the YAML
+therefore controls the token audience (the Azure CLI factory's `scope`) and the
+destination the token is sent to, before any policy is fetched or checked.
+Treat the file as trusted host configuration, never as user input.
 
 Definitions and their scalar options are immutable, hidden from representations
 and defensively copied. There are at most 32 definitions and 32 option keys per
@@ -368,8 +431,11 @@ flat-selector slice.
 interface; request-signing providers implement `RequestAuthenticator` instead.
 Both are supported by the provider-neutral HTTP source.
 
-The default credential registry supplies only the optional `azure_cli` factory.
-Selecting it explicitly requires the polling package's `azure` dependency extra:
+The default registry is empty, so host code must register the Azure CLI factory,
+for example `CredentialProviderRegistry(azure_credential_factories())`, before
+YAML can select it. Selecting it also requires the polling package's `azure`
+dependency extra. With the factory registered, the YAML chooses the token scope
+and the endpoint that receives the token:
 
 ```yaml
 credential_ref: policy-reader

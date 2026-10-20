@@ -64,8 +64,12 @@ the advanced client path; normal managed scheduling comes from YAML.
 
 Remote handles are single-owner/single-use: call `activate()` again for a new
 lifetime, and use separate loaders/registries for concurrent lifetimes. Remote
-evaluation has one process-wide slot/no queue, not local concurrency 8. Capacity
-denies with `runtime_error:acs_async_capacity_exceeded`. Use async entry and close
+evaluation has one process-wide slot and no queue, unlike local concurrency 8.
+Every overlapping call, for another agent or interceptor, is denied with
+`runtime_error:acs_async_capacity_exceeded`, and the warning log names the agent.
+Each evaluation starts a fresh child process (median about 0.29 seconds on a
+Linux developer laptop), so the ceiling is roughly 3 to 4 evaluations per second
+per process; measure your own host. Use async entry and close
 on the same owner loop; synchronous remote evaluation/introspection is an error.
 The final snapshot check occurs after the interceptor's last await, but does not
 cover a later application or emitter await. Re-evaluate if execution is deferred.
@@ -175,29 +179,43 @@ polling package's `azure` extra and sign into the CLI in the same OS environment
 Python. The `azure_cli` factory creates and closes `AzureCliCredential`.
 No default credential chain or automatic sign-in is used.
 
+The default registry is empty. The demo's `--remote` mode registers this factory
+itself (see `_demo_registry` in `demo.py`); your own host must do the same with
+`CredentialProviderRegistry(azure_credential_factories())`. Once registered, the
+YAML chooses the token `scope` and the `endpoint` that receives the token, so keep
+the file as trusted as host code.
+
 ```powershell
 python -m pip install -e ".\sdk\remote-policy\python[azure]"
 ```
 
 The `--azure` mode supports explicit `azure-cli`,
 `managed-identity`, or `workload-identity` credential selection, with required
-`--endpoint` and `--scope`. It warns that its explicit arguments take precedence.
+`--endpoint` and `--scope`. It logs a note that its explicit arguments take precedence.
 Use `--remote` for configuration-selected credentials. Neither mode is deprecated.
 
 ## Use the SDK in your host
 
 ```python
 from agent_control_spec_remote_policy import RemotePolicyClient
+from agent_control_spec_remote_policy.auth import CredentialProviderRegistry
 from agent_control_spec_remote_policy.poller import JsonValue
 
 
-async def run_agent(context: dict[str, JsonValue]) -> None:
-    async with RemotePolicyClient.open("remote-policies.yaml") as policies:
+async def run_agent(
+    context: dict[str, JsonValue], registry: CredentialProviderRegistry
+) -> None:
+    async with RemotePolicyClient.open(
+        "remote-policies.yaml", registry=registry
+    ) as policies:
         verdict = await policies.evaluate("agent-1", "pre_tool_call", context)
         print(verdict.to_wire())
 ```
 
-Keep that context open while the application serves agents.
+Keep that context open while the application serves agents. The `registry` holds
+the credential factories your host registered (see
+[Custom providers](#custom-providers)); without one, a YAML `credential_ref` is
+refused.
 The library owns YAML parsing, configured credentials, HTTP, polling, conditional
 ETags, isolated native evaluation, freshness checks, and cleanup. Customers do
 not copy the demo's refund helper or worker machinery. The YAML filename is
@@ -223,8 +241,9 @@ command. An AWS signer or another platform can implement
 headers for the final immutable method, URL, headers and body.
 There is no built-in AWS signer, S3/AppConfig source or verified AWS deployment.
 
-An explicit registry is the complete allow-list, not merged with defaults.
-A custom registry works without any cloud SDK dependencies unless its factory
+The registry is the complete allow-list, and the default registry is empty: a
+`credential_ref` is refused unless the host registered its provider. A custom
+registry works without any cloud SDK dependencies unless its factory
 requires them. Host registration has this shape:
 
 ```python
@@ -248,11 +267,6 @@ explicitly by `AzureAuthorizationProvider` and available to other token provider
 including AWS-style schemes. Both are accepted by the same `Credential` boundary;
 a credential must implement exactly one interface. No built-in AWS signer is
 included.
-
-Before this extraction, unreleased checkout imports lived under
-`agent_control_spec.remote_policy*`. Update them to the `poller`, `auth`, `http`
-and `azure` modules of `agent_control_spec_remote_policy`; no compatibility
-modules remain in the base package.
 
 Providers cannot replace routing, framing, cookies, encoding, conditional or
 correlation headers. See the [authentication contract](../../docs/remote-policy-contract.md#authentication-and-provider-configuration)

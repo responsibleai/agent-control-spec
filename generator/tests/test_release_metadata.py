@@ -24,7 +24,12 @@ def copied_metadata(tmp_path):
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((module.ROOT / relative).read_bytes())
-    for relative in ("Cargo.lock", "sdk/python/Cargo.lock", *module.MATURIN_PIN_FILES):
+    for relative in (
+        "Cargo.lock",
+        "sdk/python/Cargo.lock",
+        *module.MATURIN_PIN_FILES,
+        *module.SETUPTOOLS_PIN_FILES,
+    ):
         destination = tmp_path / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes((module.ROOT / relative).read_bytes())
@@ -36,6 +41,66 @@ def test_generator_is_part_of_version_consistency_check():
     module = checker()
     assert "generator/pyproject.toml" in module.read_versions()
     assert module.main() == 0
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("0.4.0b1", "agent-control-spec>=0.4.0b1,<0.5"),
+        ("0.4.1", "agent-control-spec>=0.4.1,<0.5"),
+        ("0.5.0a1", "agent-control-spec>=0.5.0a1,<0.6"),
+        ("1.2.0", "agent-control-spec>=1.2.0,<2"),
+    ],
+)
+def test_polling_requirement_is_derived_from_the_core_version(version, expected):
+    assert checker().sdk_requirement(version) == expected
+
+
+def replace_once(path, old, new):
+    text = path.read_text(encoding="utf-8")
+    assert text.count(old) == 1, f"{old!r} must occur exactly once in {path.name}"
+    path.write_text(text.replace(old, new), encoding="utf-8")
+
+
+def test_polling_requirement_cannot_name_an_older_core(tmp_path):
+    module = copied_metadata(tmp_path)
+    core = module.read_versions()["sdk/python/pyproject.toml"]
+    replace_once(
+        tmp_path / "sdk/remote-policy/python/pyproject.toml",
+        module.sdk_requirement(core),
+        "agent-control-spec>=0.0.1,<0.5",
+    )
+    with pytest.raises(AssertionError, match="polling package must require"):
+        module.read_versions()
+
+
+def test_core_version_bump_must_move_the_polling_requirement(tmp_path):
+    module = copied_metadata(tmp_path)
+    core = module.read_versions()["sdk/python/pyproject.toml"]
+    replace_once(
+        tmp_path / "sdk/python/pyproject.toml",
+        f'version = "{core}"',
+        f'version = "{core}.post9"',
+    )
+    with pytest.raises(AssertionError, match="polling package must require"):
+        module.read_versions()
+
+
+def test_setuptools_pin_drift_is_rejected(tmp_path, capsys):
+    module = copied_metadata(tmp_path)
+    path = tmp_path / ".github/requirements/setuptools.txt"
+    text, count = re.subn(
+        r"^setuptools==[\w.]+",
+        "setuptools==0.0.1",
+        path.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    assert count == 1
+    path.write_text(text, encoding="utf-8")
+    assert module.main() == 1
+    diagnostic = capsys.readouterr().out
+    assert "setuptools pins disagree" in diagnostic
+    assert ".github/requirements/setuptools.txt: 0.0.1" in diagnostic
 
 
 def test_generator_version_drift_is_rejected(tmp_path):
