@@ -79,7 +79,7 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
-serde-saphyr = { version = "1.2", default-features = false, features = ["deserialize"] }
+serde-saphyr = { version = "2.0", default-features = false, features = ["deserialize"] }
 serde_path_to_error = "0.1.20"
 sha2 = "0.11"
 base64 = "0.23"
@@ -88,12 +88,12 @@ ureq = "3"
 cedar-policy = { version = "4", optional = true }
 # sdk/python pins this crate exactly for AST inspection; its tests compare the
 # compiled AST marker with the resolved Cargo.lock version before any release.
-regorus = { version = "0.12", features = ["arc"], optional = true }
+regorus = { version = "0.13", features = ["arc"], optional = true }
 tempfile = { version = "3.20", optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 
 [dev-dependencies]
-serde-saphyr = { version = "1.2", default-features = false, features = ["serialize", "deserialize"] }
+serde-saphyr = { version = "2.0", default-features = false, features = ["serialize", "deserialize"] }
 agent-hooks-sdk = { version = "0.1.0-beta.2", features = ["ctk"] }
 tokio = { version = "1", features = ["macros", "rt"] }
 jsonschema = { version = "0.47", default-features = false }
