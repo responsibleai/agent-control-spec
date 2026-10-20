@@ -146,6 +146,13 @@ provider. Keep the endpoint, agents and scheduling fields from the template.
 The API owner supplies the authentication requirements and grants read access
 for each selection. Authentication alone does not authorize a policy read.
 The API must implement the public v1 contract; no existing service API is assumed.
+With the template's 300-second interval and 10-second timeout, the policy service
+must publish a greater revision no later than
+`lease - 2 * poll_interval - request_timeout` after the previous one, even when
+the policy has not changed (290 seconds for a 900-second lease), and a `304` never
+extends a lease. The
+[contract](../../docs/remote-policy-contract.md#freshness-failures-and-ownership)
+is the normative source.
 
 ```powershell
 python -m examples.remote_policy.demo --remote --config .\examples\remote_policy\policies.yaml --watch-seconds 650

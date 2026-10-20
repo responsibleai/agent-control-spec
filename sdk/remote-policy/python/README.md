@@ -326,6 +326,13 @@ remote_policy:
       policy_id: policy-1
 ```
 
+With these settings the policy service must publish a greater revision no later
+than `lease - 2 * poll_interval - request_timeout` after the previous one, even
+when the policy has not changed (290 seconds for a 900-second lease), and a `304`
+never extends a lease. The
+[contract](../../../docs/remote-policy-contract.md#freshness-failures-and-ownership)
+is the normative source.
+
 `customer_aws`, `region` and `service` are a host-defined factory contract, not
 built-in AWS configuration. For Azure, change the selected definition to
 `provider: azure_cli` with `scope` and optional `process_timeout_seconds`, as

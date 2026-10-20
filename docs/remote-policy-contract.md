@@ -271,16 +271,18 @@ expiry, even if a slow earlier request left less than a full timeout. At the
 defaults that is at most five extra attempts in the final 310 seconds. The times
 are targets, not guarantees: attempts share one scheduler with the fixed-rate
 poll, so a poll still running when an attempt falls due delays it until the poll
-ends, and slack under a microsecond counts as spent. A failed attempt is retried
-while the snapshot is still valid, and any refresh that installs a different
-snapshot replans the attempts at once, without delaying a poll or an attempt
-that is already due. Extra attempts for one agent start at least one
+ends, and an attempt still running when a poll falls due delays the poll by up to
+one request timeout. Slack under a microsecond counts as spent. A failed attempt
+is retried while the snapshot is still valid, and any refresh that installs a
+different snapshot replans the attempts at once, without delaying a poll or an
+attempt that is already due. Extra attempts for one agent start at least one
 `request_timeout` apart even across revisions, so a service that keeps
 issuing newer revisions with nearly expired leases cannot make the poller hammer
 it; an attempt that cannot keep that spacing and still start by the last target
 is skipped, and the next fixed-rate poll decides. This absorbs a late or retried
 publication. It does not replace the cadence above: a service that publishes
-after the last attempt still fails the agent closed until it does.
+after the last attempt still leaves the agent failed closed until the first
+fixed-rate poll after the publication.
 
 `304` must echo the requested ETag and contain no body. It **never extends the
 lease**. An identical `200` body and ETag skip repeat artifact decoding and
