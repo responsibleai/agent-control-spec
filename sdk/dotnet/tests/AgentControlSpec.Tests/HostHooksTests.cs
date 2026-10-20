@@ -8,6 +8,7 @@
 // decides the verdict. Before these entry points there was no way to
 // supply one from any language but Rust.
 
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using AgentControlSpec;
 using AgentHooks;
@@ -121,6 +122,158 @@ public sealed class HostHooksTests : IDisposable
         Assert.Equal("unsafe_content", verdict.Reason);
         await Assert.ThrowsAsync<ObjectDisposedException>(
             async () => await interceptor.InterceptAsync(Input("hello")));
+    }
+
+    private string WriteBlockingFixture()
+    {
+        // A custom policy answered by a host dispatcher: nothing is read
+        // from disk during evaluation, so the call a deadline abandons can
+        // finish after this directory is gone.
+        var manifest = Path.Combine(_dir, "blocking-manifest.yaml");
+        File.WriteAllText(manifest, """
+            agent_control_specification_version: "0.4.0-alpha.1"
+            metadata:
+              name: host-hooks-blocking
+            policies:
+              gate:
+                type: custom
+                adapter: host
+            intervention_points:
+              input:
+                policy_target: "$snap.input"
+                policy:
+                  id: gate
+            """);
+        return manifest;
+    }
+
+    [Fact]
+    public async Task EmitterTimeoutPreemptsABlockingDispatcher()
+    {
+        // The host policy dispatcher blocks well past the emitter's
+        // deadline. The emitter must record its timeout deny on time,
+        // which it can do only if InterceptAsync yields while the engine
+        // runs; evaluated inline, the emission would stay open for the
+        // whole wait.
+        var manifest = WriteBlockingFixture();
+        using var inDispatcher = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var finished = new ManualResetEventSlim();
+        var interceptor = AcsHostInterceptor.FromPath(
+            manifest,
+            policy: _ =>
+            {
+                inDispatcher.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+                finished.Set();
+                return """{"decision":"allow"}""";
+            });
+        var emitter = new InterceptionEmitter(
+            EnforcementMode.Enforce, timeout: TimeSpan.FromMilliseconds(200));
+        emitter.Register(interceptor, "acs");
+        // The file's Input() helper carries no envelope, and the emitter
+        // denies that as host_error:context_invalid before dispatch.
+        var ctx = new AgentContextBuilder(agentId: "a", framework: "test", sessionId: "s")
+            .Input("hello");
+
+        var sw = Stopwatch.StartNew();
+        var record = await emitter.EmitUncheckedAsync(ctx);
+        sw.Stop();
+
+        Assert.Equal(Decision.Deny, record.Verdict.Decision);
+        // The emitter arms two timers with the same limit: a token it
+        // cancels and a delay it races the call against. Whichever lands
+        // first names the reason; both are fail-closed host denies.
+        var reason = record.Verdict.Reason;
+        Assert.True(
+            reason is "host_error:interceptor_timeout" or "host_error:interceptor_failed",
+            $"unexpected reason {reason}");
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"the deny took {sw.Elapsed}");
+        Assert.True(inDispatcher.Wait(TimeSpan.FromSeconds(10)), "the dispatcher never ran");
+        Assert.False(finished.IsSet, "the dispatcher returned before the deadline");
+
+        // The abandoned call is still inside the dispatcher. Let it finish,
+        // make sure it does, then dispose: the native free runs only after
+        // that call's own release.
+        release.Set();
+        Assert.True(finished.Wait(TimeSpan.FromSeconds(10)), "the abandoned call did not finish");
+        interceptor.Dispose();
+    }
+
+    [Fact]
+    public async Task DisposeDuringAnAbandonedCallRefusesNewCalls()
+    {
+        // The abandoned call holds the handle open, so the handle alone
+        // cannot tell a later call that Dispose ran; the wrapper must.
+        // Without that check a call in this window evaluated as if nothing
+        // had been disposed.
+        var manifest = WriteBlockingFixture();
+        using var inDispatcher = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var finished = new ManualResetEventSlim();
+        var calls = 0;
+        var interceptor = AcsHostInterceptor.FromPath(
+            manifest,
+            policy: _ =>
+            {
+                Interlocked.Increment(ref calls);
+                inDispatcher.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+                finished.Set();
+                return """{"decision":"allow"}""";
+            });
+
+        using var cts = new CancellationTokenSource();
+        var abandoned = interceptor.InterceptAsync(Input("hello"), cts.Token).AsTask();
+        Assert.True(inDispatcher.Wait(TimeSpan.FromSeconds(10)), "the dispatcher never ran");
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandoned);
+
+        interceptor.Dispose();
+        Assert.False(finished.IsSet, "the abandoned call returned before Dispose");
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            async () => await interceptor.InterceptAsync(Input("hello")));
+        Assert.Equal(1, Volatile.Read(ref calls));
+
+        release.Set();
+        Assert.True(finished.Wait(TimeSpan.FromSeconds(10)), "the abandoned call did not finish");
+    }
+
+    [Fact]
+    public async Task TheConcurrencyCapDeniesWithTheRegisteredReason()
+    {
+        // One evaluation blocked inside its dispatcher fills a cap of one.
+        // The next call is denied at once with the reason the registry
+        // reserves for the ACS async adapter, and capacity returns when
+        // the blocked evaluation settles.
+        var manifest = WriteBlockingFixture();
+        using var inDispatcher = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var interceptor = AcsHostInterceptor.FromPath(
+            manifest,
+            policy: _ =>
+            {
+                inDispatcher.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+                return """{"decision":"allow"}""";
+            },
+            maxConcurrency: 1);
+
+        var first = interceptor.InterceptAsync(Input("one")).AsTask();
+        Assert.True(inDispatcher.Wait(TimeSpan.FromSeconds(10)), "the dispatcher never ran");
+
+        var sw = Stopwatch.StartNew();
+        var second = await interceptor.InterceptAsync(Input("two"));
+        sw.Stop();
+        Assert.Equal(Decision.Deny, second.Decision);
+        Assert.Equal("runtime_error:acs_async_capacity_exceeded", second.Reason);
+        Assert.Contains("maxConcurrency", second.Message);
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(2), $"the cap deny took {sw.Elapsed}");
+
+        release.Set();
+        Assert.Equal(Decision.Allow, (await first).Decision);
+        Assert.Equal(Decision.Allow, (await interceptor.InterceptAsync(Input("three"))).Decision);
+        interceptor.Dispose();
     }
 
     private string WriteChainedFixture()

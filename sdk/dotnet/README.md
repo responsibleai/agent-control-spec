@@ -17,6 +17,11 @@ annotators make HTTPS calls during evaluation when the manifest declares
 annotators, and evaluation blocks for the annotator budget. A manifest
 with no annotators makes no network call.
 
+`InterceptAsync` runs the engine on a thread of its own, so the
+emitter's timeout can fire while it waits; cancelling the token ends the
+wait, not the engine call, which keeps its thread until every dispatcher
+returns.
+
 ## Install
 
 ```sh
