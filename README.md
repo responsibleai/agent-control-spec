@@ -68,7 +68,11 @@ Rust: add `agent-control-spec = "0.4.0-beta.1"` to `Cargo.toml`. Cargo
 does not match a pre-release from a bare version requirement, so name
 the exact string while the crate is pre-release. The bundled annotator
 dispatchers sit behind the `default-dispatchers` feature; the
-zero-config constructor below needs it:
+zero-config constructor below needs it. A tokio host that wants the
+emitter's timeout to bound ACS adds the `tokio` feature
+(`features = ["default-dispatchers", "tokio"]`): the interceptor then
+evaluates on a blocking worker so the timeout can fire, and the feature
+turns on the emitter's own `tokio-timeout`.
 
 ```toml
 [dependencies]
