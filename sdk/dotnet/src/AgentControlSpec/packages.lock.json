@@ -4,9 +4,9 @@
     "net8.0": {
       "ResponsibleAI.AgentHooks": {
         "type": "Direct",
-        "requested": "[0.1.0-beta.2, )",
-        "resolved": "0.1.0-beta.2",
-        "contentHash": "S2+FftaPAErb1wss5FJBTpa+vl2f4AiSpen4thW0rOICdGoup71hPVTQqifsgBpzfmcLrE254fi/HtpASqL4Rw=="
+        "requested": "[0.1.0-beta.3, )",
+        "resolved": "0.1.0-beta.3",
+        "contentHash": "S3hEF9KerAqk/F0y0MoZaWR3SX7f8GqYmfk021hnaQ2Fr5NWPr0saTu8H3pCaGHAlwAKo1rZXV9FdngOppYf9w=="
       }
     }
   }
