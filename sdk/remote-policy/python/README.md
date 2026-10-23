@@ -397,7 +397,7 @@ python -m build --wheel --outdir dist/native sdk/python
 python -m build --outdir dist/remote-policy sdk/remote-policy/python
 ```
 
-The pure-Python build backend is pinned to `setuptools==84.0.0`. Inspect both
+The pure-Python build backend is pinned to `setuptools==84.2.0`. Inspect both
 wheels and source archive with the packaging tests by setting `ACS_CORE_WHEEL`,
 `ACS_REMOTE_POLICY_WHEEL`, and `ACS_REMOTE_POLICY_SDIST` to their exact paths, then running
 `pytest -c sdk/remote-policy/python/pyproject.toml sdk/remote-policy/python/tests_remote_policy/test_packaging.py`.
