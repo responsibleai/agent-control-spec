@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bind native release SBOM inventories to producer build context and artifact hashes while preserving each SDK's existing package inventory.
+
 - Include the policy generator's Python dependencies in weekly grouped Dependabot updates (#138).
 
 - Node: the release builds a Linux arm64 (glibc) binary on an arm64

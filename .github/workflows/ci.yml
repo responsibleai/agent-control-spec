@@ -30,6 +30,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt, clippy
+      - name: Release SBOM offline regression controls
+        run: python3 scripts/test_release_sbom.py
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Install OPA (pinned, checksum-verified)

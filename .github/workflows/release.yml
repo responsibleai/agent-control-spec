@@ -177,11 +177,45 @@ jobs:
         with: { toolchain: "${{ env.RUST_TOOLCHAIN }}" }
       - name: Package (verifies the publishable crate)
         run: cargo package --locked -p agent-control-spec
-      - name: SBOM
+      - name: SBOM baseline
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: engine
-          artifact-name: sbom-rust.spdx.json
+          syft-version: v1.54.0
+          output-file: ${{ runner.temp }}/baseline-rust.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Locked native source inventory
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          syft-version: v1.54.0
+          output-file: ${{ runner.temp }}/source-rust.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Bind the Rust source archive inventory
+        shell: bash
+        run: |
+          target=$(rustc -vV | sed -n 's/^host: //p')
+          python3 scripts/release_sbom.py capture --log "$RUNNER_TEMP/rust-metadata-receipt.jsonl" -- \
+            cargo metadata --locked --format-version 1 --filter-platform "$target" > "$RUNNER_TEMP/rust-metadata.json"
+          artifacts=(target/package/agent-control-spec-*.crate)
+          test "${#artifacts[@]}" -eq 1
+          python3 scripts/release_sbom.py provenance --metadata "$RUNNER_TEMP/rust-metadata.json" \
+            --metadata-command "$RUNNER_TEMP/rust-metadata-receipt.jsonl.command.json" \
+            --sdk rust --target "$target" --artifact "${artifacts[0]}" --logical-path "${artifacts[0]}" \
+            --root "$PWD" --command 'cargo package --locked -p agent-control-spec (source/archive scope)' \
+            --output "$RUNNER_TEMP/rust-provenance.json"
+          version=$(python3 scripts/check-version-consistency.py | sed -n 's/^package version surfaces agree: //p')
+          python3 scripts/release_sbom.py generate --baseline "$RUNNER_TEMP/baseline-rust.spdx.json" \
+            --source-inventory "$RUNNER_TEMP/source-rust.spdx.json" --provenance "$RUNNER_TEMP/rust-provenance.json" \
+            --artifacts "$PWD" --source "$GITHUB_SHA" --lock "$(sha256sum Cargo.lock | cut -d' ' -f1)" \
+            --sdk rust --version "$version" --targets "$target" --output "$RUNNER_TEMP/sbom-rust.spdx.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-rust.spdx.json
+          path: ${{ runner.temp }}/sbom-rust.spdx.json
+          if-no-files-found: error
       - name: Attest build provenance
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
@@ -229,9 +263,39 @@ jobs:
         shell: bash
         run: |
           npm ci
-          npx napi build --release --platform --target ${{ matrix.target }} \
-            --manifest-path native/Cargo.toml --cwd . --output-dir .
+          # CLI 3.10.8 forwards trailing Cargo options and inherits stdout.
+          python3 ../../scripts/release_sbom.py capture --log "$RUNNER_TEMP/node-compiler.jsonl" -- \
+            "$BASH" -c 'exec npx napi build --release --platform --target "$1" \
+              --manifest-path native/Cargo.toml --cwd . --output-dir . -- --message-format=json-render-diagnostics' \
+            sbom-node "${{ matrix.target }}"
         working-directory: sdk/node
+      - name: Capture Node SBOM producer evidence
+        shell: bash
+        run: |
+          git diff --exit-code -- Cargo.lock sdk/node/native/Cargo.toml engine/Cargo.toml
+          python3 scripts/release_sbom.py capture --log "$RUNNER_TEMP/node-metadata-receipt.jsonl" -- \
+            cargo metadata --locked --format-version 1 --filter-platform "${{ matrix.target }}" > "$RUNNER_TEMP/node-metadata.json"
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          host_args=()
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            python3 scripts/release_sbom.py capture --log "$RUNNER_TEMP/node-host-metadata-receipt.jsonl" -- \
+              cargo metadata --locked --format-version 1 --filter-platform "$host" > "$RUNNER_TEMP/node-host-metadata.json"
+            host_args=(--host-metadata "$RUNNER_TEMP/node-host-metadata.json" \
+              --host-metadata-command "$RUNNER_TEMP/node-host-metadata-receipt.jsonl.command.json")
+          fi
+          artifacts=(sdk/node/*.node)
+          test "${#artifacts[@]}" -eq 1
+          python3 scripts/release_sbom.py provenance --metadata "$RUNNER_TEMP/node-metadata.json" \
+            --metadata-command "$RUNNER_TEMP/node-metadata-receipt.jsonl.command.json" "${host_args[@]}" \
+            --compiler "$RUNNER_TEMP/node-compiler.jsonl" --sdk node --target "${{ matrix.target }}" \
+            --artifact "${artifacts[0]}" --logical-path "node-binding-${{ matrix.target }}/$(basename "${artifacts[0]}")" \
+            --root "$PWD" --command 'napi build --release --platform (original flags; Cargo JSON output only)' \
+            --output "$RUNNER_TEMP/node-provenance.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-provenance-node-${{ matrix.target }}
+          path: ${{ runner.temp }}/node-provenance.json
+          if-no-files-found: error
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: node-binding-${{ matrix.target }}
@@ -251,7 +315,13 @@ jobs:
         with: { node-version: "22", registry-url: "https://registry.npmjs.org" }
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
+          pattern: node-binding-*
           path: sdk/node/artifacts
+      - name: Collect Node SBOM producer evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-provenance-node-*
+          path: ${{ runner.temp }}/node-provenance
       - name: Distribute binaries into platform packages
         # napi artifacts copies each downloaded *.node into the matching
         # committed npm/<platform>/ package dir.
@@ -314,11 +384,39 @@ jobs:
           # manifest fails here, on the dry run too, not at upload time.
           for t in pack/*.tgz; do npm publish "./$t" --dry-run --access public --tag latest; done
         working-directory: sdk/node
-      - name: SBOM
+      - name: SBOM baseline
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: sdk/node
-          artifact-name: sbom-node.spdx.json
+          syft-version: v1.54.0
+          output-file: ${{ runner.temp }}/baseline-node.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Locked native source inventory
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          syft-version: v1.54.0
+          output-file: ${{ runner.temp }}/source-node.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Verify and merge node native inventory
+        shell: bash
+        run: |
+          contexts=("$RUNNER_TEMP/node-provenance"/*/node-provenance.json)
+          test "${#contexts[@]}" -eq 5
+          version=$(python3 scripts/check-version-consistency.py | sed -n 's/^package version surfaces agree: //p')
+          python3 scripts/release_sbom.py generate --baseline "$RUNNER_TEMP/baseline-node.spdx.json" \
+            --source-inventory "$RUNNER_TEMP/source-node.spdx.json" --provenance "${contexts[@]}" \
+            --artifacts "$PWD/sdk/node/artifacts" --source "$GITHUB_SHA" --lock "$(sha256sum Cargo.lock | cut -d' ' -f1)" \
+            --sdk node --version "$version" --targets x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+            x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc \
+            --output "$RUNNER_TEMP/sbom-node.spdx.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-node.spdx.json
+          path: ${{ runner.temp }}/sbom-node.spdx.json
+          if-no-files-found: error
       - name: Attest build provenance
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
@@ -393,7 +491,35 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build the engine binding for ${{ matrix.rid }}
         shell: bash
-        run: cargo build --release --locked -p agent-control-spec-ffi --target ${{ matrix.target }}
+        run: |
+          python3 scripts/release_sbom.py capture --log "$RUNNER_TEMP/ffi-compiler.jsonl" -- \
+            cargo build --release --locked -p agent-control-spec-ffi --target ${{ matrix.target }} --message-format=json-render-diagnostics
+      - name: Capture FFI SBOM producer evidence
+        shell: bash
+        run: |
+          git diff --exit-code -- Cargo.lock sdk/ffi/Cargo.toml engine/Cargo.toml
+          python3 scripts/release_sbom.py capture --log "$RUNNER_TEMP/ffi-metadata-receipt.jsonl" -- \
+            cargo metadata --locked --format-version 1 --filter-platform "${{ matrix.target }}" > "$RUNNER_TEMP/ffi-metadata.json"
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          host_args=()
+          if [ "$host" != "${{ matrix.target }}" ]; then
+            python3 scripts/release_sbom.py capture --log "$RUNNER_TEMP/ffi-host-metadata-receipt.jsonl" -- \
+              cargo metadata --locked --format-version 1 --filter-platform "$host" > "$RUNNER_TEMP/ffi-host-metadata.json"
+            host_args=(--host-metadata "$RUNNER_TEMP/ffi-host-metadata.json" \
+              --host-metadata-command "$RUNNER_TEMP/ffi-host-metadata-receipt.jsonl.command.json")
+          fi
+          python3 scripts/release_sbom.py provenance --metadata "$RUNNER_TEMP/ffi-metadata.json" \
+            --metadata-command "$RUNNER_TEMP/ffi-metadata-receipt.jsonl.command.json" "${host_args[@]}" \
+            --compiler "$RUNNER_TEMP/ffi-compiler.jsonl" --sdk dotnet --target "${{ matrix.target }}" \
+            --artifact "target/${{ matrix.target }}/release/${{ matrix.lib }}" \
+            --logical-path "dotnet-native-${{ matrix.rid }}/${{ matrix.lib }}" --root "$PWD" \
+            --command 'cargo build --release --locked -p agent-control-spec-ffi --target ${{ matrix.target }}' \
+            --output "$RUNNER_TEMP/ffi-provenance.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-provenance-dotnet-${{ matrix.rid }}
+          path: ${{ runner.temp }}/ffi-provenance.json
+          if-no-files-found: error
       - name: Stage under its runtime identifier
         shell: bash
         run: |
@@ -422,6 +548,11 @@ jobs:
         with:
           pattern: dotnet-native-*
           path: sdk/dotnet/native/staging
+      - name: Collect FFI SBOM producer evidence
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: native-provenance-dotnet-*
+          path: ${{ runner.temp }}/dotnet-provenance
       - name: Lay them out by runtime identifier
         shell: bash
         run: |
@@ -447,11 +578,39 @@ jobs:
           version=$(basename "$nupkg" .nupkg)
           version=${version#ResponsibleAI.AgentControlSpec.}
           bash tests/conformance/bindings/dotnet_package.sh "$PWD/sdk/dotnet/dist" "$version"
-      - name: SBOM
+      - name: SBOM baseline
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           path: sdk/dotnet
-          artifact-name: sbom-dotnet.spdx.json
+          syft-version: v1.54.0
+          output-file: ${{ runner.temp }}/baseline-dotnet.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Locked native source inventory
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          path: .
+          syft-version: v1.54.0
+          output-file: ${{ runner.temp }}/source-dotnet.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Verify and merge dotnet native inventory
+        shell: bash
+        run: |
+          contexts=("$RUNNER_TEMP/dotnet-provenance"/*/ffi-provenance.json)
+          test "${#contexts[@]}" -eq 5
+          version=$(python3 scripts/check-version-consistency.py | sed -n 's/^package version surfaces agree: //p')
+          python3 scripts/release_sbom.py generate --baseline "$RUNNER_TEMP/baseline-dotnet.spdx.json" \
+            --source-inventory "$RUNNER_TEMP/source-dotnet.spdx.json" --provenance "${contexts[@]}" \
+            --artifacts "$PWD/sdk/dotnet/native/staging" --source "$GITHUB_SHA" --lock "$(sha256sum Cargo.lock | cut -d' ' -f1)" \
+            --sdk dotnet --version "$version" --targets x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu \
+            x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc \
+            --output "$RUNNER_TEMP/sbom-dotnet.spdx.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sbom-dotnet.spdx.json
+          path: ${{ runner.temp }}/sbom-dotnet.spdx.json
+          if-no-files-found: error
       - name: Attest build provenance
         if: env.DRY_RUN != 'true' && github.ref_type == 'tag'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v2
