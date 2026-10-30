@@ -37,7 +37,7 @@
     "test": "npm run build && node --test test/*.mjs"
   },
   "dependencies": {
-    "@responsibleai/agent-hooks": "0.1.0-beta.2"
+    "@responsibleai/agent-hooks": "0.1.0-beta.3"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.7.4",
