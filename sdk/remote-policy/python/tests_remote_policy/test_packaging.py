@@ -163,7 +163,14 @@ def test_native_checkout_has_no_optional_polling_feature() -> None:
     )
     project = _table(config["project"])
     assert "optional-dependencies" not in project
-    assert project["dependencies"] == ["agent-hooks-sdk==0.1.0b2"]
+    pins = ROOT.joinpath("sdk/python/requirements-dev.in").read_text("utf-8")
+    expected = [
+        line.strip()
+        for line in pins.splitlines()
+        if line.strip().startswith("agent-hooks-sdk==")
+    ]
+    assert expected, "requirements-dev.in must pin agent-hooks-sdk"
+    assert project["dependencies"] == expected
     assert not list(
         ROOT.joinpath("sdk/python/agent_control_spec").glob("remote_policy*.py")
     )
