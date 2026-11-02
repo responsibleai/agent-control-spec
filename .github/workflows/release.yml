@@ -394,6 +394,10 @@ jobs:
       - name: Build the engine binding for ${{ matrix.rid }}
         shell: bash
         run: cargo build --release --locked -p agent-control-spec-ffi --target ${{ matrix.target }}
+      - name: Verify Windows CFG instrumentation
+        if: matrix.rid == 'win-x64'
+        shell: pwsh
+        run: ./scripts/check-windows-cfg.ps1 -Dll target/${{ matrix.target }}/release/${{ matrix.lib }}
       - name: Stage under its runtime identifier
         shell: bash
         run: |
@@ -439,6 +443,12 @@ jobs:
           dotnet restore --nologo --locked-mode
           dotnet pack src/AgentControlSpec -c Release -o dist --nologo --no-restore -p:AcsNativeAssetsRequired=true
         working-directory: sdk/dotnet
+      - name: Verify CFG in the exact NuGet payload
+        shell: pwsh
+        run: |
+          $packages = @(Get-ChildItem sdk/dotnet/dist/ResponsibleAI.AgentControlSpec.*.nupkg)
+          if ($packages.Count -ne 1) { throw "Expected exactly one NuGet package." }
+          ./scripts/check-windows-cfg.ps1 -Package $packages[0].FullName -ExpectedDll sdk/dotnet/native/runtimes/win-x64/native/agent_control_spec_ffi.dll
       - name: Prove the packed artifact runs without a local engine build
         shell: bash
         run: |

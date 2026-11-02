@@ -19,6 +19,12 @@ the tag's publication set. The tag workflow does not publish the generator.
    workflow), and the CI drift check compares the file modulo those
    strings. Committing a regenerated copy is harmless but never
    required.
+
+   Windows MSVC builds enable CFG via `.cargo/config.toml`. The native
+   release gate checks instrumentation and function-table metadata, not
+   just the PE header bit. After packing, a second gate checks the exact
+   `win-x64` NuGet payload and its hash against the staged DLL. Keep both
+   gates before publication; do not override the target's Rust flags.
 2. Dry-run: Actions → release → Run workflow (`dry_run: true`). Builds
    everything, packs the npm tarballs with the publish-time manifest
    edits, and produces SBOMs; attests and uploads nothing. A manual run
