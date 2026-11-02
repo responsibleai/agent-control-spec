@@ -93,8 +93,16 @@ try {
     finally { $archive.Dispose() }
     & $checker -Package $package -ExpectedDll $Dll
     $checks++
+    $staleDll = Join-Path $temporary 'stale.dll'
+    [byte[]] $staleContents = $original.Clone()
+    # Change one COFF timestamp byte without altering CFG metadata.
+    $timestampOffset = $optionalHeader - 16
+    $staleContents[$timestampOffset] = $staleContents[$timestampOffset] -bxor 1
+    [IO.File]::WriteAllBytes($staleDll, $staleContents)
+    & $checker -Dll $staleDll
+    $checks++
     Assert-Rejected -Name 'stale package payload' -Reason 'does not match' -Check {
-        & $checker -Package $package -ExpectedDll $PSCommandPath
+        & $checker -Package $package -ExpectedDll $staleDll
     }
     $checks++
 
