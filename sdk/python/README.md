@@ -345,7 +345,7 @@ validate_manifest_file(str(manifest_path))
 `supported_manifest_versions()` reports the grammar versions this
 engine accepts. Read it rather than hardcoding the set.
 
-## Remote policies (unreleased)
+## Remote policies
 
 Remote polling is a separate optional distribution,
 `agent-control-spec-remote-policy`, not an extra or module in this base package.
@@ -424,7 +424,7 @@ Managed integration requires capability 1 in both packages; mixed older versions
 fail explicitly for managed use while supported low-level optional imports stay
 usable. See the optional package's README for the version relationship.
 See the [contract and runnable remote-polling example](https://github.com/responsibleai/agent-control-spec/blob/main/examples/remote_policy/README.md)
-for checkout installation, authentication, leases and first-slice limitations.
+for installation, authentication, leases and first-slice limitations.
 
 ## Authoring inspection
 

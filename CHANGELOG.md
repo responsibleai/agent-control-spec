@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.0-beta.2
+
 - Windows MSVC builds enable Control Flow Guard (CFG). CI tests CFG metadata
   rejection cases and the Windows .NET binding; release gates verify the
   native DLL and its exact NuGet payload before publication.

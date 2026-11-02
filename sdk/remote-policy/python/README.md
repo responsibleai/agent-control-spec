@@ -45,21 +45,18 @@ using the enforced result before running a tool.
 
 ## Install
 
-This checkout defines version **0.4.0b1**; the extraction is not a claim that
-this distribution has been published. Until release, install from this checkout
-or from locally built wheels:
+Install the optional polling package alongside the matching core SDK:
 
 ```sh
-python -m pip install ./sdk/python ./sdk/remote-policy/python
+python -m pip install "agent-control-spec==0.4.0b2" "agent-control-spec-remote-policy==0.4.0b2"
 # Only when using the Azure adapter:
-python -m pip install ./sdk/python "./sdk/remote-policy/python[azure]"
+python -m pip install "agent-control-spec==0.4.0b2" "agent-control-spec-remote-policy[azure]==0.4.0b2"
 ```
 
-Run these commands from the repository root. Python 3.11 or later is required;
-building the native dependency from source also requires its Rust build tools.
-Once published, the corresponding distribution requirement is
-`agent-control-spec-remote-policy==0.4.0b1` (or its `[azure]` extra).
-The optional package requires `agent-control-spec>=0.4.0b1,<0.5`,
+Python 3.11 or later is required. For source development, run
+`python -m pip install ./sdk/python ./sdk/remote-policy/python` from the
+repository root; building the native dependency also requires its Rust build tools.
+The optional package requires `agent-control-spec>=0.4.0b2,<0.5`,
 `httpx>=0.28.1,<0.29`, and `PyYAML>=6.0.3,<7`. The Azure extra adds
 `azure-identity>=1.25.3,<2` and `aiohttp>=3.14.4,<4`.
 
