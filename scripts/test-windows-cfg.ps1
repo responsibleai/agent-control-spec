@@ -48,6 +48,7 @@ try {
     }
 
     $cases = @(
+        @{ Name = 'wrong machine'; Offset = ($optionalHeader - 20); Bytes = [BitConverter]::GetBytes([uint16] 0xaa64); Reason = 'AMD64' },
         @{ Name = 'missing GuardCF'; Offset = $characteristicsOffset; Bytes = [BitConverter]::GetBytes([uint16] ($characteristics -band 0xbfff)); Reason = 'GuardCF' },
         @{ Name = 'missing DynamicBase'; Offset = $characteristicsOffset; Bytes = [BitConverter]::GetBytes([uint16] ($characteristics -band 0xffbf)); Reason = 'DynamicBase' },
         @{ Name = 'missing load config'; Offset = $optionalHeader + 0xc0; Bytes = [byte[]]::new(4); Reason = 'load configuration' },
@@ -68,6 +69,19 @@ try {
         $checks++
     }
 
+    [IO.File]::WriteAllBytes($fixture, [byte[]]::new(0))
+    Assert-Rejected -Name 'empty DLL' -Reason 'between 1 byte and 64 MiB' -Check {
+        & $checker -Dll $fixture
+    }
+    $checks++
+    $oversized = [IO.File]::Create($fixture)
+    try { $oversized.SetLength(64MB + 1) }
+    finally { $oversized.Dispose() }
+    Assert-Rejected -Name 'oversized DLL' -Reason 'between 1 byte and 64 MiB' -Check {
+        & $checker -Dll $fixture
+    }
+    $checks++
+
     $package = Join-Path $temporary 'fixture.nupkg'
     $archive = [IO.Compression.ZipFile]::Open($package, [IO.Compression.ZipArchiveMode]::Create)
     try {
@@ -84,10 +98,30 @@ try {
     }
     $checks++
 
+    $archive = [IO.Compression.ZipFile]::Open($package, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $null = $archive.CreateEntry('runtimes/win-x64/native/agent_control_spec_ffi.dll')
+    }
+    finally { $archive.Dispose() }
+    Assert-Rejected -Name 'duplicate package asset' -Reason 'exactly one' -Check {
+        & $checker -Package $package -ExpectedDll $Dll
+    }
+    $checks++
+
     $emptyPackage = Join-Path $temporary 'missing-native.nupkg'
     $archive = [IO.Compression.ZipFile]::Open($emptyPackage, [IO.Compression.ZipArchiveMode]::Create)
     $archive.Dispose()
     Assert-Rejected -Name 'missing package asset' -Reason 'exactly one' -Check {
+        & $checker -Package $emptyPackage -ExpectedDll $Dll
+    }
+    $checks++
+
+    $archive = [IO.Compression.ZipFile]::Open($emptyPackage, [IO.Compression.ZipArchiveMode]::Update)
+    try {
+        $null = $archive.CreateEntry('runtimes/WIN-X64/native/agent_control_spec_ffi.dll')
+    }
+    finally { $archive.Dispose() }
+    Assert-Rejected -Name 'case-mismatched package asset' -Reason 'exactly one' -Check {
         & $checker -Package $emptyPackage -ExpectedDll $Dll
     }
     $checks++

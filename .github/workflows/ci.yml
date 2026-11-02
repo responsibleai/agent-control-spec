@@ -287,10 +287,10 @@ jobs:
       - name: generated bindings are current
         run: |
           git diff --exit-code -- binding.d.ts
-          git show HEAD:sdk/node/binding.js > /tmp/binding.committed.js
-          node scripts/stamp-binding-version.mjs /tmp/binding.committed.js
+          git show HEAD:sdk/node/binding.js > "$RUNNER_TEMP/binding.committed.js"
+          node scripts/stamp-binding-version.mjs "$RUNNER_TEMP/binding.committed.js"
           node scripts/stamp-binding-version.mjs binding.js
-          diff -u /tmp/binding.committed.js binding.js
+          diff -u "$RUNNER_TEMP/binding.committed.js" binding.js
         working-directory: sdk/node
 
   dotnet:
@@ -338,6 +338,15 @@ jobs:
           dotnet-version: "8.0.x"
       - run: dotnet restore --nologo --locked-mode
         working-directory: sdk/dotnet
+      - name: Verify the restored Agent Hooks DLL also enables CFG
+        shell: pwsh
+        run: |
+          $lock = Get-Content sdk/dotnet/src/AgentControlSpec/packages.lock.json -Raw | ConvertFrom-Json
+          $version = $lock.dependencies.'net8.0'.'ResponsibleAI.AgentHooks'.resolved
+          $packages = dotnet nuget locals global-packages --list --force-english-output
+          if ($LASTEXITCODE -ne 0) { throw "Cannot resolve the NuGet global packages directory." }
+          $packages = $packages -replace '^global-packages:\s*', ''
+          ./scripts/check-windows-cfg.ps1 -Dll (Join-Path $packages "responsibleai.agenthooks/$version/runtimes/win-x64/native/agent_hooks_ffi.dll")
       - name: Test the Windows binding with CFG enabled
         shell: pwsh
         run: |
