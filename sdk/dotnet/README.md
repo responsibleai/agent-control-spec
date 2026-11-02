@@ -136,7 +136,8 @@ CFG-instrumented `win-x64` ACS DLL and requires Agent Hooks `0.1.0-beta.3`,
 whose Windows DLL also enables CFG. CI checks the native metadata, and the
 release gate checks the exact NuGet payload against the staged DLL.
 The same build flags apply to Windows MSVC builds of the Node and Python
-bindings; the .NET package gates verify the `win-x64` NuGet assets.
+bindings, but their Windows release artifacts do not have CFG verification
+gates. The .NET package gates verify only the `win-x64` NuGet assets.
 
 Source checkouts: build the engine binding with
 `cargo build --release -p agent-control-spec-ffi`, then run
