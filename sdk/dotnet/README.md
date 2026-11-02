@@ -130,6 +130,15 @@ for `linux-x64`, `linux-arm64`, `osx-x64`, `osx-arm64` and `win-x64`
 under `runtimes/`, and the agent-hooks package carries `agent_hooks_ffi`
 the same way. Package users need no loader-path setup.
 
+Windows MSVC source builds enable Control Flow Guard (CFG) through the
+repository's `.cargo/config.toml`. The next package release includes a
+CFG-instrumented `win-x64` ACS DLL and requires Agent Hooks `0.1.0-beta.3`,
+whose Windows DLL also enables CFG. CI checks the native metadata, and the
+release gate checks the exact NuGet payload against the staged DLL.
+The same build flags apply to Windows MSVC builds of the Node and Python
+bindings, but their Windows release artifacts do not have CFG verification
+gates. The .NET package gates verify only the `win-x64` NuGet assets.
+
 Source checkouts: build the engine binding with
 `cargo build --release -p agent-control-spec-ffi`, then run
 `dotnet restore && dotnet test` from `sdk/dotnet` with `LD_LIBRARY_PATH`

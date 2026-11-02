@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Windows MSVC builds enable Control Flow Guard (CFG). CI tests CFG metadata
+  rejection cases and the Windows .NET binding; release gates verify the
+  native DLL and its exact NuGet payload before publication.
+- .NET: upgrade `ResponsibleAI.AgentHooks` to `0.1.0-beta.3`, including its
+  CFG-enabled Windows native DLL (#167).
 - Include the policy generator's Python dependencies in weekly grouped Dependabot updates (#138).
 
 - Node: the release builds a Linux arm64 (glibc) binary on an arm64

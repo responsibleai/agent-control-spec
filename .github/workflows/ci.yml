@@ -287,10 +287,10 @@ jobs:
       - name: generated bindings are current
         run: |
           git diff --exit-code -- binding.d.ts
-          git show HEAD:sdk/node/binding.js > /tmp/binding.committed.js
-          node scripts/stamp-binding-version.mjs /tmp/binding.committed.js
+          git show HEAD:sdk/node/binding.js > "$RUNNER_TEMP/binding.committed.js"
+          node scripts/stamp-binding-version.mjs "$RUNNER_TEMP/binding.committed.js"
           node scripts/stamp-binding-version.mjs binding.js
-          diff -u /tmp/binding.committed.js binding.js
+          diff -u "$RUNNER_TEMP/binding.committed.js" binding.js
         working-directory: sdk/node
 
   dotnet:
@@ -321,6 +321,37 @@ jobs:
           dotnet pack sdk/dotnet/src/AgentControlSpec -c Release -o "$PWD/ci-feed" \
             --nologo -p:AcsNativeAssetsRequired=true -p:Version=0.0.0-ci
           bash tests/conformance/bindings/dotnet_package.sh "$PWD/ci-feed" 0.0.0-ci
+
+  dotnet-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: cargo build --release --locked -p agent-control-spec-ffi --target x86_64-pc-windows-msvc
+      - name: Verify CFG and exercise negative fixtures
+        shell: pwsh
+        run: ./scripts/test-windows-cfg.ps1 -Dll target/x86_64-pc-windows-msvc/release/agent_control_spec_ffi.dll
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+      - run: dotnet restore --nologo --locked-mode
+        working-directory: sdk/dotnet
+      - name: Verify the restored Agent Hooks DLL also enables CFG
+        shell: pwsh
+        run: |
+          $lock = Get-Content sdk/dotnet/src/AgentControlSpec/packages.lock.json -Raw | ConvertFrom-Json
+          $version = $lock.dependencies.'net8.0'.'ResponsibleAI.AgentHooks'.resolved
+          $packages = dotnet nuget locals global-packages --list --force-english-output
+          if ($LASTEXITCODE -ne 0) { throw "Cannot resolve the NuGet global packages directory." }
+          $packages = $packages -replace '^global-packages:\s*', ''
+          ./scripts/check-windows-cfg.ps1 -Dll (Join-Path $packages "responsibleai.agenthooks/$version/runtimes/win-x64/native/agent_hooks_ffi.dll")
+      - name: Test the Windows binding with CFG enabled
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:GITHUB_WORKSPACE\target\x86_64-pc-windows-msvc\release;$env:PATH"
+          dotnet test sdk/dotnet --no-restore --nologo
 
   # Streaming reaches each language through a different binding
   # mechanism, so agreement between them is not structural. Run one

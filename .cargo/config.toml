@@ -1,0 +1,4 @@
+# Copyright (c) Microsoft. All rights reserved.
+
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "control-flow-guard=checks"]
