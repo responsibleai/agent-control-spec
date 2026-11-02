@@ -1,6 +1,6 @@
 # Remote policy download contract v1
 
-This is an optional Python package that has not been released yet. Install
+This is an optional Python package introduced in `0.4.0b2`. Install
 `agent-control-spec-remote-policy` separately from the base SDK; its import
 namespace is `agent_control_spec_remote_policy`. This is a new provider-neutral
 distribution contract, not an existing cloud provider's management API.

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-control-spec-generator"
-version = "0.4.0b1"
+version = "0.4.0b2"
 description = "Generate Agent Control Specification manifests and Rego policy from natural-language guardrails."
 readme = "README.md"
 requires-python = ">=3.11"

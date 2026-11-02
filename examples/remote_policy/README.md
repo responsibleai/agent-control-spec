@@ -1,6 +1,6 @@
 # Python remote policy polling
 
-Unreleased checkout example: one tenant/policy selection per agent, startup
+This example uses one tenant/policy selection per agent, startup
 download, **five-minute default** background polling, and memory-only storage.
 Any backend can implement the [v1 contract](../../docs/remote-policy-contract.md);
 policy management stays outside the SDK.
@@ -86,11 +86,10 @@ Azure remains an optional separate auth adapter.
 Remote polling is a separate optional distribution,
 `agent-control-spec-remote-policy`. The base `agent-control-spec` package neither
 includes polling modules nor installs HTTP or cloud credential dependencies.
-This distribution is unreleased; use the checkout. Build/install the native SDK
-using its instructions, then from the repository root:
+Install both packages, then run the example from the repository root:
 
 ```powershell
-python -m pip install -e .\sdk\remote-policy\python
+python -m pip install "agent-control-spec==0.4.0b2" "agent-control-spec-remote-policy==0.4.0b2"
 ```
 
 The polling package depends on the base SDK for ACS validation. Customers who

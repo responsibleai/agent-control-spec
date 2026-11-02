@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-control-spec-remote-policy"
-version = "0.4.0b1"
+version = "0.4.0b2"
 description = "Optional remote policy polling and credential interfaces for Agent Control Specification."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,7 +19,7 @@ classifiers = [
   "Programming Language :: Python :: 3 :: Only",
 ]
 dependencies = [
-  "agent-control-spec>=0.4.0b1,<0.5",
+  "agent-control-spec>=0.4.0b2,<0.5",
   "httpx>=0.28.1,<0.29",
   "PyYAML>=6.0.3,<7",
 ]
