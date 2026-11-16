@@ -623,7 +623,7 @@ The current version carries the `-alpha` pre release tag and the status Draft. W
 
 **[OPA]** Open Policy Agent and the Rego policy language, `https://www.openpolicyagent.org/`.
 
-**[AGENT-HOOKS]** Agent Hooks control contract, AGENT-HOOKS-0.1, `spec/AGENT-HOOKS-0.1.md` in the `responsibleai/agent-hooks` repository. It defines the verdict, the host obligations, the approval seam, and the `host_error:*` reasons this document relies on.
+**[AGENT-HOOKS]** Agent Hooks control contract, AGENT-HOOKS-0.1, `spec/0.1/AGENT-HOOKS-0.1.md` in the `responsibleai/agent-hooks` repository. It defines the verdict, the host obligations, the approval seam, and the `host_error:*` reasons this document relies on.
 
 ### 23.2 Informative references
 
