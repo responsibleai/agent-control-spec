@@ -22,7 +22,7 @@ host, the dispatchers, or the agent.
 - Not a stateful enforcement point. The runtime stores no labels, propagates no taint, and keeps no state between calls. Information flow tracking is the host's job.
 - Not an authentication layer for manifests, snapshots, or dispatchers.
 
-The normative statement is [specification section 21](spec/SPECIFICATION.md#21-security-considerations). The host side trust boundary, including the approval resolver and the identity provider, is set out in agent-hooks [AGENT-HOOKS-0.1 section 1.4](https://github.com/responsibleai/agent-hooks/blob/main/spec/AGENT-HOOKS-0.1.md#14-trust-model-and-non-goals).
+The normative statement is [specification section 21](spec/SPECIFICATION.md#21-security-considerations). The host side trust boundary, including the approval resolver and the identity provider, is set out in agent-hooks [AGENT-HOOKS-0.1 section 1.4](https://github.com/responsibleai/agent-hooks/blob/main/spec/0.1/AGENT-HOOKS-0.1.md#14-trust-model-and-non-goals).
 
 ## Reporting a vulnerability
 
